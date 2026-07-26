@@ -50,7 +50,7 @@ await redis.zset(leaderboards).zincrby("global", 5, "user:42");
 Raw Redis equivalent:
 
 ```ts
-await redis.zAdd("leaderboard:global", [
+await nodeRedis.zAdd("leaderboard:global", [
   { value: "user:42", score: 100 },
   { value: "user:7", score: 80 }
 ]);
@@ -165,7 +165,7 @@ The member `value` in a bound is encoded through the schema's codec, exactly lik
 Raw Redis equivalent:
 
 ```ts
-await redis.sendCommand([
+await nodeRedis.sendCommand([
   "ZRANGE",
   "name-index:directory",
   "[ada",

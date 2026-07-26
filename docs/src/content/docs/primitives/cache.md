@@ -3,7 +3,7 @@ title: "Cache"
 description: "A read-through cache with stampede protection — one loader call per miss, no matter how many concurrent readers."
 ---
 
-`cache` is a read-through cache with **stampede protection**: on a miss, exactly one caller runs the loader (single-flight via the [distributed lock](/primitives/lock/)); every other concurrent reader waits for the filled value instead of hammering your backend.
+`cache` is a read-through cache with **stampede protection**: on a miss, exactly one caller runs the loader (single-flight via the [distributed lock](/beni/primitives/lock/)); every other concurrent reader waits for the filled value instead of hammering your backend.
 
 ```ts
 import { cache } from "beni/primitives";
@@ -15,7 +15,7 @@ const profile = await profiles.get(userId, () => db.loadProfile(userId));
 
 The classic failure this prevents: a hot key expires, 500 requests miss at once, and all 500 hit the database together. With `cache`, one of them loads; the other 499 poll Redis for the filled entry.
 
-`cache` takes any `RedisClient`, so it works over every adapter — including [`beni/upstash`](/runtime/edge/) on the edge.
+`cache` takes any `RedisClient`, so it works over every adapter — including [`beni/upstash`](/beni/runtime/edge/) on the edge.
 
 ## API
 
@@ -44,4 +44,4 @@ If the caller holding the fill lock dies mid-load, its lock expires after `lockT
 | `lockTtlMs` | `10000` | How long one loader may hold the fill lock before waiters fail open. Set above your slowest load. |
 | `pollMs` | `50` | Poll interval while waiting on another caller's load. |
 
-See [Caching patterns](/patterns/caching/) for the underlying Redis approach if you want to roll your own.
+See [Caching patterns](/beni/patterns/caching/) for the underlying Redis approach if you want to roll your own.

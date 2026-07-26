@@ -96,8 +96,8 @@ await redis.bitmap(dailyActive).del("2026-07-04");
 ## Raw Redis Equivalent
 
 ```ts
-await redis.setBit("daily-active:2026-07-04", 42, 1);
-const total = await redis.bitCount("daily-active:2026-07-04");
+await nodeRedis.setBit("daily-active:2026-07-04", 42, 1);
+const total = await nodeRedis.bitCount("daily-active:2026-07-04");
 ```
 
 Use bitmaps for daily-active tracking, feature rollouts keyed by numeric user ID, and any dense set of boolean flags where offsets map to entities. Use sets when members are sparse strings rather than dense integers.

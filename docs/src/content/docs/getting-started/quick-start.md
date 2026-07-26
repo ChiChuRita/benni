@@ -1,9 +1,15 @@
 ---
 title: "Quick Start"
-description: "This example defines two Redis key families: one hash for user metadata and one JSON key-value store for full profiles."
+description: "Declare two Redis key families, bind a client, and read your own types back — the five-minute path from install to first typed round trip."
 ---
 
 This example defines two Redis key families: one hash for user metadata and one JSON key-value store for full profiles.
+
+First install Beni and the Node client (see [Installation](/beni/getting-started/installation/) for other runtimes):
+
+```sh
+pnpm add beni redis
+```
 
 ## Define Schemas
 
@@ -47,6 +53,12 @@ To pass the bound handle around, type it with the exported `Beni<TSchema>` — t
 import type { Beni } from "beni";
 
 export function makeHandlers(redis: Beni<typeof schema>) { /* ... */ }
+```
+
+Every accessor the handle exposes is listed in the [Beni Client reference](/beni/api/beni-client/). The client owns a connection, so close it when your process or test finishes — otherwise Node never exits:
+
+```ts
+await client.close();
 ```
 
 ## Read And Write

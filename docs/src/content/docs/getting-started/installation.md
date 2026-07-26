@@ -1,6 +1,6 @@
 ---
 title: "Installation"
-description: "Install Beni and the Redis client used by the Node.js adapter:"
+description: "Install Beni, pick the peer dependency your runtime needs, and check which Redis servers are supported."
 ---
 
 Install Beni and the Redis client used by the Node.js adapter:
@@ -23,11 +23,21 @@ The Node.js adapter uses the [`redis`](https://www.npmjs.com/package/redis) pack
 bun add beni
 ```
 
+Beni has three optional peer dependencies, all opt-in — install one only when
+you import the subpath that needs it:
+
+| Peer | Needed by | Version |
+| --- | --- | --- |
+| [`redis`](https://www.npmjs.com/package/redis) | `beni/node` | `^6.1.0` |
+| [`hono`](https://hono.dev) | `beni/hono` | `>=4.0.0` |
+| [`zod`](https://zod.dev) | `beni/zod` | `^4.1.0` |
+
 Deno needs no separate adapter: it runs node-redis directly through npm compatibility, so Deno users import the Node adapter (`npm:beni/node`) and `npm:redis`. There is no `beni/deno` entrypoint — Beni ships one runtime-agnostic core plus thin client adapters, not per-runtime builds.
 
 ## Server Compatibility
 
-The integration suite runs against every row of this table:
+CI runs the integration suite against Redis 8 and an Upstash-REST-compatible
+endpoint. The other rows are verified manually against the same suite:
 
 | Server | Coverage |
 | --- | --- |
@@ -35,9 +45,11 @@ The integration suite runs against every row of this table:
 | Redis 7.4 | Everything except `hsetex`/`hgetex`/`hgetdel` (Redis 8 commands). |
 | Redis 7.2 | Additionally no hash field TTLs (`hexpire`/`httl`/…, introduced in 7.4). |
 | Valkey 8 | Same profile as Redis 7.2 (Valkey forked pre-7.4). |
-| Dragonfly | The common surface works (kv, hashes, sets, lists, sorted sets, streams, bitmaps, Pub/Sub, transactions, scripts); `LCS`, `GEOSEARCHSTORE`, and hash field TTLs are not implemented by Dragonfly. |
+| Dragonfly | The common surface works (kv, hashes, sets, lists, sorted sets, streams, geo, HyperLogLog, bitmaps, Pub/Sub, transactions, scripts); `LCS`, `GEOSEARCHSTORE`, and hash field TTLs are not implemented by Dragonfly. |
 
-Everything else — streams, sorted sets, `lmpop`, `sintercard`, geo, bitfields — works from Redis 7.2 up, and Upstash is covered through the [HTTP adapter](/runtime/edge/).
+Everything else — streams, sorted sets, `lmpop`, `sintercard`, geo, bitfields — works from Redis 7.2 up.
+
+Upstash and other serverless endpoints are covered through the [HTTP adapter](/beni/runtime/edge/).
 
 For local development, run Redis with Docker:
 

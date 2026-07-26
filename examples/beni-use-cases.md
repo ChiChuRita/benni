@@ -468,6 +468,18 @@ export async function runDueJobs() {
 }
 ```
 
-## What These Examples Suggest
+## What These Examples Have In Common
 
-Beni covers the raw Redis building blocks well: typed schemas, cache/session storage, counters, sets, lists, sorted sets, streams, geo, bitmaps, HLL, pub/sub, scripts, locks, rate limits, sessions, and optimistic transactions. The places that felt less solved are higher-level workflows: queue lifecycle helpers, cache-aside helpers, index maintenance, and operational guidance for multi-process workers. (Runtime validation is now covered: `json(validator)` accepts any Standard Schema validator.)
+Every workload above uses the same three moves: declare the key family as a
+schema, reach it through the bound handle, and let the codec carry the type
+across the Redis boundary. Nothing here needed a migration, an entity class, or
+a cast.
+
+Where a workload needs one of the hard parts done right, it reaches for a
+primitive instead of hand-rolling it — `cache` for read-through with stampede
+protection, `lock` for mutual exclusion, `ratelimit` for a sliding window — and
+for at-least-once queue processing, the consumer-group and blocking-worker
+patterns in the [docs](../docs/src/content/docs/advanced/blocking-operations.md).
+
+Anything Beni does not type yet stays reachable through `redis.raw.send([...])`,
+so no use case is blocked on the typed surface catching up.

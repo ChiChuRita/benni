@@ -19,8 +19,8 @@ import { upstash } from "beni/upstash";
 export default cacheHandler({
   client: () =>
     upstash({
-      url: process.env.UPSTASH_URL,
-      token: process.env.UPSTASH_TOKEN
+      url: process.env.UPSTASH_REDIS_REST_URL as string,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN as string
     })
 });
 ```
@@ -68,8 +68,8 @@ import { upstash } from "beni/upstash";
 const limiter = rateLimit({
   client: () =>
     upstash({
-      url: process.env.UPSTASH_URL,
-      token: process.env.UPSTASH_TOKEN
+      url: process.env.UPSTASH_REDIS_REST_URL as string,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN as string
     }),
   limit: 20,
   windowMs: 10_000

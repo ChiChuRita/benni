@@ -35,7 +35,7 @@ const value = await redis.kv(settings).get("user:42");
 With Redis directly:
 
 ```ts
-await redis.set(
+await nodeRedis.set(
   "settings:user:42",
   JSON.stringify({
     theme: "dark",
@@ -43,7 +43,7 @@ await redis.set(
   })
 );
 
-const raw = await redis.get("settings:user:42");
+const raw = await nodeRedis.get("settings:user:42");
 const value = raw === null ? null : JSON.parse(raw);
 ```
 

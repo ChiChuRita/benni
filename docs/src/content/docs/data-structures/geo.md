@@ -81,7 +81,7 @@ await redis.geo(stores).del("berlin");
 ## Raw Redis Equivalent
 
 ```ts
-await redis.geoAdd("stores:berlin", [
+await nodeRedis.geoAdd("stores:berlin", [
   { member: "store:1", longitude: 13.405, latitude: 52.52 }
 ]);
 ```

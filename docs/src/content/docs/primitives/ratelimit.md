@@ -1,5 +1,5 @@
 ---
-title: "Rate Limiting"
+title: "Rate Limiting (primitive)"
 description: "A sliding-window rate limiter over Redis — one atomic round trip per check, accurate, and edge-ready."
 ---
 

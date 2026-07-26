@@ -4,7 +4,7 @@ description: "Use a JSON key-value schema for cached responses."
 ---
 
 :::tip
-For most apps, reach for the first-class [`cache` primitive](/primitives/cache/) — a read-through cache with stampede protection built in. This page shows the underlying key-value pattern if you want to roll your own.
+For most apps, reach for the first-class [`cache` primitive](/beni/primitives/cache/) — a read-through cache with stampede protection built in. This page shows the underlying key-value pattern if you want to roll your own.
 :::
 
 Use a JSON key-value schema for cached responses.
@@ -50,7 +50,7 @@ await redis.kv(productCache).del(id);
 Raw Redis equivalent:
 
 ```ts
-await redis.set(
+await nodeRedis.set(
   `cache:product:${id}`,
   JSON.stringify(product),
   { EX: 60 * 5 }

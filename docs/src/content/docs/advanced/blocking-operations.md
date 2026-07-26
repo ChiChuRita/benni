@@ -103,7 +103,7 @@ const scored = await redis.zset(priorities).zmpop(["high", "low"], { min: true, 
 // lmpop with { direction: "right" } and zmpop with { max: true } are the mirror-image variants.
 ```
 
-These check the keys in order and return `null` only when all of them are empty. A session inherits them too, since it reuses the same stores — but reach for the blocking `*From` variants when you want to wait for work rather than poll.
+These check the keys in order and return `null` only when all of them are empty. A session inherits them too, since it reuses the same stores — but reach for the blocking `blpop`/`brpop`/`blmove`/`blmpop` when you want to wait for work rather than poll.
 
 ## Blocking Counted Multi-Key Pops
 

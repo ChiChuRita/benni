@@ -1,5 +1,5 @@
 ---
-title: "Sessions"
+title: "Connection Sessions"
 description: "Use redis.session() to lease a dedicated connection for blocking commands and WATCH transactions."
 ---
 

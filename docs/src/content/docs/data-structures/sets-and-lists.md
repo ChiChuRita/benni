@@ -23,8 +23,8 @@ const members = await redis.set(teamMembers).smembers("engineering");
 Raw Redis equivalent:
 
 ```ts
-await redis.sAdd("team-members:engineering", ["ada", "grace"]);
-const members = await redis.sMembers("team-members:engineering");
+await nodeRedis.sAdd("team-members:engineering", ["ada", "grace"]);
+const members = await nodeRedis.sMembers("team-members:engineering");
 ```
 
 ## Lists
@@ -51,6 +51,6 @@ const recent = await redis.list(events).lrange("user:42", 0, 9);
 Raw Redis equivalent:
 
 ```ts
-await redis.rPush("events:user:42", JSON.stringify(event));
-const recent = await redis.lRange("events:user:42", 0, 9);
+await nodeRedis.rPush("events:user:42", JSON.stringify(event));
+const recent = await nodeRedis.lRange("events:user:42", 0, 9);
 ```

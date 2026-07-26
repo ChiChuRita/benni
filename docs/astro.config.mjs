@@ -135,8 +135,8 @@ export default defineConfig({
           items: [
             { label: "AI Apps", slug: "patterns/ai-apps" },
             { label: "Caching", slug: "patterns/caching" },
-            { label: "Rate Limiting", slug: "patterns/rate-limiting" },
-            { label: "Sessions", slug: "patterns/sessions" },
+            { label: "Rate Limiting From Scratch", slug: "patterns/rate-limiting" },
+            { label: "User Session Store", slug: "patterns/sessions" },
             { label: "Leaderboards", slug: "patterns/leaderboards" },
             { label: "Worked Examples", slug: "patterns/examples" },
           ],
@@ -151,7 +151,7 @@ export default defineConfig({
               slug: "advanced/optimistic-transactions",
             },
             { label: "Scripts", slug: "advanced/scripts" },
-            { label: "Sessions", slug: "advanced/sessions" },
+            { label: "Connection Sessions", slug: "advanced/sessions" },
             {
               label: "Blocking Operations",
               slug: "advanced/blocking-operations",
@@ -180,7 +180,7 @@ export default defineConfig({
         },
         {
           label: "LLM Docs",
-          link: "/llms-full.txt",
+          link: "/beni/llms-full.txt",
           attrs: {
             target: "_blank",
             rel: "noopener noreferrer",

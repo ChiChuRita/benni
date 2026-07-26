@@ -60,7 +60,7 @@ const updated = await redis.kv(profiles).set("42", profile, {
 ## Raw Redis Equivalent
 
 ```ts
-await redis.set("profile:42", JSON.stringify(profile), {
+await nodeRedis.set("profile:42", JSON.stringify(profile), {
   EX: 3600
 });
 ```

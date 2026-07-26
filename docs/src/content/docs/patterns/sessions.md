@@ -1,9 +1,16 @@
 ---
-title: "Sessions"
+title: "User Session Store"
 description: "Sessions are a natural fit for JSON key-value entries with TTL."
 ---
 
 Sessions are a natural fit for JSON key-value entries with TTL.
+
+:::note
+This page is about **user login sessions** — a record you store in Redis. It is
+unrelated to [`redis.session()`](/beni/advanced/sessions/), which leases a
+dedicated Redis *connection* for blocking commands and `WATCH`. Cookie-backed
+login sessions work on every adapter, including the edge.
+:::
 
 ```ts
 import { json, kv } from "beni/schema";
@@ -52,7 +59,7 @@ await redis.kv(sessions).del(sessionId);
 Raw Redis equivalent:
 
 ```ts
-await redis.set(`session:${sessionId}`, JSON.stringify(session), {
+await nodeRedis.set(`session:${sessionId}`, JSON.stringify(session), {
   EX: 60 * 60 * 24 * 7
 });
 ```

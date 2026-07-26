@@ -36,7 +36,7 @@ A consumer reads new deliveries with `xreadgroup` and acknowledges them with `xa
 ```ts
 const batch = await me.xreadgroup("login", { count: 20 }); // XREADGROUP > -> StreamEntry[]
 for (const entry of batch) {
-  await process(entry.value); // ^? Partial<{ type: string; userId: string }>
+  await handleEntry(entry.value); // ^? Partial<{ type: string; userId: string }>
 }
 if (batch.length > 0) {
   await group.xack("login", batch.map((e) => e.id)); // XACK -> number acknowledged
@@ -55,7 +55,7 @@ for (const entry of await me.xreadgroup("login", { after: "0", count: 100 })) {
     await group.xack("login", [entry.id]); // tombstone: deleted upstream, just clear it
     continue;
   }
-  await process(entry.value);
+  await handleEntry(entry.value);
   await group.xack("login", [entry.id]);
 }
 ```
@@ -78,7 +78,7 @@ do {
       await group.xack("login", [entry.id]); // tombstone
       continue;
     }
-    await process(entry.value);
+    await handleEntry(entry.value);
     await group.xack("login", [entry.id]);
   }
   cursor = res.cursor;
@@ -117,7 +117,7 @@ await redis.session(async (s) => {
   const live = s.stream(auditEvents).group("processors").consumer(`c-${process.pid}`);
   while (!stop.signal.aborted) {
     const batch = await live.xreadgroup("login", { timeoutSeconds: 5, count: 20 });
-    for (const entry of batch) await process(entry.value);
+    for (const entry of batch) await handleEntry(entry.value);
     if (batch.length > 0) {
       await group.xack("login", batch.map((e) => e.id)); // ack via the shared client
     }
@@ -140,7 +140,7 @@ await group.create("login", { from: "start" }); // idempotent bootstrap
 // (a) recover this consumer's own unacked work from a previous crash
 for (const entry of await me.xreadgroup("login", { after: "0", count: 100 })) {
   if (entry.value === null) { await group.xack("login", [entry.id]); continue; }
-  await process(entry.value);
+  await handleEntry(entry.value);
   await group.xack("login", [entry.id]);
 }
 
@@ -150,7 +150,7 @@ do {
   const res = await me.xautoclaim("login", { minIdleMs: 60_000, start: cursor, count: 50 });
   for (const entry of res.entries) {
     if (entry.value === null) { await group.xack("login", [entry.id]); continue; }
-    await process(entry.value);
+    await handleEntry(entry.value);
     await group.xack("login", [entry.id]);
   }
   cursor = res.cursor;
@@ -161,7 +161,7 @@ await redis.session(async (s) => {
   const live = s.stream(auditEvents).group("processors").consumer(`c-${process.pid}`);
   while (!stop.signal.aborted) {
     const batch = await live.xreadgroup("login", { timeoutSeconds: 5, count: 20 });
-    for (const entry of batch) await process(entry.value);
+    for (const entry of batch) await handleEntry(entry.value);
     if (batch.length > 0) await group.xack("login", batch.map((e) => e.id));
   }
 });

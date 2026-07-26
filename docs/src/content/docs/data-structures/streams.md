@@ -82,7 +82,7 @@ await redis.stream(activity).del("42");
 ## Raw Redis Equivalent
 
 ```ts
-await redis.xAdd("activity:42", "*", {
+await nodeRedis.xAdd("activity:42", "*", {
   action: "login",
   points: "5"
 });

@@ -10,10 +10,11 @@ This is Redis optimistic locking (`WATCH`/`MULTI`/`EXEC`) wrapped as a retry loo
 ## `redis.watch(keys, body, options?)`
 
 ```ts
-redis.watch(keys, async (s) => {
-  // read the watched keys through the session's typed stores
-  // return a built, un-executed transaction to commit — or null to opt out
-}, options?);
+await redis.watch("views:home", async (s) => {
+  // read the watched keys through the session's typed stores, then return a
+  // built, un-executed transaction to commit — or null to opt out
+  return s.multi();
+});
 ```
 
 Per attempt the helper opens (or borrows) a session, sends `WATCH keys`, runs your `body`, and calls `exec()` on the transaction the body returns. Because the body hands back the built-but-not-executed transaction, you can neither forget to `exec()` nor double-`exec()`.
@@ -23,7 +24,7 @@ Per attempt the helper opens (or borrows) a session, sends `WATCH keys`, runs yo
 - The body returns `null` → the helper `UNWATCH`es and resolves `null` — you opted out.
 - Attempts run out → the helper throws `WatchRetriesExceededError`.
 
-Read the watched keys through the session (`s.counter(...)`, `s.kv(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/beni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
+Read the watched keys through the session (`s.kv(...)`, `s.hash(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/beni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
 
 ## Check-And-Set Example
 
@@ -38,7 +39,7 @@ const views = kv("views", number());
 const result = await redis.watch(
   views.key("home"),
   async (s) => {
-    const current = (await s.counter(views).get("home")) ?? 0; // read on the watching connection
+    const current = (await s.kv(views).get("home")) ?? 0; // read on the watching connection
     if (current >= 1_000_000) return null;                      // opt out -> resolves null
     return s
       .multi()
@@ -58,7 +59,7 @@ const result = await redis.watch(
 Move funds between two accounts atomically, aborting the whole operation if either balance shifts mid-flight, and opting out cleanly when the source lacks funds:
 
 ```ts
-import { numberReply } from "beni";
+import { okReply } from "beni";
 import { number, kv } from "beni/schema";
 
 const balances = kv("balance", number());
@@ -67,13 +68,13 @@ async function transfer(from: string, to: string, amount: number) {
   return redis.watch(
     [balances.key(from), balances.key(to)], // watch both accounts
     async (s) => {
-      const fromBalance = (await s.counter(balances).get(from)) ?? 0;
+      const fromBalance = (await s.kv(balances).get(from)) ?? 0;
       if (fromBalance < amount) return null; // insufficient funds -> resolves null, no retry
-      const toBalance = (await s.counter(balances).get(to)) ?? 0;
+      const toBalance = (await s.kv(balances).get(to)) ?? 0;
       return s
         .multi()
-        .add(["SET", balances.key(from), String(fromBalance - amount)], numberReply)
-        .add(["SET", balances.key(to), String(toBalance + amount)], numberReply);
+        .add(["SET", balances.key(from), String(fromBalance - amount)], okReply)
+        .add(["SET", balances.key(to), String(toBalance + amount)], okReply);
     },
     { attempts: 10 }
   );
@@ -128,7 +129,7 @@ For a custom loop, drive the primitives on a session directly:
 ```ts
 await using s = await redis.session();
 await s.watch([views.key("home")]);
-const current = (await s.counter(views).get("home")) ?? 0;
+const current = (await s.kv(views).get("home")) ?? 0;
 const outcome = await s
   .multi()
   .add(["SET", views.key("home"), String(current + 1)], okReply)

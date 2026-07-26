@@ -1,18 +1,18 @@
 ---
 title: "Why Beni?"
-description: "Redis is often used like this:"
+description: "Why add a typed schema layer when node-redis and ioredis are already typed? Because they type the commands, not your data."
 ---
 
-Redis is often used like this:
+Redis is often used like this — here with raw `node-redis`:
 
 ```ts
-await redis.hSet(`user:${id}`, {
+await nodeRedis.hSet(`user:${id}`, {
   name: user.name,
   score: String(user.score)
 });
 
-const raw = await redis.hGetAll(`user:${id}`);
-const user = {
+const raw = await nodeRedis.hGetAll(`user:${id}`);
+const loadedUser = {
   name: raw.name,
   score: Number(raw.score)
 };

@@ -28,3 +28,6 @@ Notable user-facing changes to Beni are documented here. This project uses
   works with `json(schema)`.
 - Server compatibility: Redis 7.2 through 8, Valkey 8, and Dragonfly, with the
   per-version surface documented in the README.
+- The Hono cache middleware reports hits on the `X-Beni-Cache` response header.
+  If you tracked this during pre-release development it was previously
+  `X-Redtype-Cache`.

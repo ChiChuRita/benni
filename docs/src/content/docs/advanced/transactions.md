@@ -12,7 +12,7 @@ import { numberReply, okReply, stringOrNullReply } from "beni";
 
 const [, hits, draft] = await redis
   .multi()
-  .add(["SET", "user:42", "beni"], okReply)
+  .add(["SET", "user:42", "Ada"], okReply)
   .add(["INCR", "user:42:hits"], numberReply)
   .add(["GETDEL", "user:42:draft"], stringOrNullReply)
   .exec();

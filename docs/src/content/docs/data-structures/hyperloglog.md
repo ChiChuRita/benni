@@ -49,8 +49,8 @@ await redis.hll(pageViews).pfmerge("2026-week-27", [
 Raw Redis equivalent:
 
 ```ts
-await redis.pfAdd("page-views:2026-07-04", ["user:42", "user:7"]);
-const uniqueVisitors = await redis.pfCount("page-views:2026-07-04");
+await nodeRedis.pfAdd("page-views:2026-07-04", ["user:42", "user:7"]);
+const uniqueVisitors = await nodeRedis.pfCount("page-views:2026-07-04");
 ```
 
 Use HyperLogLog for approximate unique counts such as daily visitors, active users, unique IPs, and event reach. Use sets when you need exact membership checks or exact members back.

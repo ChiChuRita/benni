@@ -28,6 +28,15 @@ BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test
 BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test:bun
 ```
 
+The HTTP/edge suite is gated separately. Without these two variables the
+Upstash integration tests silently skip, so set them when touching that
+adapter — point them at [`serverless-redis-http`](https://github.com/hiett/serverless-redis-http)
+in front of a local Redis (this is what CI does):
+
+```sh
+BENI_UPSTASH_URL=http://127.0.0.1:8079 BENI_UPSTASH_TOKEN=example_token pnpm test
+```
+
 ## Pull requests
 
 - Keep the public API Redis-shaped. Prefer the Redis command name when a

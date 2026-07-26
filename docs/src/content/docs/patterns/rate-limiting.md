@@ -1,5 +1,5 @@
 ---
-title: "Rate Limiting"
+title: "Rate Limiting From Scratch"
 description: "Cap requests per window with an atomic INCR + EXPIRE Lua script."
 ---
 

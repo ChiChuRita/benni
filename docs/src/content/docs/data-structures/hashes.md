@@ -129,7 +129,7 @@ await redis.hash(users).hset(
 ## Raw Redis Equivalent
 
 ```ts
-await redis.hSet("user:42", {
+await nodeRedis.hSet("user:42", {
   name: "Ada",
   score: "10"
 });

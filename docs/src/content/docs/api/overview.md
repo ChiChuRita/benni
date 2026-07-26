@@ -1,6 +1,6 @@
 ---
 title: "API Overview"
-description: "Most applications use three imports:"
+description: "The three imports most applications need, plus where the lower-level core builders live."
 ---
 
 Most applications use three imports:
@@ -55,4 +55,4 @@ await redis.raw.send(["PING"]);
 
 The `beni/core` entrypoint exposes the building blocks the client is made of — `defineKeyspace`, `createKeyValueStore`, `createHashStore`, and the other store builders — for adapter authors and advanced integrations.
 
-Application code should prefer the schema-first API shown in the guide.
+Application code should prefer the schema-first API shown in the guide — every accessor is documented in the [Beni Client reference](/beni/api/beni-client/).

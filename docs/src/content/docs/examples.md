@@ -1,5 +1,5 @@
 ---
-title: "Beni Examples"
+title: "Examples"
 description: "Copy-pasteable examples for the schema-first Beni API, one data structure at a time."
 ---
 
@@ -400,7 +400,8 @@ const value = await redis.raw.send(["GET", "raw:key"]);
 
 ## Test With A Fake Client
 
-The `RedisClient` contract is three methods, so unit tests can drive the whole
+The `RedisClient` contract is three required methods — `send`, `pipeline`, and
+`close` (`transaction` and `session` are optional) — so unit tests can drive the whole
 typed API with a scripted fake:
 
 ```ts

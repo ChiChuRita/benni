@@ -45,8 +45,8 @@ const ranked = await redis
 Raw Redis equivalent:
 
 ```ts
-await redis.zIncrBy("leaderboard:weekly", 25, "user:42");
-const top = await redis.zRange("leaderboard:weekly", 0, 9, {
+await nodeRedis.zIncrBy("leaderboard:weekly", 25, "user:42");
+const top = await nodeRedis.zRange("leaderboard:weekly", 0, 9, {
   REV: true
 });
 ```

@@ -1,6 +1,6 @@
 ---
 title: "Zod"
-description: "Bidirectional Zod codecs as beni field codecs: writes validated with z.encode, reads validated with z.decode, and rich types (Date, bigint, URL) that genuinely round-trip."
+description: "Bidirectional Zod codecs as Beni field codecs: writes validated with z.encode, reads validated with z.decode, and rich types (Date, bigint, URL) that genuinely round-trip."
 ---
 
 Beni's core already accepts any [Standard Schema](https://standardschema.dev)
@@ -40,7 +40,7 @@ so schemas from both `zod` and `zod/mini` work.
 ## `zodCodec(schema)` — string-stored fields
 
 Takes any Zod schema or codec whose *encoded* (input) side is a string and
-returns a beni `Codec`. Use it anywhere a codec is accepted: kv values,
+returns a Beni `Codec`. Use it anywhere a codec is accepted: kv values,
 hash fields, list items, set and sorted-set members, stream fields, pub/sub
 messages.
 
@@ -90,7 +90,7 @@ const urlString = z.codec(z.url(), z.instanceof(URL), {
 
 ## Errors
 
-The adapter maps into beni's unified error classes:
+The adapter maps into Beni's unified error classes:
 
 - Encode failures throw
   [`ValidationError`](/beni/api/schema-builders/) — a caller mistake;

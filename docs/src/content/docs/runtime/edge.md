@@ -29,7 +29,8 @@ HTTP is stateless — one request, one response, no persistent exclusive connect
 | All typed data-structure stores (`hash`, `kv`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`) | [Sessions](/beni/advanced/sessions/) — `redis.session()` |
 | `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` (the cursor rides in the command) | Blocking commands (`BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`/`MAX`, `XREAD BLOCK`) |
 | Lua scripts, `BITFIELD`, geo, HyperLogLog | `WATCH`-based optimistic transactions — `redis.watch()` |
-| `redis.multi()` (atomic `/multi-exec`) | Pub/Sub — there is no `createUpstashRedisPubSub` |
+| `redis.multi()` (atomic `/multi-exec`) | Pub/Sub **subscribing** — there is no subscriber connection to hold |
+| Pub/Sub **publishing** (`PUBLISH` is one stateless command) | |
 
 `redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. When you need those, use a TCP adapter ([Node](/beni/runtime/node/) or [Bun](/beni/runtime/bun-and-deno/)) on a long-lived server.
 

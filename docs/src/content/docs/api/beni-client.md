@@ -1,6 +1,6 @@
 ---
 title: "Beni Client"
-description: "Create a Beni client by passing a Redis adapter to beni."
+description: "Create a Beni client by passing a Redis adapter to beni(), then reach every schema through typed data-structure accessors."
 ---
 
 Create a Beni client by passing a Redis adapter to `beni`.
@@ -52,7 +52,7 @@ Typed Redis string values:
 
 ```ts
 await redis.kv(profiles).set("42", profile, { ttlSeconds: 3600 });
-const profile = await redis.kv(profiles).get("42");
+const loaded = await redis.kv(profiles).get("42");
 await redis.kv(profiles).del("42");
 ```
 
@@ -262,7 +262,7 @@ Retrying optimistic transaction (`WATCH`/`MULTI`/`EXEC`), discoverable next to `
 const result = await redis.watch(
   views.key("home"),
   async (s) => {
-    const current = (await s.counter(views).get("home")) ?? 0;
+    const current = (await s.kv(views).get("home")) ?? 0;
     return s.multi().add(["SET", views.key("home"), String(current + 1)], okReply);
   },
   { attempts: 5, onAbort: ({ attempt }) => metrics.increment("cas.conflict", { attempt }) }

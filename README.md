@@ -126,15 +126,16 @@ Blocking commands, sessions, and `WATCH` transactions need a persistent connecti
 (Node/Bun/Deno); the HTTP/edge adapter (`beni/upstash`) covers the stateless command
 surface — the whole typed API minus those connection-bound features.
 
-**Server compatibility** (the integration suite runs against every row):
+**Server compatibility** (CI runs the integration suite against Redis 8 and an
+Upstash-REST-compatible endpoint; the other rows are verified manually):
 
 | Server | Result |
 |---|---|
 | Redis 8 | Full surface. |
 | Redis 7.4 | All but `hsetex`/`hgetex`/`hgetdel` (Redis 8 commands). |
 | Redis 7.2 | Additionally no hash field TTLs (`hexpire`/`httl`/…, introduced in 7.4). |
-| Valkey 8 | Same profile as Redis 7.2 (Valkey forked pre-7.4) — 65/67 integration tests. |
-| Dragonfly | Common surface works (kv/hash/set/list/zset/stream/bitmap/pub-sub/tx/scripts); no `LCS`, `GEOSEARCHSTORE`, or hash field TTLs, plus minor semantic edges. |
+| Valkey 8 | Same profile as Redis 7.2 (Valkey forked pre-7.4). |
+| Dragonfly | Common surface works (kv/hash/set/list/zset/stream/geo/hll/bitmap/pub-sub/tx/scripts); no `LCS`, `GEOSEARCHSTORE`, or hash field TTLs. |
 
 Everything else — streams, sorted sets, `lmpop`, `sintercard`, geo, bitfields —
 works from Redis 7.2 up.
@@ -166,8 +167,8 @@ scans, Pub/Sub, transactions, scripts, TTL options, and the runtime adapters.
 
 See [docs/src/content/docs/getting-started/quick-start.md](docs/src/content/docs/getting-started/quick-start.md)
 for the main guide and
-[docs/src/content/docs/examples.md](docs/src/content/docs/examples.md) for
-lower-level examples.
+[docs/src/content/docs/examples.md](docs/src/content/docs/examples.md) for a
+copy-pasteable example of every data structure.
 
 Run the Node example against Redis:
 

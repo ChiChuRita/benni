@@ -78,6 +78,8 @@ Bodies are stored as text (`{ status, headers, body }` JSON), so this is for tex
 
 ## Sessions
 
+These are **cookie-backed user sessions**, not [`redis.session()`](/beni/advanced/sessions/) connection leases — so they work on Workers and other edge runtimes with `beni/upstash`.
+
 Redis-backed sessions behind a `sid` cookie. The record is a JSON object under `<prefix>:<id>`, loaded before your handler and persisted after it — but only when the handler actually wrote something (`SET ... EX ttlSeconds`, so the TTL rolls on every write). New sessions get a `crypto.randomUUID()` id and a `Set-Cookie` header; `clear()` deletes the stored record.
 
 ```ts
@@ -111,7 +113,7 @@ app.post("/logout", (c) => {
 | `cookieName` | `"sid"` | Session cookie name. |
 | `cookie` | `path: "/"`, `httpOnly: true`, `sameSite: "Lax"`, `secure: false` | Cookie attributes — enable `secure` in production. |
 
-Session values are `unknown` per key — `get<T>` is a convenience assertion, not a validation. The session is a convenience bag; codec-level typing belongs to your [beni schemas](/beni/core-concepts/defining-schemas/).
+Session values are `unknown` per key — `get<T>` is a convenience assertion, not a validation. The session is a convenience bag; codec-level typing belongs to your [Beni schemas](/beni/core-concepts/defining-schemas/).
 
 ## Putting it together
 
