@@ -1,0 +1,143 @@
+{
+  "name": "beni",
+  "version": "0.0.0",
+  "description": "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge.",
+  "author": "ChiChuRita",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChiChuRita/beni.git"
+  },
+  "homepage": "https://chichurita.github.io/beni/",
+  "bugs": {
+    "url": "https://github.com/ChiChuRita/beni/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.mts",
+      "import": "./dist/core/index.mjs"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.mts",
+      "import": "./dist/schema.mjs"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.mts",
+      "import": "./dist/node/index.mjs"
+    },
+    "./bun": {
+      "types": "./dist/bun/index.d.mts",
+      "import": "./dist/bun/index.mjs"
+    },
+    "./upstash": {
+      "types": "./dist/upstash/index.d.mts",
+      "import": "./dist/upstash/index.mjs"
+    },
+    "./next": {
+      "types": "./dist/next/index.d.mts",
+      "import": "./dist/next/index.mjs"
+    },
+    "./hono": {
+      "types": "./dist/hono/index.d.mts",
+      "import": "./dist/hono/index.mjs"
+    },
+    "./primitives": {
+      "types": "./dist/primitives/index.d.mts",
+      "import": "./dist/primitives/index.mjs"
+    },
+    "./zod": {
+      "types": "./dist/zod/index.d.mts",
+      "import": "./dist/zod/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsdown",
+    "docs:dev": "pnpm --filter docs dev",
+    "docs:build": "pnpm --filter docs build",
+    "docs:preview": "pnpm --filter docs preview",
+    "redis:build": "docker build -t beni-redis .",
+    "redis:run": "docker run --rm --name beni-redis -p 6379:6379 beni-redis",
+    "prebench": "pnpm run build",
+    "bench": "node bench/redis.mjs",
+    "bench:self-test": "node bench/redis.mjs --self-test",
+    "example:node": "pnpm run build && node examples/node-basic.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:bun": "bun test ./test/bun.integration.bun.ts",
+    "lint": "biome check",
+    "format": "biome check --write",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm build && pnpm publish --access public",
+    "attw": "attw --pack . --profile esm-only",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test:coverage && pnpm run build && publint && pnpm run attw"
+  },
+  "keywords": [
+    "redis",
+    "typescript",
+    "typed",
+    "bun",
+    "deno",
+    "node",
+    "edge",
+    "serverless",
+    "upstash"
+  ],
+  "packageManager": "pnpm@11.9.0",
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@biomejs/biome": "^2.5.2",
+    "@changesets/cli": "^2.31.0",
+    "@types/node": "^26.1.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "fast-check": "^4.9.0",
+    "hono": "^4.6.0",
+    "publint": "^0.3.21",
+    "redis": "^6.1.0",
+    "tsdown": "^0.22.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "hono": ">=4.0.0",
+    "redis": "^6.1.0",
+    "zod": "^4.1.0"
+  },
+  "peerDependenciesMeta": {
+    "redis": {
+      "optional": true
+    },
+    "hono": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "test"
+  }
+}

@@ -1,0 +1,40 @@
+name: Bug report
+description: Something decoded wrong, threw unexpectedly, or behaved differently than documented.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did Beni do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Schema + call that reproduces it. A failing snippet beats a description.
+      render: TypeScript
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime and adapter
+      placeholder: "Node 22 + beni/node, Bun 1.3 + beni/bun, Workers + beni/upstash, …"
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Redis server and version
+      placeholder: "Redis 8.0, Valkey 8, Dragonfly, Upstash, …"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Beni version
+      placeholder: "0.1.0"
+    validations:
+      required: true

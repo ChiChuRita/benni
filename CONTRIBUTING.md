@@ -1,0 +1,43 @@
+# Contributing to Beni
+
+Thank you for helping make Redis safer and more predictable for TypeScript
+applications.
+
+## Development setup
+
+Requirements:
+
+- Node.js 20 or newer
+- pnpm 11
+- Docker for Redis-backed integration tests
+- Bun for the Bun adapter contract
+
+Install dependencies and run the local gate:
+
+```sh
+pnpm install
+pnpm check
+pnpm docs:build
+```
+
+Run the integration suite against Redis:
+
+```sh
+pnpm redis:run
+BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test
+BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test:bun
+```
+
+## Pull requests
+
+- Keep the public API Redis-shaped. Prefer the Redis command name when a
+  method maps to one command.
+- Add unit tests for validation, encoding, decoding, and reply-shape failures.
+- Add a live Redis test when behavior depends on command or reply semantics.
+- Update the docs pages under `docs/src/content/docs/` when behavior changes.
+- Add a changeset for user-visible changes with `pnpm changeset`.
+- Keep transport-specific behavior in adapters and the typed data contract in
+  the runtime-agnostic core.
+
+Small, focused pull requests are easiest to review. For large API proposals,
+open an issue first with representative Redis commands and TypeScript usage.

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+docs/.astro/
+coverage/
+.DS_Store
+*.log
+
+# Local agent/maintainer working files — not part of the public repo
+internal/
+.scratch/
+CLAUDE.md
+AGENTS.md
+docs/agents/

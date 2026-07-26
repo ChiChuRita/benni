@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  # PR validation can be superseded safely. Main runs include the release job,
+  # so cancelling one mid-publish could leave a partial release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compatibility:
+    name: Node ${{ matrix.node }} compatibility
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit and package compatibility
+        run: pnpm typecheck && pnpm test && pnpm build
+
+  check:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Runs lint, typecheck, coverage-gated unit tests, build, publint, and
+      # attw. The unit suite skips the Redis-backed integration tests because
+      # BENI_REDIS_URL is unset here; those run in the integration job.
+      - name: Check
+        run: pnpm check
+
+      - name: Build public docs
+        run: pnpm docs:build
+
+  integration:
+    name: Integration (Node + Bun + HTTP) against Redis
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      serverless-redis-http:
+        image: hiett/serverless-redis-http:latest
+        ports:
+          - 8079:80
+        env:
+          SRH_MODE: env
+          SRH_TOKEN: example_token
+          SRH_CONNECTION_STRING: redis://redis:6379
+    env:
+      BENI_REDIS_URL: redis://127.0.0.1:6379
+      BENI_UPSTASH_URL: http://127.0.0.1:8079
+      BENI_UPSTASH_TOKEN: example_token
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # With BENI_REDIS_URL set, the full Vitest suite runs the Node
+      # integration tests against the Redis service as well as the unit tests.
+      - name: Node integration tests
+        run: pnpm test
+
+      - name: Runnable Node example
+        run: pnpm example:node
+
+      - name: Bun contract tests
+        run: pnpm test:bun
+
+  deno:
+    name: Deno compatibility against Redis
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      BENI_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies and build package
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Deno Node-adapter smoke test
+        run: |
+          deno check --node-modules-dir=manual test/deno.integration.mjs
+          deno run --node-modules-dir=manual --allow-env --allow-net test/deno.integration.mjs
+
+  release:
+    name: Version or publish after all gates pass
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [compatibility, check, integration, deno]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create release pull request or publish
+        uses: changesets/action@v1
+        with:
+          publish: pnpm release
+          title: "Release Beni"
+          commit: "Release Beni"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

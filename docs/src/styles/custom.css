@@ -1,0 +1,66 @@
+/* Custom overrides — theme fonts (Geist) are loaded by starlight-theme-next */
+
+/* Beni orange accent */
+:root {
+  --sl-color-accent-low: #2a1400;
+  --sl-color-accent: #f97316;
+  --sl-color-accent-high: #fdba74;
+  --sl-color-bg-sidebar: var(--sl-color-black);
+}
+
+/* Force dark mode */
+html {
+  color-scheme: dark;
+}
+
+/* Sidebar vertical lines */
+.sidebar-content details > ul {
+  border-inline-start: 1px solid var(--sl-color-gray-5);
+  margin-inline-start: 1.25rem;
+  margin-block: 0.5rem;
+  padding-inline-start: 0.05rem;
+  padding-top: 0.125rem;
+}
+
+.sidebar-content details > ul > li > a {
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+}
+
+/* Thin scrollbars everywhere — hidden until hover */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: var(--sl-color-gray-5) transparent;
+}
+
+/* Code blocks — darker background */
+:root {
+  --ec-codeBg: #161616;
+  --ec-frm-edBg: #161616;
+  --ec-frm-edActTabBg: #161616;
+  --ec-frm-edTabBarBg: #161616;
+  --ec-frm-trmBg: #161616;
+  --ec-frm-trmTtbBg: #161616;
+}
+
+/* Asides/callouts — darker, subtler */
+.starlight-aside {
+  background-color: #161616;
+  border-color: var(--sl-color-asides-border);
+}
+
+/* Don't bold active sidebar items */
+[aria-current="page"],
+[aria-current="page"] a {
+  font-weight: normal !important;
+}
+
+/* Inline code — match code block tone */
+.sl-markdown-content :not(pre) > code {
+  background-color: #161616;
+  border: 1px solid var(--sl-color-gray-5);
+}

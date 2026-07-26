@@ -1,0 +1,22 @@
+name: Feature request
+description: A missing Redis command, option, or integration you need.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The application problem, not just the API you want.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Representative Redis commands and the TypeScript usage you'd expect. Beni methods stay named after the Redis commands they run.
+      render: TypeScript
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How you solve this today (raw commands via `redis.raw.send`, another library, …).

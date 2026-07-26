@@ -1,0 +1,285 @@
+---
+title: "Beni Client"
+description: "Create a Beni client by passing a Redis adapter to beni."
+---
+
+Create a Beni client by passing a Redis adapter to `beni`.
+
+```ts
+import { beni } from "beni";
+
+const redis = beni(client, { schema });
+```
+
+Every data-structure accessor exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
+
+To type a function parameter that accepts the bound handle, use the exported `Beni<TSchema>` type — the way you would Drizzle's `NodePgDatabase`:
+
+```ts
+import type { Beni } from "beni";
+import * as schema from "./schema";
+
+export function makeHandlers(redis: Beni<typeof schema>) {
+  // redis.query.users, redis.hash(...), ... — fully typed
+}
+```
+
+## `redis.query`
+
+The schema registry. When a `{ schema }` module is bound, `redis.query.<exportName>` resolves each schema to its typed resource, dispatched by the schema's `kind`:
+
+```ts
+await redis.query.users.hset("42", { name: "Ada", score: 10 });
+
+const user = await redis.query.users.hget("42");
+//    ^? { name: string; score: number } | null
+
+await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);
+```
+
+`redis.query.<name>` returns the same resource as the matching `redis.<kind>(schema)` accessor. It covers all twelve kinds — the data stores (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`), pub/sub channels and patterns, and scripts:
+
+```ts
+await redis.query.userEvents.publish({ id: "42", action: "created" });
+await redis.query.rateLimit.run({ keys: { counter: "user:42" }, args: { limit: 100 } });
+```
+
+Counter and string stores are not separate kinds — a `kv` schema maps to the `kv` resource; use `redis.counter(schema)` or `redis.string(schema)` for those operations. Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/beni/core-concepts/schema-registry/).
+
+## `redis.kv(schema)`
+
+Typed Redis string values:
+
+```ts
+await redis.kv(profiles).set("42", profile, { ttlSeconds: 3600 });
+const profile = await redis.kv(profiles).get("42");
+await redis.kv(profiles).del("42");
+```
+
+`set` returns `Promise<void>` for plain writes. With `{ nx: true }` (only create) or `{ xx: true }` (only update) it returns `Promise<boolean>` indicating whether the write happened:
+
+```ts
+const created = await redis.kv(profiles).set("42", profile, { nx: true });
+const updated = await redis.kv(profiles).set("42", profile, { xx: true });
+```
+
+## `redis.string(schema)`
+
+String operations for `kv` schemas with a `string()` codec:
+
+```ts
+const drafts = kv("draft", string());
+
+await redis.string(drafts).append("42", " more text");
+const slice = await redis.string(drafts).getrange("42", 0, 4);
+const length = await redis.string(drafts).strlen("42");
+const value = await redis.string(drafts).getex("42", 3600);
+
+// LCS — longest common subsequence of two keys in the same schema.
+const sub = await redis.string(drafts).lcs("42", "43"); // the subsequence string
+const len = await redis.string(drafts).lcs("42", "43", { len: true }); // its length
+const idx = await redis.string(drafts).lcs("42", "43", {
+  idx: true,
+  withMatchLen: true
+});
+//    ^? { matches: { a: [number, number]; b: [number, number]; length?: number }[]; length: number }
+```
+
+## `redis.counter(schema)`
+
+Atomic counters for `kv` schemas with a `number()` codec:
+
+```ts
+const hits = kv("hits", number());
+
+const total = await redis.counter(hits).incr("42");
+await redis.counter(hits).incrby("42", 10);
+await redis.counter(hits).decrby("42", 3);
+```
+
+## `redis.hash(schema)`
+
+Typed Redis hashes:
+
+```ts
+await redis.hash(users).hset("42", { name: "Ada", score: 10 });
+await redis.hash(users).hset("42", "score", 11);
+const user = await redis.hash(users).hget("42");
+const field = await redis.hash(users).hrandfield("42");
+```
+
+## `redis.set(schema)`
+
+Typed Redis sets:
+
+```ts
+await redis.set(teamMembers).sadd("engineering", ["ada"]);
+const members = await redis.set(teamMembers).smembers("engineering");
+```
+
+## `redis.list(schema)`
+
+Typed Redis lists:
+
+```ts
+await redis.list(events).rpush("user:42", [event]);
+const recent = await redis.list(events).lrange("user:42", 0, 9);
+```
+
+## `redis.zset(schema)`
+
+Typed Redis sorted sets:
+
+```ts
+await redis.zset(leaderboards).zadd("weekly", [
+  { member: "user:42", score: 100 }
+]);
+
+const top = await redis.zset(leaderboards).zrange("weekly", {
+  start: 0,
+  stop: 9,
+  rev: true
+});
+```
+
+When members share a score, `zrange` with `{ byLex: true }` ranges over them lexically — as do `zlexcount`, `zremrangebylex`, and `zrangestore` with `{ byLex: true }`:
+
+```ts
+const names = await redis.zset(nameIndex).zrange("directory", {
+  byLex: true,
+  min: { value: "ada" },
+  max: "+"
+});
+```
+
+See [Lexicographic Ranges](/beni/data-structures/sorted-sets/#lexicographic-ranges).
+
+## `redis.hll(schema)`
+
+Typed Redis HyperLogLog values:
+
+```ts
+await redis.hll(pageViews).pfadd("2026-07-04", ["user:42"]);
+const count = await redis.hll(pageViews).pfcount("2026-07-04");
+```
+
+## `redis.stream(schema)`
+
+Typed Redis streams:
+
+```ts
+await redis.stream(activity).xadd("42", { action: "login", points: 5 });
+const entries = await redis.stream(activity).xrange("42", { count: 10 });
+```
+
+`.group(name)` opens a consumer group on the stream for at-least-once delivery across workers:
+
+```ts
+const group = redis.stream(activity).group("processors");
+await group.create("42", { from: "start" });
+const batch = await group.consumer("w-1").xreadgroup("42", { count: 10 });
+```
+
+See [Consumer Groups](/beni/data-structures/consumer-groups/).
+
+## `redis.bitmap(schema)`
+
+Typed Redis bitmaps:
+
+```ts
+await redis.bitmap(dailyActive).setbit("2026-07-04", 42, true);
+const total = await redis.bitmap(dailyActive).bitcount("2026-07-04");
+
+// Packed integer fields via BITFIELD; the result tuple is typed to the chain.
+const [views] = await redis.bitmap(dailyActive)
+  .bitfield("2026-07-04")
+  .incrby("u32", 0, 1)
+  .exec();
+```
+
+## `redis.geo(schema)`
+
+Typed Redis geospatial indexes:
+
+```ts
+await redis.geo(stores).geoadd("berlin", [
+  { member: "store:1", longitude: 13.405, latitude: 52.52 }
+]);
+
+const nearby = await redis.geo(stores).geosearch("berlin", {
+  from: { longitude: 13.4, latitude: 52.52 },
+  by: { radius: 5, unit: "km" }
+});
+```
+
+## `redis.scan`
+
+Async-iterable scans over keys and collection members:
+
+```ts
+for await (const key of redis.scan.keys({ match: "user:*" })) {
+  console.log(key);
+}
+
+for await (const key of redis.scan.kv(profiles)) { /* profile:* keys */ }
+for await (const member of redis.scan.set(teamMembers, "engineering")) { /* ... */ }
+for await (const entry of redis.scan.hash(users, "42")) { /* { field, value } */ }
+for await (const entry of redis.scan.zset(leaderboards, "global")) { /* { member, score } */ }
+```
+
+See [Scans](/beni/advanced/scans/) for options and iteration guarantees.
+
+## `redis.pubsub`
+
+Typed publish and subscribe:
+
+```ts
+await redis.pubsub.channel(userEvents).publish({
+  id: "42",
+  action: "created"
+});
+```
+
+## `redis.session`
+
+Lease a dedicated connection for blocking commands and `WATCH` transactions. The scoped form closes the session when the callback settles; the bare form returns it and hands you the `close()` obligation (pair with `await using`):
+
+```ts
+const job = await redis.session(async (s) => {
+  return s.list(jobs).blpop("pending", { timeoutSeconds: 5 });
+});
+
+await using session = await redis.session();
+```
+
+A session carries the same store accessors as the Beni handle, bound to its private connection, where `list`, `zset`, and `stream` are supersets that add the blocking variants and the blocking consumer-group read. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. It throws `TypeError` if the client does not support sessions. See [Sessions](/beni/advanced/sessions/), [Blocking Operations](/beni/advanced/blocking-operations/), and [Consumer Groups](/beni/data-structures/consumer-groups/).
+
+## `redis.watch`
+
+Retrying optimistic transaction (`WATCH`/`MULTI`/`EXEC`), discoverable next to `redis.multi()`:
+
+```ts
+const result = await redis.watch(
+  views.key("home"),
+  async (s) => {
+    const current = (await s.counter(views).get("home")) ?? 0;
+    return s.multi().add(["SET", views.key("home"), String(current + 1)], okReply);
+  },
+  { attempts: 5, onAbort: ({ attempt }) => metrics.increment("cas.conflict", { attempt }) }
+);
+//    ^? [void] | null   (null = the body opted out)
+```
+
+Each attempt watches the keys, runs the body, and commits the transaction it returns; a conflict retries, a `null` body opts out, and exhausted attempts throw `WatchRetriesExceededError`. See [Optimistic Transactions](/beni/advanced/optimistic-transactions/).
+
+## `redis.raw`
+
+Direct Redis access:
+
+```ts
+await redis.raw.send(["PING"]);
+await redis.raw.pipeline([
+  ["SET", "a", "1"],
+  ["GET", "a"]
+]);
+```
