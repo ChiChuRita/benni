@@ -1,14 +1,11 @@
 import type {
-  PubSubChannel,
-  PubSubHandler,
-  PubSubSubscription,
   RedisClient,
   RedisCommand,
   RedisCommandArgument,
   RedisReply,
-  RedisSession
+  RedisSession,
+  RedisSubscriber
 } from "../core/index.js";
-import { createPubSubPublisher } from "../core/index.js";
 
 export type BunOptions = {
   readonly url?: string;
@@ -35,6 +32,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
   // force-closes survivors so a leaked session cannot pin a connection past
   // the client's lifetime.
   const sessions = new Set<RedisSession>();
+  const subscribers = new Set<RedisSubscriber>();
 
   return {
     async send(command: RedisCommand) {
@@ -137,60 +135,57 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       sessions.add(session);
       return session;
     },
+    async subscriber(): Promise<RedisSubscriber> {
+      // Subscribing takes over a connection, so open a dedicated one.
+      const subscriberClient = await connectBunClient(options);
+      const listeners = new Map<string, (message: string) => void>();
+      let closed = false;
+      const subscriber: RedisSubscriber = {
+        async subscribe(channel, listener) {
+          const wrapped = (message: string) => listener(message);
+          listeners.set(channel, wrapped);
+          await subscriberClient.subscribe(channel, wrapped);
+        },
+        async unsubscribe(channel) {
+          const wrapped = listeners.get(channel);
+          listeners.delete(channel);
+          if (wrapped) await subscriberClient.unsubscribe(channel, wrapped);
+        },
+        // psubscribe/punsubscribe are intentionally absent: Bun 1.3.14's
+        // psubscribe hangs, so core reports pattern subscribe as unsupported
+        // rather than deadlocking on it.
+        get closed() {
+          return closed;
+        },
+        async close() {
+          closed = true;
+          subscribers.delete(subscriber);
+          listeners.clear();
+          subscriberClient.close();
+        }
+      };
+      subscribers.add(subscriber);
+      return subscriber;
+    },
     async close() {
       for (const session of [...sessions]) {
         await session.close();
+      }
+      for (const subscriber of [...subscribers]) {
+        await subscriber.close();
       }
       client.close();
     }
   };
 }
 
-async function bunPubSub(options?: BunOptions) {
-  const publisherClient = await bunClient(options);
-  // Subscribing takes over a connection, so use a dedicated subscriber client.
-  let subscriberClient: Bun.RedisClient;
-  try {
-    subscriberClient = await connectBunClient(options);
-  } catch (error) {
-    // Don't leak the already-connected publisher when the subscriber fails.
-    await publisherClient.close();
-    throw error;
-  }
-  const publisher = createPubSubPublisher(publisherClient);
-
-  return {
-    publish: publisher.publish,
-    async subscribe<TInput, TOutput>(
-      channel: PubSubChannel<TInput, TOutput>,
-      handler: PubSubHandler<TOutput>
-    ): Promise<PubSubSubscription> {
-      const listener = (message: string) => {
-        void handler(channel.decode(message));
-      };
-      await subscriberClient.subscribe(channel.name, listener);
-      return {
-        async unsubscribe() {
-          await subscriberClient.unsubscribe(channel.name, listener);
-        }
-      };
-    },
-    // subscribePattern is intentionally not implemented: Bun 1.3.14's
-    // psubscribe hangs, so the method is omitted entirely to make its
-    // absence a compile-time fact instead of a runtime failure.
-    async close() {
-      subscriberClient.close();
-      await publisherClient.close();
-    }
-  };
-}
-
 /**
- * The Bun adapter, backed by Bun's built-in Redis client. Call `bun(options)`
- * for a `RedisClient`, or `bun.pubsub(options)` for the Pub/Sub adapter
- * (channel subscriptions only — Bun 1.3.14's `psubscribe` is broken upstream).
+ * The Bun adapter, backed by Bun's built-in Redis client. `bun(options)`
+ * returns a `RedisClient` that leases sessions and a subscriber connection.
+ * Channel subscriptions only — Bun 1.3.14's `psubscribe` is broken upstream, so
+ * the subscriber omits pattern support and core surfaces a clear error.
  */
-export const bun = Object.assign(bunClient, { pubsub: bunPubSub });
+export const bun = bunClient;
 
 async function sendCommand(
   client: Bun.RedisClient,

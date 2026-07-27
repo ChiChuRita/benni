@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
+import { defineHash } from "../src/core/hash.js";
+import { defineKeyspace } from "../src/core/key-value.js";
 import {
   scanHash,
   scanKeys,
@@ -7,12 +9,8 @@ import {
   scanSet,
   scanSortedSet
 } from "../src/core/scan.js";
-import {
-  defineHash,
-  defineKeyspace,
-  defineSet,
-  defineSortedSet
-} from "../src/core/schemas.js";
+import { defineSet } from "../src/core/set.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
 import { fakeClient } from "./fake-client.js";
 
@@ -160,6 +158,39 @@ describe("scanKeyspace", () => {
     await expect(collect(scanKeyspace(client, hostile))).resolves.toEqual([]);
 
     expect(commands).toEqual([["SCAN", "0", "MATCH", "user\\[1\\]\\*\\\\:*"]]);
+  });
+
+  it("matches each hash-tag layout's own key shape", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [
+      ["0", []],
+      ["0", []]
+    ]);
+    const pinned = defineKeyspace("user", codecs.string(), {
+      hashTag: "prefix"
+    });
+    const perId = defineKeyspace("user", codecs.string(), { hashTag: "id" });
+
+    await collect(scanKeyspace(client, pinned));
+    await collect(scanKeyspace(client, perId));
+
+    // Braces are not glob metacharacters in Redis MATCH, so they stay literal.
+    expect(commands).toEqual([
+      ["SCAN", "0", "MATCH", "{user}:*"],
+      ["SCAN", "0", "MATCH", "user:{*}"]
+    ]);
+  });
+
+  it("escapes brackets but not braces under a hash tag", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [["0", []]]);
+    const hostile = defineKeyspace("user[1]", codecs.string(), {
+      hashTag: "prefix"
+    });
+
+    await collect(scanKeyspace(client, hostile));
+
+    expect(commands).toEqual([["SCAN", "0", "MATCH", "{user\\[1\\]}:*"]]);
   });
 
   it("lets callers override MATCH and forwards COUNT and TYPE", async () => {

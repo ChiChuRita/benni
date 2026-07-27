@@ -4,7 +4,7 @@ This example shows how an app uses Beni from Node:
 
 - declare Redis schemas as plain TypeScript values
 - bind a client once with `beni(client, { schema })`
-- store JSON objects, counters, hashes, sets, lists, and sorted sets — with
+- store JSON objects, counters, hashes, sets, lists, and sorted sets, with
   every read decoded back to your declared type
 - clean up keys after the demo
 
@@ -46,7 +46,7 @@ Expected output shape:
 ## Declare Schemas Once
 
 Schemas are plain values: a key prefix bound to a Redis data structure and a
-codec. They don't create keys or run migrations — they just carry your types.
+codec. They don't create keys or run migrations; they just carry your types.
 
 ```js
 import { beni } from "beni";
@@ -67,7 +67,7 @@ const schema = {
 ```
 
 In TypeScript, `json<UserProfile>()` pins the value type so every later read
-comes back as `UserProfile | null` — no casts.
+comes back as `UserProfile | null`, with no casts.
 
 ## Bind A Client
 

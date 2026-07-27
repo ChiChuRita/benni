@@ -23,6 +23,7 @@ import {
   type RedisKey,
   type StreamEntry
 } from "../src/core/index.js";
+import type { SameSlotScriptKeys } from "../src/core/keys.js";
 import { beni } from "../src/index.js";
 import {
   hash as schemaHash,
@@ -116,15 +117,33 @@ type SchemaScriptRunInput = Parameters<typeof schemaIncrementRunner.run>[0];
 type SchemaScriptRunValue = Awaited<
   ReturnType<typeof schemaIncrementRunner.run>
 >;
+// `keys` is wrapped in SameSlotScriptKeys so cross-slot script keys are a
+// compile error; for a single key, and for any set whose tags agree, it
+// resolves to the caller's own record.
 type _SchemaScriptRunInput = Expect<
   Equal<
     SchemaScriptRunInput,
     {
-      readonly keys: { readonly counter: string };
+      readonly keys: SameSlotScriptKeys<
+        readonly ["counter"],
+        { readonly counter: string }
+      >;
       readonly args: { amount: number };
     }
   >
 >;
+// A record whose tags agree is still assignable, so the wrapper is invisible
+// to callers who get it right. (It is an intersection, so it is not `Equal` to
+// the bare record; assignability is the property that matters.)
+type _ScriptKeysAcceptMatchingTags =
+  SameSlotScriptKeys<
+    readonly ["from", "to"],
+    { readonly from: "cart:{u1}"; readonly to: "orders:{u1}" }
+  > extends { readonly from: string; readonly to: string }
+    ? true
+    : never;
+const _scriptKeysAcceptMatchingTags: _ScriptKeysAcceptMatchingTags = true;
+void _scriptKeysAcceptMatchingTags;
 type _SchemaScriptRunValue = Expect<Equal<SchemaScriptRunValue, number>>;
 
 const profiles = defineKeyspace(

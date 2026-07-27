@@ -1,3 +1,7 @@
+import type { HashTagLayout } from "./keys.js";
+
+export type { HashTagLayout };
+
 export type RedisCommandArgument = string | number | bigint | Uint8Array;
 
 export type RedisCommand = readonly [
@@ -76,15 +80,60 @@ export interface RedisClient {
    * (same style as the existing transaction guard).
    */
   session?(): Promise<RedisSession>;
+  /**
+   * Optional, like session?(). Lease a connection put into subscriber mode.
+   * Core leases at most one per client, lazily on first subscribe, and closes
+   * it when the last subscription goes away — so adapters do no bookkeeping.
+   * Adapters that cannot hold a connection (HTTP) leave this undefined;
+   * subscribing then throws TypeError at call time, like the session guard.
+   */
+  subscriber?(): Promise<RedisSubscriber>;
+  close(): Promise<void>;
+}
+
+/**
+ * A connection in subscriber mode. Core registers exactly ONE listener per
+ * channel/pattern and fans out to its own handlers, so implementations never
+ * need to track multiple listeners for the same name.
+ *
+ * psubscribe/punsubscribe are optional: an adapter whose pattern support is
+ * missing or broken omits them, and pattern subscribes throw a clear TypeError
+ * instead of hanging.
+ */
+export interface RedisSubscriber {
+  subscribe(
+    channel: string,
+    listener: (message: string) => void
+  ): Promise<void>;
+  unsubscribe(channel: string): Promise<void>;
+  psubscribe?(
+    pattern: string,
+    listener: (message: string, channel: string) => void
+  ): Promise<void>;
+  punsubscribe?(pattern: string): Promise<void>;
+  /** True once the connection is gone — closed locally or dropped. */
+  readonly closed: boolean;
   close(): Promise<void>;
 }
 
 export type RedisKeyPart = string | number | bigint;
 
+/**
+ * The key a schema builds for an id, in the schema's own hash-tag layout.
+ *
+ * The bracketed `[T] extends [X]` comparisons are load-bearing: a naked
+ * conditional distributes, so a union-valued layout would silently produce a
+ * union of all three key shapes.
+ */
 export type RedisKey<
   TPrefix extends string,
-  TId extends RedisKeyPart = RedisKeyPart
-> = `${TPrefix}:${TId}`;
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = undefined
+> = [THashTag] extends ["prefix"]
+  ? `{${TPrefix}}:${TId}`
+  : [THashTag] extends ["id"]
+    ? `${TPrefix}:{${TId}}`
+    : `${TPrefix}:${TId}`;
 
 export type StoreSetOptions = {
   readonly ttlSeconds?: number;
@@ -99,11 +148,15 @@ export type Keyspace<
   TInput,
   TOutput = TInput,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = InferAnchors<TInput, TOutput> & {
   readonly kind: "kv";
   readonly prefix: TPrefix;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  readonly hashTag?: THashTag;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
   encode(value: TInput): string;
   decode(stored: string): TOutput;
 };
@@ -170,23 +223,31 @@ export type InferHashOutput<TFields extends FieldCodecs> = {
 export type HashSchema<
   TFields extends FieldCodecs,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = InferAnchors<InferHashInput<TFields>, InferHashOutput<TFields>> & {
   readonly kind: "hash";
   readonly prefix: TPrefix;
+  readonly hashTag?: THashTag;
   readonly fields: TFields;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
 };
 
 export type SetSchema<
   TInput,
   TOutput = TInput,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = InferAnchors<TInput, TOutput> & {
   readonly kind: "set";
   readonly prefix: TPrefix;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  readonly hashTag?: THashTag;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
   encode(member: TInput): string;
   decode(stored: string): TOutput;
 };
@@ -195,11 +256,15 @@ export type ListSchema<
   TInput,
   TOutput = TInput,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = InferAnchors<TInput, TOutput> & {
   readonly kind: "list";
   readonly prefix: TPrefix;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  readonly hashTag?: THashTag;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
   encode(value: TInput): string;
   decode(stored: string): TOutput;
 };
@@ -208,11 +273,15 @@ export type SortedSetSchema<
   TInput,
   TOutput = TInput,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = InferAnchors<TInput, TOutput> & {
   readonly kind: "zset";
   readonly prefix: TPrefix;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  readonly hashTag?: THashTag;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
   encode(member: TInput): string;
   decode(stored: string): TOutput;
 };

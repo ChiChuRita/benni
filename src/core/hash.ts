@@ -13,6 +13,13 @@ import {
   positiveSafeInteger,
   ttlSeconds
 } from "./helpers.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
 import type {
   Codec,
   FieldCodecs,
@@ -753,4 +760,40 @@ export function createHashStore<
       return expectNumber(reply, "DEL");
     }
   };
+}
+
+/** The hash resource: the store plus the schema's own typed `key()`. */
+export function createHashResource<
+  TFields extends FieldCodecs,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(ctx: StoreContext, schema: HashSchema<TFields, TPrefix, TId, THashTag>) {
+  return withKey(schema, createHashStore(ctx.client, schema));
+}
+
+const hashBinding: StoreBinding = { resource: createHashResource };
+
+export function defineHash<
+  TPrefix extends string,
+  TFields extends FieldCodecs,
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
+>(
+  prefix: TPrefix,
+  fields: TFields,
+  options?: KeyOptions<TIds, THashTag>
+): HashSchema<TFields, TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    kind: "hash",
+    prefix,
+    // Spread so the property is absent, not `undefined`, on the default
+    // layout: a schema still enumerates as the plain data it looks like.
+    ...(hashTag === undefined ? {} : { hashTag }),
+    fields,
+    key: keyBuilder(prefix, hashTag)
+  } as HashSchema<TFields, TPrefix, TIds[number], THashTag>;
+  return withStore(schema, hashBinding);
 }

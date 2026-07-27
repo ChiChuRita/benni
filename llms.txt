@@ -1,0 +1,180 @@
+# Beni — reference for coding agents
+
+Beni is an **end-to-end typed Redis client** for TypeScript. You declare your
+Redis data model once as plain TypeScript values, bind a client, and call methods
+named after the Redis commands they run. Your declared types travel from write to
+read, so replies come back as *your* types instead of `string | null`.
+
+Beni is a typed **client**, not an ORM. Schemas never create keys, run
+migrations, or block raw access.
+
+## When to reach for Beni
+
+Use Beni for any Redis work in a TypeScript project — caching, sessions, queues,
+rate limiting, leaderboards, pub/sub, streams. It is the layer you would
+otherwise hand-write on top of `redis`/`ioredis`: the `JSON.parse(raw!) as T`
+cast, the key-prefix string building, and the retry/expiry logic around locks and
+rate limiters.
+
+Prefer Beni over a raw client when the value stored has a shape you care about.
+Use `redis.raw.send([...])` (always available) for one-off commands that are not
+worth a schema.
+
+## Install
+
+| Runtime | Install | Adapter import |
+|---|---|---|
+| Node.js | `npm i beni redis` | `import { node } from "beni/node"` |
+| Bun | `bun add beni` | `import { bun } from "beni/bun"` |
+| Deno | `deno add npm:beni npm:redis` | `import { node } from "beni/node"` |
+| Edge / serverless | `npm i beni` | `import { upstash } from "beni/upstash"` |
+
+`redis` (node-redis) is an **optional peer dependency** — only install it for the
+Node/Deno adapter. Bun uses its built-in Redis client; the edge adapter is
+zero-dependency and needs only `fetch`.
+
+## Canonical setup
+
+Three files. Copy this shape.
+
+```ts
+// schema.ts — plain values, no side effects
+import { hash, json, kv, number, string } from "beni/schema";
+
+type Profile = { name: string; score: number };
+
+export const users = hash("user", { name: string(), score: number() });
+export const profiles = kv("profile", json<Profile>());
+```
+
+```ts
+// redis.ts — bind once, export the handle
+import { beni } from "beni";
+import { node } from "beni/node";
+import * as schema from "./schema";
+
+export const client = await node({ url: process.env.REDIS_URL });
+export const redis = beni(client, { schema });
+```
+
+```ts
+// app.ts — reach stores by their export name
+import { redis } from "./redis";
+
+await redis.query.users.hset("42", { name: "Ada", score: 10 });
+
+const user = await redis.query.users.hget("42");
+//    ^? { name: string; score: number } | null
+
+await redis.query.profiles.set("42", { name: "Ada", score: 10 }, {
+  ttlSeconds: 3600
+});
+```
+
+`redis.query.<exportName>` is the idiom to prefer — it dispatches on the schema's
+kind, so you never pick an accessor by hand. To pass the handle around, type it
+with `Beni<typeof schema>`:
+
+```ts
+import type { Beni } from "beni";
+export function makeHandlers(redis: Beni<typeof schema>) { /* ... */ }
+```
+
+## Schema builders
+
+All from `beni/schema`. Each takes a key prefix and (except `bitmap`) a codec.
+
+| Builder | Redis type | Reached via |
+|---|---|---|
+| `kv(prefix, codec)` | string | `redis.query.x` / `redis.kv(x)` |
+| `hash(prefix, fields)` | hash | `redis.query.x` / `redis.hash(x)` |
+| `set(prefix, codec)` | set | `redis.query.x` / `redis.set(x)` |
+| `list(prefix, codec)` | list | `redis.query.x` / `redis.list(x)` |
+| `zset(prefix, codec)` | sorted set | `redis.query.x` / `redis.zset(x)` |
+| `stream(prefix, fields)` | stream | `redis.query.x` / `redis.stream(x)` |
+| `bitmap(prefix)` | string (bits) | `redis.query.x` / `redis.bitmap(x)` |
+| `geo(prefix, codec)` | sorted set (geo) | `redis.query.x` / `redis.geo(x)` |
+| `hll(prefix, codec)` | string (HLL) | `redis.query.x` / `redis.hll(x)` |
+| `channel(prefix, codec)` | pub/sub channel | `redis.pubsub.channel(x)` |
+| `pattern(prefix, codec)` | pub/sub pattern | `redis.pubsub.pattern(x)` |
+| `script(name, options)` | Lua script | `redis.script(x)` |
+
+Codecs: `string()`, `number()`, `boolean()`, `json<T>()`, `json(validator)`,
+`enumOf([...])`, `bytes()`. There are also `redis.counter(x)` and
+`redis.string(x)` accessors for `kv` schemas whose codec is `number()` /
+`string()`.
+
+`json(validator)` accepts any [Standard Schema](https://standardschema.dev)
+validator — Zod, Valibot, ArkType — and gives runtime-validated, fully inferred
+reads with no extra dependency.
+
+## Primitives
+
+`beni/primitives` ships the things that are easy to get subtly wrong. They take
+the **adapter client**, not the `beni()` handle:
+
+```ts
+import { cache, lock, queue, ratelimit } from "beni/primitives";
+
+await lock(client).run("order:42", async () => { /* critical section */ });
+
+const { success, remaining } = await ratelimit(client, {
+  limit: 10,
+  windowMs: 60_000
+}).check(userId);
+
+const profile = await cache<Profile>(client, { ttlMs: 60_000 })
+  .get(userId, () => db.loadProfile(userId));
+
+// Built for model calls: heartbeat leases, a resumable output stream per job,
+// and cancellation that aborts the provider call.
+const jobs = queue<{ prompt: string }, string>(client, { prefix: "generate" });
+const { id } = await jobs.enqueue({ prompt }, { idempotencyKey: requestId });
+```
+
+The lock never frees a lock that expired and was re-acquired. The rate limiter is
+a sliding window in one atomic round trip. The cache is read-through with
+stampede protection — one loader call per miss.
+
+## Runtime capabilities
+
+Everything works on every adapter **except** the four features that need a
+persistent exclusive connection:
+
+- blocking commands (`BLPOP`, `XREAD BLOCK`, …)
+- `WATCH`-based optimistic transactions (`redis.watch()`)
+- dedicated-connection sessions (`redis.session()`)
+- pub/sub **subscribing**
+
+Those require `beni/node` or `beni/bun`. The HTTP/edge adapter (`beni/upstash`)
+covers the whole stateless surface, including pub/sub **publishing** (a single
+`PUBLISH`). Pattern subscriptions are Node-only for now — Bun's `psubscribe`
+hangs upstream, so the Bun adapter reports patterns as unsupported rather than
+deadlocking.
+
+Subscribing needs no setup: the first subscription leases one subscriber
+connection from the client you already bound, multiplexes every channel onto it,
+and closes it when the last subscription goes away.
+
+## Rules that avoid the usual mistakes
+
+1. **Never hand-cast a reply.** If you are writing `as T` on a Redis read, the
+   schema is wrong or missing. That cast is the bug Beni exists to remove.
+2. **Close the client.** `await client.close()` — otherwise Node never exits.
+   This matters in tests and scripts.
+3. **Primitives take `client`, not `redis`.** `cache(client, …)`, not
+   `cache(redis, …)`.
+4. **Keys are derived, not written.** `redis.query.users.key("42")` returns
+   `"user:42"`. Do not build key strings by hand.
+5. **Don't reach for `beni/core`** unless you are writing an adapter. The public
+   surface is `beni`, `beni/schema`, `beni/primitives`, and one adapter.
+6. **Binary args are TCP-only.** Over the edge adapter, use the `bytes()` codec
+   (base64) instead of passing `Uint8Array`.
+
+## Full documentation
+
+Machine-readable docs live at
+[`/llms.txt`](https://chichurita.github.io/beni/llms.txt) and
+[`/llms-full.txt`](https://chichurita.github.io/beni/llms-full.txt) — the full
+prose docs, flattened for context windows. Use them as the authority on the
+current API; this file is the short version.

@@ -4,6 +4,14 @@ import {
   expectNumber,
   expectNumberLike
 } from "./helpers.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
+import type { SlotGuard } from "./slot.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
 import type {
   Codec,
   RedisClient,
@@ -75,11 +83,15 @@ export type GeoSetSchema<
   TInput,
   TOutput = TInput,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = {
   readonly kind: "geo";
   readonly prefix: TPrefix;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  readonly hashTag?: THashTag;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
   encode(member: TInput): string;
   decode(stored: string): TOutput;
 };
@@ -88,32 +100,41 @@ export function defineGeoSet<
   TPrefix extends string,
   TInput,
   TOutput = TInput,
-  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[]
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
 >(
   prefix: TPrefix,
   codec: Codec<TInput, TOutput>,
-  _options?: { readonly ids?: TIds }
-): GeoSetSchema<TInput, TOutput, TPrefix, TIds[number]> {
-  return {
-    kind: "geo",
-    prefix,
-    key(id) {
-      return `${prefix}:${String(id)}` as `${TPrefix}:${typeof id}`;
-    },
-    encode(member) {
-      return codec.encode(member);
-    },
-    decode(stored) {
-      return codec.decode(stored);
-    }
-  };
+  options?: KeyOptions<TIds, THashTag>
+): GeoSetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  const schema: GeoSetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag> =
+    {
+      kind: "geo",
+      prefix,
+      // Spread so the property is absent, not `undefined`, on the default
+      // layout: a schema still enumerates as the plain data it looks like.
+      ...(hashTag === undefined ? {} : { hashTag }),
+      key: keyBuilder(prefix, hashTag),
+      encode(member) {
+        return codec.encode(member);
+      },
+      decode(stored) {
+        return codec.decode(stored);
+      }
+    };
+  return withStore(schema, geoBinding);
 }
 
 export function createGeoStore<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, schema: GeoSetSchema<TInput, TOutput, string, TId>) {
+>(
+  client: RedisClient,
+  schema: GeoSetSchema<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
   return {
     ...createKeyLifecycleOps(client, (id: TId) => schema.key(id)),
     /**
@@ -243,10 +264,13 @@ export function createGeoStore<
       query: GeoSearchStoreQuery<TInput>,
       options?: GeoSearchStoreOptions
     ): Promise<number> {
+      const target = schema.key(destination);
+      const from = schema.key(source);
+      assertSameSlot?.("GEOSEARCHSTORE", [target, from], schema);
       const args: [string, ...RedisCommandArgument[]] = [
         "GEOSEARCHSTORE",
-        schema.key(destination),
-        schema.key(source)
+        target,
+        from
       ];
       pushSearchQuery(args, query, (member) => schema.encode(member));
       if (options?.storeDistance) args.push("STOREDIST");
@@ -378,3 +402,22 @@ function parseCoordinate(value: RedisReply, command: string): number {
   }
   return parsed;
 }
+
+/** The geo resource: the store plus the schema's own typed `key()`. */
+export function createGeoResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: GeoSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  return withKey(
+    schema,
+    createGeoStore(ctx.client, schema, ctx.assertSameSlot)
+  );
+}
+
+const geoBinding: StoreBinding = { resource: createGeoResource };

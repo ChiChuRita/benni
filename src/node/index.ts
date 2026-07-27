@@ -2,18 +2,13 @@ import { Buffer } from "node:buffer";
 import type { RedisArgument } from "redis";
 import { createClient, WatchError } from "redis";
 import type {
-  PubSubChannel,
-  PubSubHandler,
-  PubSubPattern,
-  PubSubPatternHandler,
-  PubSubSubscription,
   RedisClient,
   RedisCommand,
   RedisCommandArgument,
   RedisReply,
-  RedisSession
+  RedisSession,
+  RedisSubscriber
 } from "../core/index.js";
-import { createPubSubPublisher } from "../core/index.js";
 
 export type NodeOptions = Parameters<typeof createClient>[0];
 
@@ -30,7 +25,8 @@ function withReplyDefaults(options?: NodeOptions): NodeOptions {
  * client and returns the `RedisClient` handle `beni()` binds to. Accepts
  * every node-redis option (`url`, `socket`, `username`/`password`, ...).
  * Replies default to RESP2 for stable wire shapes. Deno uses this same
- * adapter via `npm:` specifiers. For Pub/Sub, see `node.pubsub()`.
+ * adapter via `npm:` specifiers. Supports Pub/Sub subscribing: core leases a
+ * duplicate connection through `subscriber()` on the first subscribe.
  *
  * @example
  * ```ts
@@ -49,6 +45,8 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
   // force-closes survivors so a leaked session cannot pin a connection past
   // the client's lifetime.
   const sessions = new Set<RedisSession>();
+  // Same backstop for the subscriber connection core may lease.
+  const subscribers = new Set<RedisSubscriber>();
 
   return {
     async send(command: RedisCommand) {
@@ -122,71 +120,63 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       sessions.add(session);
       return session;
     },
+    async subscriber(): Promise<RedisSubscriber> {
+      // Subscriber mode monopolizes a connection, so duplicate rather than
+      // borrow the shared one.
+      const duplicate = client.duplicate();
+      duplicate.on("error", () => {});
+      await duplicate.connect();
+      let closed = false;
+      const subscriber: RedisSubscriber = {
+        async subscribe(channel, listener) {
+          await duplicate.subscribe(channel, (message: string) =>
+            listener(message)
+          );
+        },
+        async unsubscribe(channel) {
+          await duplicate.unsubscribe(channel);
+        },
+        async psubscribe(pattern, listener) {
+          await duplicate.pSubscribe(pattern, (message: string, ch: string) =>
+            listener(message, ch)
+          );
+        },
+        async punsubscribe(pattern) {
+          await duplicate.pUnsubscribe(pattern);
+        },
+        get closed() {
+          return closed;
+        },
+        async close() {
+          closed = true;
+          subscribers.delete(subscriber);
+          try {
+            await duplicate.close();
+          } catch {
+            // Already closed or dropped — close() is idempotent by contract.
+          }
+        }
+      };
+      subscribers.add(subscriber);
+      return subscriber;
+    },
     async close() {
       for (const session of [...sessions]) {
         await session.close();
+      }
+      for (const subscriber of [...subscribers]) {
+        await subscriber.close();
       }
       await client.close();
     }
   };
 }
 
-export async function pubsub(options?: NodeOptions) {
-  const publisherClient = await node(options);
-  let subscriberClient: ReturnType<typeof createClient>;
-  try {
-    subscriberClient = await createClient(withReplyDefaults(options)).connect();
-  } catch (error) {
-    // Don't leak the already-connected publisher when the subscriber fails.
-    await publisherClient.close();
-    throw error;
-  }
-  // Absorb socket errors (see node()); the subscriber reconnects on its own.
-  subscriberClient.on("error", () => {});
-  const publisher = createPubSubPublisher(publisherClient);
-
-  return {
-    publish: publisher.publish,
-    async subscribe<TInput, TOutput>(
-      channel: PubSubChannel<TInput, TOutput>,
-      handler: PubSubHandler<TOutput>
-    ): Promise<PubSubSubscription> {
-      const listener = (message: string) => {
-        void handler(channel.decode(message));
-      };
-      await subscriberClient.subscribe(channel.name, listener);
-      return {
-        async unsubscribe() {
-          await subscriberClient.unsubscribe(channel.name, listener);
-        }
-      };
-    },
-    async subscribePattern<TOutput>(
-      pattern: PubSubPattern<TOutput>,
-      handler: PubSubPatternHandler<TOutput>
-    ): Promise<PubSubSubscription> {
-      const listener = (message: string, channel: string) => {
-        void handler(pattern.decode(message), channel);
-      };
-      await subscriberClient.pSubscribe(pattern.pattern, listener);
-      return {
-        async unsubscribe() {
-          await subscriberClient.pUnsubscribe(pattern.pattern, listener);
-        }
-      };
-    },
-    async close() {
-      await subscriberClient.close();
-      await publisherClient.close();
-    }
-  };
-}
-
 /**
- * The Node adapter, backed by node-redis. Call `node(options)` for a
- * `RedisClient`, or `pubsub(options)` for the Pub/Sub adapter (channel and
- * pattern subscriptions). Options are node-redis client options; replies
- * default to RESP2.
+ * The Node adapter, backed by node-redis. `node(options)` returns a
+ * `RedisClient` that can lease both a session and a subscriber connection, so
+ * Pub/Sub needs no second object. Options are node-redis client options;
+ * replies default to RESP2.
  */
 
 function toRedisArguments(command: RedisCommand): RedisArgument[] {

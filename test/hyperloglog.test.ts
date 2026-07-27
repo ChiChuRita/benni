@@ -175,7 +175,10 @@ type _KnownViewId = Expect<
   Equal<KnownViewId, "home" | "blog" | readonly ("home" | "blog")[]>
 >;
 type _KnownViewSchema = Expect<
-  Equal<KnownViewSchema, HyperLogLogSchema<string, "known", "home" | "blog">>
+  Equal<
+    KnownViewSchema,
+    HyperLogLogSchema<string, "known", "home" | "blog", undefined>
+  >
 >;
 
 function expectTypeErrorsOnly() {

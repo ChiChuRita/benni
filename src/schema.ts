@@ -1,25 +1,15 @@
 import { defineBitmap } from "./core/bitmap.js";
 import { codecs } from "./core/codecs.js";
 import { defineGeoSet } from "./core/geo.js";
+import { defineHash } from "./core/hash.js";
 import { defineHyperLogLog } from "./core/hyperloglog.js";
+import { defineKeyspace } from "./core/key-value.js";
+import { defineList } from "./core/list.js";
 import { definePubSubChannel, definePubSubPattern } from "./core/pubsub.js";
-import {
-  defineHash,
-  defineKeyspace,
-  defineList,
-  defineSet,
-  defineSortedSet
-} from "./core/schemas.js";
-import { defineScript } from "./core/script.js";
-import { defineStream } from "./core/stream.js";
-import type {
-  Codec,
-  FieldCodecs,
-  InferHashInput,
-  RedisCommandArgument,
-  RedisKeyPart,
-  RedisReply
-} from "./core/types.js";
+import { defineSet } from "./core/set.js";
+import { defineSortedSet } from "./core/sorted-set.js";
+import { defineStream } from "./core/stream-resource.js";
+import type { Codec, RedisKeyPart } from "./core/types.js";
 
 export type {
   InferStandardInput,
@@ -163,83 +153,13 @@ export const channel = definePubSubChannel;
 /** A pub/sub pattern schema: subscribe to channels matching a glob pattern. */
 export const pattern = definePubSubPattern;
 
-export type ScriptSchema<
-  TName extends string,
-  TKeys extends readonly string[],
-  TArgs extends FieldCodecs,
-  TResult
-> = ReturnType<
-  typeof defineScript<readonly RedisCommandArgument[], TResult>
-> & {
-  readonly kind: "script";
-  readonly name: TName;
-  readonly keys: TKeys;
-  readonly args: TArgs;
-  encodeArgs(args: InferHashInput<TArgs>): RedisCommandArgument[];
-};
-
-export type ScriptOptions<
-  TKeys extends readonly string[],
-  TArgs extends FieldCodecs,
-  TResult
-> = {
-  readonly keys: TKeys;
-  readonly args: TArgs;
-  readonly returns: Codec<TResult, TResult>;
-  readonly lua: string;
-};
-
+export type { ScriptOptions, ScriptSchema } from "./core/script.js";
 /**
  * A Lua script schema with named keys, typed args, and a scalar return codec.
  * Run it with `redis.script(schema).run({ keys, args })` — the runner loads the
  * script once and executes cached `EVALSHA`.
- * @example
- * ```ts
- * const rateLimit = script("rate-limit", {
- *   keys: ["counter"],
- *   args: { windowSeconds: number() },
- *   returns: number(),
- *   lua: `local n = redis.call("INCR", KEYS[1])
- *         if n == 1 then redis.call("EXPIRE", KEYS[1], ARGV[1]) end
- *         return n`
- * });
- * ```
  */
-export function script<
-  TName extends string,
-  const TKeys extends readonly string[],
-  TArgs extends FieldCodecs,
-  TResult
->(
-  name: TName,
-  options: ScriptOptions<TKeys, TArgs, TResult>
-): ScriptSchema<TName, TKeys, TArgs, TResult> {
-  const argNames = Object.keys(options.args) as Array<keyof TArgs & string>;
-  const redisScript = defineScript<readonly RedisCommandArgument[], TResult>({
-    lua: options.lua,
-    keyCount: options.keys.length,
-    decode(reply: RedisReply) {
-      if (typeof reply !== "string" && typeof reply !== "number") {
-        throw new TypeError(
-          "Expected Redis script reply to decode from scalar"
-        );
-      }
-      return options.returns.decode(String(reply));
-    }
-  });
-  return {
-    ...redisScript,
-    kind: "script",
-    name,
-    keys: options.keys,
-    args: options.args,
-    encodeArgs(args: InferHashInput<TArgs>) {
-      return argNames.map((argName) =>
-        options.args[argName].encode(args[argName])
-      );
-    }
-  };
-}
+export { script } from "./core/script.js";
 
 export type Ids<TIds extends readonly RedisKeyPart[]> = {
   readonly ids: TIds;

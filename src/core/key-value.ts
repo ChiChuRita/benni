@@ -1,6 +1,15 @@
 import { replyShapeError, ValidationError } from "./errors.js";
 import { createKeyLifecycleOps, expectNumber, ttlSeconds } from "./helpers.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
+import type { SlotGuard } from "./slot.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
 import type {
+  Codec,
   Keyspace,
   RedisClient,
   RedisCommandArgument,
@@ -42,7 +51,11 @@ export function createKeyValueStore<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, keyspace: Keyspace<TInput, TOutput, string, TId>) {
+>(
+  client: RedisClient,
+  keyspace: Keyspace<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
   function set(
     id: TId,
     value: TInput,
@@ -138,10 +151,9 @@ export function createKeyValueStore<
      */
     async mget(ids: readonly TId[]): Promise<Array<TOutput | null>> {
       if (ids.length === 0) return [];
-      const reply = await client.send([
-        "MGET",
-        ...ids.map((id) => keyspace.key(id))
-      ]);
+      const keys = ids.map((id) => keyspace.key(id));
+      assertSameSlot?.("MGET", keys, keyspace);
+      const reply = await client.send(["MGET", ...keys]);
       if (!Array.isArray(reply)) {
         throw replyShapeError("MGET", "array", reply);
       }
@@ -163,6 +175,11 @@ export function createKeyValueStore<
         keyspace.key(id),
         keyspace.encode(value)
       ]);
+      assertSameSlot?.(
+        "MSET",
+        entries.map(([id]) => keyspace.key(id)),
+        keyspace
+      );
       const reply = await client.send(["MSET", ...args]);
       if (reply !== "OK") throw replyShapeError("MSET", "OK", reply);
     },
@@ -179,6 +196,11 @@ export function createKeyValueStore<
         keyspace.key(id),
         keyspace.encode(value)
       ]);
+      assertSameSlot?.(
+        "MSETNX",
+        entries.map(([id]) => keyspace.key(id)),
+        keyspace
+      );
       return (
         expectNumber(await client.send(["MSETNX", ...args]), "MSETNX") === 1
       );
@@ -192,4 +214,56 @@ export function createKeyValueStore<
       return reply;
     }
   };
+}
+
+/**
+ * The kv resource: the store plus the schema's own typed `key()`.
+ * Also serves `redis.query.<name>` for a kv schema.
+ */
+export function createKvResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  return withKey(
+    schema,
+    createKeyValueStore(ctx.client, schema, ctx.assertSameSlot)
+  );
+}
+
+const kvBinding: StoreBinding = { resource: createKvResource };
+
+export function defineKeyspace<
+  TPrefix extends string,
+  TInput,
+  TOutput = TInput,
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
+>(
+  prefix: TPrefix,
+  codec: Codec<TInput, TOutput>,
+  options?: KeyOptions<TIds, THashTag>
+): Keyspace<TInput, TOutput, TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    kind: "kv",
+    prefix,
+    // Spread so the property is absent, not `undefined`, on the default
+    // layout: a schema still enumerates as the plain data it looks like.
+    ...(hashTag === undefined ? {} : { hashTag }),
+    key: keyBuilder(prefix, hashTag),
+    encode(value) {
+      return codec.encode(value);
+    },
+    decode(stored) {
+      return codec.decode(stored);
+    }
+  } as Keyspace<TInput, TOutput, TPrefix, TIds[number], THashTag>;
+  return withStore(schema, kvBinding);
 }

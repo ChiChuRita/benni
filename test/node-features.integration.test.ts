@@ -3,13 +3,13 @@ import { createBitmapStore, defineBitmap } from "../src/core/bitmap.js";
 import { codecs } from "../src/core/codecs.js";
 import { createCounterStore } from "../src/core/counter.js";
 import { createGeoStore, defineGeoSet } from "../src/core/geo.js";
-import { createHashStore } from "../src/core/hash.js";
+import { createHashStore, defineHash } from "../src/core/hash.js";
 import {
   createHyperLogLogStore,
   defineHyperLogLog
 } from "../src/core/hyperloglog.js";
-import { createKeyValueStore } from "../src/core/key-value.js";
-import { createListStore } from "../src/core/list.js";
+import { createKeyValueStore, defineKeyspace } from "../src/core/key-value.js";
+import { createListStore, defineList } from "../src/core/list.js";
 import {
   scanHash,
   scanKeys,
@@ -17,17 +17,14 @@ import {
   scanSet,
   scanSortedSet
 } from "../src/core/scan.js";
-import {
-  defineHash,
-  defineKeyspace,
-  defineList,
-  defineSet,
-  defineSortedSet
-} from "../src/core/schemas.js";
 import { createScriptRunner, defineScript } from "../src/core/script.js";
-import { createSetStore } from "../src/core/set.js";
-import { createSortedSetStore } from "../src/core/sorted-set.js";
-import { createStreamStore, defineStream } from "../src/core/stream.js";
+import { createSetStore, defineSet } from "../src/core/set.js";
+import {
+  createSortedSetStore,
+  defineSortedSet
+} from "../src/core/sorted-set.js";
+import { createStreamStore } from "../src/core/stream.js";
+import { defineStream } from "../src/core/stream-resource.js";
 import { createStringStore } from "../src/core/string.js";
 import {
   booleanNumberReply,

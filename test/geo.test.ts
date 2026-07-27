@@ -636,7 +636,10 @@ type KnownPlaceId = Parameters<typeof knownPlaceStore.del>[0];
 type KnownPlaceSchema = typeof knownPlaces;
 type _KnownPlaceId = Expect<Equal<KnownPlaceId, "eu" | "us">>;
 type _KnownPlaceSchema = Expect<
-  Equal<KnownPlaceSchema, GeoSetSchema<string, string, "known", "eu" | "us">>
+  Equal<
+    KnownPlaceSchema,
+    GeoSetSchema<string, string, "known", "eu" | "us", undefined>
+  >
 >;
 
 function expectTypeErrorsOnly() {

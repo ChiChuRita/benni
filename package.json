@@ -1,7 +1,7 @@
 {
   "name": "beni",
   "version": "0.0.0",
-  "description": "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge.",
+  "description": "The end-to-end typed Redis client for TypeScript \u2014 one API across Node, Bun, Deno, and the edge.",
   "author": "ChiChuRita",
   "license": "MIT",
   "repository": {
@@ -30,6 +30,10 @@
     "./core": {
       "types": "./dist/core/index.d.mts",
       "import": "./dist/core/index.mjs"
+    },
+    "./cluster": {
+      "types": "./dist/cluster.d.mts",
+      "import": "./dist/cluster.mjs"
     },
     "./schema": {
       "types": "./dist/schema.d.mts",
@@ -66,7 +70,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "llms.txt"
   ],
   "sideEffects": false,
   "scripts": {
@@ -76,6 +81,8 @@
     "docs:preview": "pnpm --filter docs preview",
     "redis:build": "docker build -t beni-redis .",
     "redis:run": "docker run --rm --name beni-redis -p 6379:6379 beni-redis",
+    "redis:cluster:build": "docker build -f Dockerfile.cluster -t beni-redis-cluster .",
+    "redis:cluster:run": "docker run --rm --name beni-redis-cluster -p 6381:6379 beni-redis-cluster",
     "prebench": "pnpm run build",
     "bench": "node bench/redis.mjs",
     "bench:self-test": "node bench/redis.mjs --self-test",
@@ -96,12 +103,31 @@
     "redis",
     "typescript",
     "typed",
+    "type-safe",
+    "end-to-end-typed",
+    "redis-client",
+    "valkey",
     "bun",
     "deno",
     "node",
     "edge",
     "serverless",
-    "upstash"
+    "upstash",
+    "cache",
+    "caching",
+    "rate-limit",
+    "rate-limiter",
+    "job-queue",
+    "distributed-lock",
+    "session-store",
+    "leaderboard",
+    "pubsub",
+    "streams",
+    "ai",
+    "streaming",
+    "nextjs",
+    "hono",
+    "zod"
   ],
   "packageManager": "pnpm@11.9.0",
   "devDependencies": {

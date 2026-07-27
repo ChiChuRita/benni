@@ -1,5 +1,6 @@
 import { ReplyShapeError, replyShapeError, ValidationError } from "./errors.js";
 import { decodeSortedSetEntries } from "./helpers.js";
+import { keyspaceGlob } from "./keys.js";
 import type {
   FieldCodecs,
   HashSchema,
@@ -115,23 +116,18 @@ export async function* scanKeys(
   }
 }
 
-// The keyspace prefix is data, but MATCH is a glob pattern — escape the
-// metacharacters so a prefix like "user[1]" or "a\\" matches literally.
-// `[` is escaped, so no character class can open, which keeps `^`/`-` inert.
-function escapeGlob(text: string): string {
-  return text.replace(/[\\*?[\]]/g, "\\$&");
-}
-
 /**
  * SCAN scoped to a keyspace — iterates keys under the schema's prefix
- * (glob-escaped) unless an explicit `match` overrides it.
+ * (glob-escaped, in the schema's hash-tag layout) unless an explicit `match`
+ * overrides it.
  */
 export async function* scanKeyspace<TInput, TOutput>(
   client: RedisClient,
   keyspace: Keyspace<TInput, TOutput>,
   options: ScanOptions = {}
 ): AsyncIterable<string> {
-  const match = options.match ?? `${escapeGlob(keyspace.prefix)}:*`;
+  const match =
+    options.match ?? keyspaceGlob(keyspace.prefix, keyspace.hashTag);
   yield* scanKeys(client, { ...options, match });
 }
 

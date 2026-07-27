@@ -1,19 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
 import { ValidationError } from "../src/core/errors.js";
-import { createBlockingListOps, createListStore } from "../src/core/list.js";
-import { defineList, defineSortedSet } from "../src/core/schemas.js";
+import {
+  createBlockingListOps,
+  createListStore,
+  defineList
+} from "../src/core/list.js";
 import {
   createBlockingSortedSetOps,
-  createSortedSetStore
+  createSortedSetStore,
+  defineSortedSet
 } from "../src/core/sorted-set.js";
 import {
   createBlockingStreamOps,
   decodeStreamEntries,
   decodeStreamEntry,
-  defineStream,
   xreadStreamPairs
 } from "../src/core/stream.js";
+import { defineStream } from "../src/core/stream-resource.js";
 import type {
   RedisClient,
   RedisCommand,

@@ -7,8 +7,17 @@ import {
   expectNumber,
   expectNumberLike
 } from "./helpers.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
 import { type BlockingWait, blockingTimeoutSeconds } from "./session.js";
+import type { SlotGuard, SlotHint } from "./slot.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
 import type {
+  Codec,
   RedisClient,
   RedisCommandArgument,
   RedisKeyPart,
@@ -200,13 +209,19 @@ function multiPopCount(count: number): number {
  */
 function requestedKeyIds<TId>(
   ids: readonly TId[],
-  key: (id: TId) => string
+  key: (id: TId) => string,
+  command: string,
+  assertSameSlot?: SlotGuard,
+  hint?: SlotHint
 ): Map<string, TId> {
   if (ids.length === 0) {
     throw new ValidationError("ids must contain at least one id");
   }
   const idsByKey = new Map<string, TId>();
   for (const id of ids) idsByKey.set(key(id), id);
+  // Guarding the map keys rather than `ids` also de-duplicates, which is
+  // right: blpop(["a", "a", "b"]) only has two distinct slots to check.
+  assertSameSlot?.(command, [...idsByKey.keys()], hint);
   return idsByKey;
 }
 
@@ -316,17 +331,47 @@ export function createSortedSetStore<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, schema: SortedSetSchema<TInput, TOutput, string, TId>) {
-  const combinedKeys = (id: TId, others: readonly TId[]): string[] => [
-    schema.key(id),
-    ...others.map((other) => schema.key(other))
-  ];
+>(
+  client: RedisClient,
+  schema: SortedSetSchema<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
+  /**
+   * The key list every multi-key zset command sends, and the shared point
+   * where the cluster guard sees it. `command` names the caller for the error.
+   */
+  const combinedKeys = (
+    command: string,
+    id: TId,
+    others: readonly TId[]
+  ): string[] => {
+    const keys = [schema.key(id), ...others.map((other) => schema.key(other))];
+    assertSameSlot?.(command, keys, schema);
+    return keys;
+  };
+
+  /**
+   * A `*STORE` destination is a key too. Comparing it against the first source
+   * is enough: combinedKeys has already proven the sources mutually same-slot,
+   * so transitivity closes the set.
+   */
+  const storeTarget = (command: string, destination: TId, source: string) => {
+    const target = schema.key(destination);
+    assertSameSlot?.(command, [target, source], schema);
+    return target;
+  };
   async function popFrom<TPick extends TId>(
     end: "MIN" | "MAX",
     ids: readonly TPick[],
     options: SortedSetMultiPopOptions
   ): Promise<{ id: TPick; entries: Array<SortedSetEntry<TOutput>> } | null> {
-    const idsByKey = requestedKeyIds(ids, (id) => schema.key(id));
+    const idsByKey = requestedKeyIds(
+      ids,
+      (id) => schema.key(id),
+      "ZMPOP",
+      assertSameSlot,
+      schema
+    );
     const command: [string, ...RedisCommandArgument[]] = [
       "ZMPOP",
       ids.length,
@@ -429,7 +474,7 @@ export function createSortedSetStore<
     // ZDIFF takes no WEIGHTS/AGGREGATE; combineArgs ignores them when the
     // caller passes none, which is the only shape zdiff forwards.
     const args = combineArgs(
-      combinedKeys(id, others),
+      combinedKeys(command, id, others),
       command === "ZDIFF" ? undefined : options
     );
     if (options.withScores === true) {
@@ -758,11 +803,12 @@ export function createSortedSetStore<
           rankIndex(options.stop, "stop")
         ];
       }
+      const from = schema.key(source);
       return expectNumber(
         await client.send([
           "ZRANGESTORE",
-          schema.key(destination),
-          schema.key(source),
+          storeTarget("ZRANGESTORE", destination, from),
+          from,
           ...args
         ]),
         "ZRANGESTORE"
@@ -841,11 +887,12 @@ export function createSortedSetStore<
       others: readonly TId[],
       options?: SortedSetCombineOptions
     ): Promise<number> {
+      const keys = combinedKeys("ZUNIONSTORE", id, others);
       return expectNumber(
         await client.send([
           "ZUNIONSTORE",
-          schema.key(destination),
-          ...combineArgs(combinedKeys(id, others), options)
+          storeTarget("ZUNIONSTORE", destination, keys[0]),
+          ...combineArgs(keys, options)
         ]),
         "ZUNIONSTORE"
       );
@@ -857,11 +904,12 @@ export function createSortedSetStore<
       others: readonly TId[],
       options?: SortedSetCombineOptions
     ): Promise<number> {
+      const keys = combinedKeys("ZINTERSTORE", id, others);
       return expectNumber(
         await client.send([
           "ZINTERSTORE",
-          schema.key(destination),
-          ...combineArgs(combinedKeys(id, others), options)
+          storeTarget("ZINTERSTORE", destination, keys[0]),
+          ...combineArgs(keys, options)
         ]),
         "ZINTERSTORE"
       );
@@ -872,11 +920,12 @@ export function createSortedSetStore<
       id: TId,
       others: readonly TId[]
     ): Promise<number> {
+      const keys = combinedKeys("ZDIFFSTORE", id, others);
       return expectNumber(
         await client.send([
           "ZDIFFSTORE",
-          schema.key(destination),
-          ...combineArgs(combinedKeys(id, others), undefined)
+          storeTarget("ZDIFFSTORE", destination, keys[0]),
+          ...combineArgs(keys, undefined)
         ]),
         "ZDIFFSTORE"
       );
@@ -887,7 +936,7 @@ export function createSortedSetStore<
       others: readonly TId[],
       options?: SortedSetIntersectionSizeOptions
     ): Promise<number> {
-      const keys = combinedKeys(id, others);
+      const keys = combinedKeys("ZINTERCARD", id, others);
       const args: SortedSetCommandArg[] = [keys.length, ...keys];
       if (options?.limit !== undefined) {
         if (!Number.isSafeInteger(options.limit) || options.limit < 0) {
@@ -938,7 +987,11 @@ export function createBlockingSortedSetOps<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, schema: SortedSetSchema<TInput, TOutput, string, TId>) {
+>(
+  client: RedisClient,
+  schema: SortedSetSchema<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
   function decodeBlockingPopReply(
     reply: RedisReply,
     command: string
@@ -975,7 +1028,13 @@ export function createBlockingSortedSetOps<
     ids: readonly TPick[],
     options: BlockingWait
   ): Promise<{ id: TPick; entry: SortedSetEntry<TOutput> } | null> {
-    const idsByKey = requestedKeyIds(ids, (id) => schema.key(id));
+    const idsByKey = requestedKeyIds(
+      ids,
+      (id) => schema.key(id),
+      command,
+      assertSameSlot,
+      schema
+    );
     const timeout = blockingTimeoutSeconds(options.timeoutSeconds);
     const reply = await client.send([
       command,
@@ -1051,7 +1110,13 @@ export function createBlockingSortedSetOps<
     ids: readonly TPick[],
     options: BlockingWait & SortedSetMultiPopOptions
   ): Promise<{ id: TPick; entries: Array<SortedSetEntry<TOutput>> } | null> {
-    const idsByKey = requestedKeyIds(ids, (id) => schema.key(id));
+    const idsByKey = requestedKeyIds(
+      ids,
+      (id) => schema.key(id),
+      "BZMPOP",
+      assertSameSlot,
+      schema
+    );
     const timeout = blockingTimeoutSeconds(options.timeoutSeconds);
     const command: [string, ...RedisCommandArgument[]] = [
       "BZMPOP",
@@ -1103,4 +1168,74 @@ export function createBlockingSortedSetOps<
     bzpopmax,
     bzmpop
   };
+}
+
+/** The zset resource: the base (non-blocking) store plus the typed `key()`. */
+export function createZsetResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  return withKey(
+    schema,
+    createSortedSetStore(ctx.client, schema, ctx.assertSameSlot)
+  );
+}
+
+/** Session zset accessor: base store spread with the blocking pops. */
+export function createZsetSessionAccessor<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  const store = createSortedSetStore(ctx.client, schema, ctx.assertSameSlot);
+  return {
+    ...withKey(schema, store),
+    ...createBlockingSortedSetOps(ctx.client, schema, ctx.assertSameSlot)
+  };
+}
+
+const zsetBinding: StoreBinding = {
+  resource: createZsetResource,
+  session: createZsetSessionAccessor
+};
+
+export function defineSortedSet<
+  TPrefix extends string,
+  TInput,
+  TOutput = TInput,
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
+>(
+  prefix: TPrefix,
+  codec: Codec<TInput, TOutput>,
+  options?: KeyOptions<TIds, THashTag>
+): SortedSetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    kind: "zset",
+    prefix,
+    // Spread so the property is absent, not `undefined`, on the default
+    // layout: a schema still enumerates as the plain data it looks like.
+    ...(hashTag === undefined ? {} : { hashTag }),
+    key: keyBuilder(prefix, hashTag),
+    encode(member) {
+      return codec.encode(member);
+    },
+    decode(stored) {
+      return codec.decode(stored);
+    }
+  } as SortedSetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag>;
+  return withStore(schema, zsetBinding);
 }

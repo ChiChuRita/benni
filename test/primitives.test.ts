@@ -150,7 +150,7 @@ describe("cache", () => {
     });
 
     expect(value).toEqual({ n: 1 });
-    expect(commands).toEqual([["GET", "cache:a"]]);
+    expect(commands).toEqual([["GET", "cache:{a}"]]);
   });
 
   it("on a miss, takes the fill lock, loads once, and writes with PX", async () => {
@@ -171,16 +171,16 @@ describe("cache", () => {
     expect(loads).toBe(1);
     expect(commands.map((c) => c[0])).toEqual([
       "GET",
-      "SET", // fill lock (cache:lock:a NX PX)
+      "SET", // fill lock (cache:lock:{a} NX PX)
       "GET", // double-check
       "SET", // the value
       "SCRIPT",
       "EVALSHA" // lock release
     ]);
     const lockSet = commands[1];
-    expect(lockSet?.[1]).toBe("cache:lock:a");
+    expect(lockSet?.[1]).toBe("cache:lock:{a}");
     const valueSet = commands[3];
-    expect(valueSet).toEqual(["SET", "cache:a", '{"n":2}', "PX", 60_000]);
+    expect(valueSet).toEqual(["SET", "cache:{a}", '{"n":2}', "PX", 60_000]);
   });
 
   it("skips the loader when the double-check hits, and still releases", async () => {
@@ -228,7 +228,7 @@ describe("cache", () => {
       async send(command: RedisCommand) {
         commands.push(command);
         if (command[0] === "GET") return null;
-        return command[1] === "cache:lock:a" ? null : "OK";
+        return command[1] === "cache:lock:{a}" ? null : "OK";
       },
       async pipeline() {
         return [];
@@ -246,7 +246,7 @@ describe("cache", () => {
     );
     expect(commands.at(-1)).toEqual([
       "SET",
-      "cache:a",
+      "cache:{a}",
       '"self-loaded"',
       "PX",
       60_000
@@ -264,8 +264,8 @@ describe("cache", () => {
     await store.set("a", "w");
     await expect(store.del("a")).resolves.toBe(1);
 
-    expect(commands[2]).toEqual(["SET", "cache:a", '"w"', "PX", 5_000]);
-    expect(commands[3]).toEqual(["DEL", "cache:a"]);
+    expect(commands[2]).toEqual(["SET", "cache:{a}", '"w"', "PX", 5_000]);
+    expect(commands[3]).toEqual(["DEL", "cache:{a}"]);
   });
 
   it("rejects non-positive ttl, lock ttl, and poll intervals", () => {

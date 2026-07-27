@@ -5,7 +5,8 @@
       "name": "docs",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "docs", "run", "dev"],
-      "port": 4321
+      "port": 4321,
+      "autoPort": true
     }
   ]
 }

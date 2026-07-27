@@ -278,13 +278,14 @@ export const allTenantNotifications = pattern("notifications:tenant:*", json<Not
 ```ts
 // notifications.ts
 import { beni } from "beni";
-import { node, pubsub } from "beni/node";
+import { node } from "beni/node";
 import * as schema from "./schema";
 
 const client = await node();
-const pubsubAdapter = await pubsub();
-const redis = beni(client, { schema, pubsub: pubsubAdapter });
+const redis = beni(client, { schema });
 
+// The first subscribe leases one subscriber connection off the bound client and
+// closes it again when the last subscription goes away.
 const subscription = await redis.query.allTenantNotifications.subscribe((message, channel) => {
   console.log("received", { channel, message });
 });
@@ -296,7 +297,6 @@ await redis.query.tenantNotifications.publish({
 });
 
 await subscription.unsubscribe();
-await pubsubAdapter.close();
 await client.close();
 ```
 
@@ -476,8 +476,8 @@ across the Redis boundary. Nothing here needed a migration, an entity class, or
 a cast.
 
 Where a workload needs one of the hard parts done right, it reaches for a
-primitive instead of hand-rolling it — `cache` for read-through with stampede
-protection, `lock` for mutual exclusion, `ratelimit` for a sliding window — and
+primitive instead of hand-rolling it: `cache` for read-through with stampede
+protection, `lock` for mutual exclusion, `ratelimit` for a sliding window, and
 for at-least-once queue processing, the consumer-group and blocking-worker
 patterns in the [docs](../docs/src/content/docs/advanced/blocking-operations.md).
 

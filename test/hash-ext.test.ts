@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
-import { createHashStore } from "../src/core/hash.js";
-import { defineHash } from "../src/core/schemas.js";
+import { createHashStore, defineHash } from "../src/core/hash.js";
 import type {
   RedisClient,
   RedisCommand,

@@ -9,8 +9,10 @@ import {
   defineSortedSet,
   ValidationError
 } from "../src/core/index.js";
+import { slotOf } from "../src/core/slot.js";
+import type { RedisCommand } from "../src/core/types.js";
 import { node } from "../src/node/index.js";
-import { lock } from "../src/primitives/index.js";
+import { cache, lock } from "../src/primitives/index.js";
 import { upstash } from "../src/upstash/index.js";
 import { fakeClient } from "./fake-client.js";
 
@@ -138,5 +140,37 @@ describeRedis("infinite scores against real Redis", () => {
       { member: "top", score: Number.POSITIVE_INFINITY }
     ]);
     await store.del("d");
+  });
+});
+
+// Regressions for the cluster-safe-keys pass. Both were real breakage on a
+// Redis Cluster that a single-node test suite could never surface.
+
+describe("cluster-safe primitive and adapter keys", () => {
+  it("keeps a cache entry and its own fill lock in one slot", async () => {
+    // The fill lock used to be `cache:lock:<id>` next to `cache:<id>`, which
+    // are different slots: two nodes per miss, and a single-flight guarantee
+    // spread across them. Tagging the id co-locates the pair while the cache
+    // itself still spreads, which is the property a cache must keep.
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, ['"value"']);
+    const entries = cache<string>(client, {
+      ttlMs: 1000,
+      codec: codecs.json()
+    });
+    await entries.peek("42");
+    const entryKey = commands[0][1] as string;
+    expect(entryKey).toBe("cache:{42}");
+    expect(slotOf(entryKey)).toBe(slotOf("cache:lock:{42}"));
+    // Different ids still land on different slots: the cache stays spread.
+    expect(slotOf("cache:{42}")).not.toBe(slotOf("cache:{43}"));
+  });
+
+  it("keeps every Next.js cache key in one slot", () => {
+    // revalidateTag DELs entries and tag sets in one command, so they must
+    // share a slot or the handler is simply broken on a cluster.
+    expect(slotOf("{next-cache}:entry:/blog")).toBe(
+      slotOf("{next-cache}:tag:posts")
+    );
   });
 });

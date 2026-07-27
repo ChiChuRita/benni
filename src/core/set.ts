@@ -4,13 +4,50 @@ import {
   decodeStringArrayReply,
   expectNumber
 } from "./helpers.js";
-import type { RedisClient, RedisKeyPart, SetSchema } from "./types.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
+import type { SlotGuard } from "./slot.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
+import type { Codec, RedisClient, RedisKeyPart, SetSchema } from "./types.js";
 
 export function createSetStore<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, schema: SetSchema<TInput, TOutput, string, TId>) {
+>(
+  client: RedisClient,
+  schema: SetSchema<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
+  /**
+   * The key list every multi-key set command sends, and the shared point
+   * where the cluster guard sees it. `command` names the caller for the error.
+   */
+  const combinedKeys = (
+    command: string,
+    id: TId,
+    others: readonly TId[]
+  ): string[] => {
+    const keys = [schema.key(id), ...others.map((other) => schema.key(other))];
+    assertSameSlot?.(command, keys, schema);
+    return keys;
+  };
+
+  /**
+   * A `*STORE` destination is a key too. Comparing it against the first source
+   * is enough: combinedKeys has already proven the sources mutually same-slot,
+   * so transitivity closes the set.
+   */
+  const storeTarget = (command: string, destination: TId, source: string) => {
+    const target = schema.key(destination);
+    assertSameSlot?.(command, [target, source], schema);
+    return target;
+  };
+
   return {
     ...createKeyLifecycleOps(client, (id: TId) => schema.key(id)),
     /**
@@ -122,11 +159,7 @@ export function createSetStore<
     /** SUNION — union of `id` with `others`, decoded. */
     async sunion(id: TId, others: readonly TId[]): Promise<TOutput[]> {
       return decodeStringArrayReply(
-        await client.send([
-          "SUNION",
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
-        ]),
+        await client.send(["SUNION", ...combinedKeys("SUNION", id, others)]),
         "SUNION",
         schema
       );
@@ -134,11 +167,7 @@ export function createSetStore<
     /** SINTER — intersection of `id` with `others`, decoded. */
     async sinter(id: TId, others: readonly TId[]): Promise<TOutput[]> {
       return decodeStringArrayReply(
-        await client.send([
-          "SINTER",
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
-        ]),
+        await client.send(["SINTER", ...combinedKeys("SINTER", id, others)]),
         "SINTER",
         schema
       );
@@ -146,11 +175,7 @@ export function createSetStore<
     /** SDIFF — members of `id` not present in any of `others`, decoded. */
     async sdiff(id: TId, others: readonly TId[]): Promise<TOutput[]> {
       return decodeStringArrayReply(
-        await client.send([
-          "SDIFF",
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
-        ]),
+        await client.send(["SDIFF", ...combinedKeys("SDIFF", id, others)]),
         "SDIFF",
         schema
       );
@@ -161,8 +186,7 @@ export function createSetStore<
         await client.send([
           "SINTERCARD",
           others.length + 1,
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
+          ...combinedKeys("SINTERCARD", id, others)
         ]),
         "SINTERCARD"
       );
@@ -173,12 +197,12 @@ export function createSetStore<
       id: TId,
       others: readonly TId[]
     ): Promise<number> {
+      const keys = combinedKeys("SUNIONSTORE", id, others);
       return expectNumber(
         await client.send([
           "SUNIONSTORE",
-          schema.key(destination),
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
+          storeTarget("SUNIONSTORE", destination, keys[0]),
+          ...keys
         ]),
         "SUNIONSTORE"
       );
@@ -189,12 +213,12 @@ export function createSetStore<
       id: TId,
       others: readonly TId[]
     ): Promise<number> {
+      const keys = combinedKeys("SINTERSTORE", id, others);
       return expectNumber(
         await client.send([
           "SINTERSTORE",
-          schema.key(destination),
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
+          storeTarget("SINTERSTORE", destination, keys[0]),
+          ...keys
         ]),
         "SINTERSTORE"
       );
@@ -205,12 +229,12 @@ export function createSetStore<
       id: TId,
       others: readonly TId[]
     ): Promise<number> {
+      const keys = combinedKeys("SDIFFSTORE", id, others);
       return expectNumber(
         await client.send([
           "SDIFFSTORE",
-          schema.key(destination),
-          schema.key(id),
-          ...others.map((other) => schema.key(other))
+          storeTarget("SDIFFSTORE", destination, keys[0]),
+          ...keys
         ]),
         "SDIFFSTORE"
       );
@@ -224,12 +248,13 @@ export function createSetStore<
       destination: TId,
       member: TInput
     ): Promise<boolean> {
+      const from = schema.key(source);
       return (
         expectNumber(
           await client.send([
             "SMOVE",
-            schema.key(source),
-            schema.key(destination),
+            from,
+            storeTarget("SMOVE", destination, from),
             schema.encode(member)
           ]),
           "SMOVE"
@@ -241,4 +266,53 @@ export function createSetStore<
       return expectNumber(await client.send(["DEL", schema.key(id)]), "DEL");
     }
   };
+}
+
+/** The set resource: the store plus the schema's own typed `key()`. */
+export function createSetResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: SetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  return withKey(
+    schema,
+    createSetStore(ctx.client, schema, ctx.assertSameSlot)
+  );
+}
+
+const setBinding: StoreBinding = { resource: createSetResource };
+
+export function defineSet<
+  TPrefix extends string,
+  TInput,
+  TOutput = TInput,
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
+>(
+  prefix: TPrefix,
+  codec: Codec<TInput, TOutput>,
+  options?: KeyOptions<TIds, THashTag>
+): SetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    kind: "set",
+    prefix,
+    // Spread so the property is absent, not `undefined`, on the default
+    // layout: a schema still enumerates as the plain data it looks like.
+    ...(hashTag === undefined ? {} : { hashTag }),
+    key: keyBuilder(prefix, hashTag),
+    encode(member) {
+      return codec.encode(member);
+    },
+    decode(stored) {
+      return codec.decode(stored);
+    }
+  } as SetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag>;
+  return withStore(schema, setBinding);
 }

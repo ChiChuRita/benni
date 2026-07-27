@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
-import { createListStore } from "../src/core/list.js";
-import { defineList } from "../src/core/schemas.js";
+import { createListStore, defineList } from "../src/core/list.js";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
 import { fakeClient } from "./fake-client.js";
 

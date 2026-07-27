@@ -26,12 +26,13 @@ export type UpstashOptions = {
  * `POST`ed to `/` (`send`), `/pipeline` (`pipeline`), or `/multi-exec`
  * (`transaction`, atomic MULTI/EXEC).
  *
- * HTTP is stateless, so this adapter deliberately omits `session`: blocking
- * commands (`BLPOP`, `XREAD BLOCK`, …), `WATCH`-based optimistic transactions,
- * and Pub/Sub all require a persistent exclusive connection and are only
- * available through the TCP adapters (`beni/node`, `beni/bun`).
- * `redis.session()` / `redis.watch()` throw a clear `TypeError` when used
- * with this client.
+ * HTTP is stateless, so this adapter deliberately omits `session` and
+ * `subscriber`: blocking commands (`BLPOP`, `XREAD BLOCK`, …), `WATCH`-based
+ * optimistic transactions, and Pub/Sub *subscribing* all need a persistent
+ * exclusive connection, so they are only available through the TCP adapters
+ * (`beni/node`, `beni/bun`). `redis.session()` / `redis.watch()` and
+ * subscribing throw a clear `TypeError` when used with this client.
+ * Publishing is a plain stateless command and works here.
  *
  * Binary (`Uint8Array`) command arguments are not supported over REST; use the
  * `bytes()` codec (which stores base64 strings) or a TCP adapter.

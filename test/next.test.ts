@@ -18,15 +18,15 @@ describe("cacheHandler", () => {
 
     expect(commands).toHaveLength(3);
     const [set, ...sadds] = commands;
-    expect(set?.slice(0, 2)).toEqual(["SET", "next-cache:entry:/blog"]);
+    expect(set?.slice(0, 2)).toEqual(["SET", "{next-cache}:entry:/blog"]);
     expect(set?.slice(3)).toEqual(["EX", 60]);
     const entry = JSON.parse(set?.[2] as string);
     expect(entry.value).toEqual({ kind: "PAGE" });
     expect(entry.tags).toEqual(["posts", "layout"]);
     expect(typeof entry.lastModified).toBe("number");
     expect(sadds).toEqual([
-      ["SADD", "next-cache:tag:posts", "/blog"],
-      ["SADD", "next-cache:tag:layout", "/blog"]
+      ["SADD", "{next-cache}:tag:posts", "/blog"],
+      ["SADD", "{next-cache}:tag:layout", "/blog"]
     ]);
   });
 
@@ -64,7 +64,7 @@ describe("cacheHandler", () => {
 
     const entry = await new Handler().get("/blog");
 
-    expect(commands).toEqual([["GET", "next-cache:entry:/blog"]]);
+    expect(commands).toEqual([["GET", "{next-cache}:entry:/blog"]]);
     expect(entry).toEqual(stored);
   });
 
@@ -91,12 +91,12 @@ describe("cacheHandler", () => {
     await new Handler().revalidateTag("posts");
 
     expect(commands).toEqual([
-      ["SMEMBERS", "next-cache:tag:posts"],
+      ["SMEMBERS", "{next-cache}:tag:posts"],
       [
         "DEL",
-        "next-cache:entry:/blog",
-        "next-cache:entry:/blog/post-1",
-        "next-cache:tag:posts"
+        "{next-cache}:entry:/blog",
+        "{next-cache}:entry:/blog/post-1",
+        "{next-cache}:tag:posts"
       ]
     ]);
   });
@@ -109,14 +109,14 @@ describe("cacheHandler", () => {
     await new Handler().revalidateTag(["one", "two"]);
 
     expect(commands).toEqual([
-      ["SMEMBERS", "next-cache:tag:one"],
-      ["SMEMBERS", "next-cache:tag:two"],
+      ["SMEMBERS", "{next-cache}:tag:one"],
+      ["SMEMBERS", "{next-cache}:tag:two"],
       [
         "DEL",
-        "next-cache:entry:/a",
-        "next-cache:entry:/b",
-        "next-cache:tag:one",
-        "next-cache:tag:two"
+        "{next-cache}:entry:/a",
+        "{next-cache}:entry:/b",
+        "{next-cache}:tag:one",
+        "{next-cache}:tag:two"
       ]
     ]);
   });

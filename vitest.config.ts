@@ -9,7 +9,13 @@ export default defineConfig({
       // which require a live Redis and are skipped in the default run, so
       // they are excluded here rather than dragging the gate to zero.
       include: ["src/**/*.ts"],
-      exclude: ["src/node/**", "src/bun/**", "src/deno/**", "src/index.ts"],
+      exclude: [
+        "src/node/**",
+        "src/ioredis/**",
+        "src/bun/**",
+        "src/deno/**",
+        "src/index.ts"
+      ],
       reporter: ["text", "html"],
       // Floors sit a few points below current coverage (~95% statements /
       // ~95% branches) so real regressions fail the gate without it being

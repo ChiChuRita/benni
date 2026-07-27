@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
 import { ValidationError } from "../src/core/errors.js";
-import { defineStream, type StreamEntry } from "../src/core/stream.js";
+import type { StreamEntry } from "../src/core/stream.js";
 import {
   createBlockingStreamGroupOps,
   createStreamGroupOps,
@@ -10,6 +10,7 @@ import {
   type StreamPendingEntry,
   type StreamPendingSummary
 } from "../src/core/stream-group.js";
+import { defineStream } from "../src/core/stream-resource.js";
 import type {
   RedisClient,
   RedisCommand,

@@ -25,6 +25,22 @@ import {
 
 export type RedisClientFactory = () => Promise<RedisClient>;
 
+/**
+ * Runner-agnostic poll: this contract suite executes under both Vitest and
+ * `bun test`, so it cannot use helpers exclusive to either (vi.waitUntil).
+ */
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 1000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for a Pub/Sub message");
+}
+
 export async function expectRedisClientContract(
   createClient: RedisClientFactory
 ): Promise<void> {
@@ -172,6 +188,61 @@ export async function expectRedisClientContract(
       expect(survivor.closed).toBe(false);
       await parent.close();
       expect(survivor.closed).toBe(true);
+    }
+
+    // Subscriber contract: an adapter that advertises subscriber() must
+    // deliver on the leased connection, keep the shared client usable while
+    // subscribed, honour unsubscribe, and be force-closed by the parent.
+    if (client.subscriber) {
+      const channelName = `${rawKey}:channel`;
+      const subscriber = await client.subscriber();
+      const seen: string[] = [];
+
+      try {
+        await subscriber.subscribe(channelName, (message) => {
+          seen.push(message);
+        });
+
+        // The shared client publishes while the subscriber holds its own
+        // connection; PUBLISH returns the number of receivers.
+        await expect(
+          client.send(["PUBLISH", channelName, "first"])
+        ).resolves.toBe(1);
+        await waitUntil(() => seen.length === 1);
+        expect(seen).toEqual(["first"]);
+
+        // Subscriber mode must not stall the shared connection.
+        await expect(client.send(["PING"])).resolves.toBe("PONG");
+
+        await subscriber.unsubscribe(channelName);
+        await expect(
+          client.send(["PUBLISH", channelName, "second"])
+        ).resolves.toBe(0);
+        expect(seen).toEqual(["first"]);
+
+        // Pattern support is optional; when present it reports the channel.
+        if (subscriber.psubscribe && subscriber.punsubscribe) {
+          const matched: Array<[string, string]> = [];
+          await subscriber.psubscribe(`${rawKey}:p:*`, (message, channel) => {
+            matched.push([message, channel]);
+          });
+          await client.send(["PUBLISH", `${rawKey}:p:one`, "hello"]);
+          await waitUntil(() => matched.length === 1);
+          expect(matched).toEqual([["hello", `${rawKey}:p:one`]]);
+          await subscriber.punsubscribe(`${rawKey}:p:*`);
+        }
+      } finally {
+        await subscriber.close();
+      }
+      expect(subscriber.closed).toBe(true);
+      await expect(subscriber.close()).resolves.toBeUndefined();
+
+      // Leak backstop: the parent client force-closes a surviving subscriber.
+      const parentWithSub = await createClient();
+      const survivingSubscriber = await parentWithSub.subscriber!();
+      expect(survivingSubscriber.closed).toBe(false);
+      await parentWithSub.close();
+      expect(survivingSubscriber.closed).toBe(true);
     }
 
     await profileStore.set(id, { name: "beni", score: 1 }, { ttlSeconds: 60 });

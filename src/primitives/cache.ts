@@ -47,13 +47,18 @@ export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
     "lockTtlMs"
   );
   const pollMs = positiveInt(options.pollMs ?? DEFAULT_POLL_MS, "pollMs");
-  // The fill lock lives next to the entries: <prefix>:lock:<id>.
+  // The fill lock lives next to the entries: <prefix>:lock:{<id>}.
   const fillLocks = lock(client, {
     prefix: `${prefix}:lock`,
     ttlMs: lockTtlMs
   });
 
-  const key = (id: string) => `${prefix}:${id}`;
+  // The id carries the hash tag, so an entry and its own fill lock always land
+  // on the same Cluster node while the cache itself still spreads across the
+  // keyspace — which is the one property a cache must keep. Tagging the prefix
+  // instead would pin every entry to a single node.
+  const tagged = (id: string) => `{${id}}`;
+  const key = (id: string) => `${prefix}:${tagged(id)}`;
 
   async function read(id: string): Promise<{ hit: boolean; value?: T }> {
     const reply = await client.send(["GET", key(id)]);
@@ -80,7 +85,7 @@ export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
       const first = await read(id);
       if (first.hit) return first.value as T;
 
-      const handle = await fillLocks.acquire(id);
+      const handle = await fillLocks.acquire(tagged(id));
       if (handle) {
         try {
           // Double-check: another caller may have filled between miss and lock.

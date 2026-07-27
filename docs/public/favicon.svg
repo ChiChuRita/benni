@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="beni-logo-title">
   <title id="beni-logo-title">Beni</title>
+  <!-- Brand red, literal on purpose: a favicon is fetched by the browser chrome
+       with no page CSS in scope, so CSS custom properties and currentColor can
+       never apply here. Keep in sync with the beni-brand token in
+       docs/src/styles/custom.css; test/brand.test.ts enforces it. The token is
+       named here without its leading dashes because an XML comment may not
+       contain a double hyphen. -->
   <rect x="15" y="9" width="8" height="46" rx="4" fill="#e11d48"/>
   <circle cx="33" cy="38" r="12" fill="none" stroke="#e11d48" stroke-width="8"/>
 </svg>

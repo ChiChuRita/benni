@@ -4,6 +4,8 @@ import { type RatelimitResult, ratelimit } from "../primitives/index.js";
 export type { RatelimitResult } from "../primitives/index.js";
 
 const DEFAULT_CACHE_PREFIX = "next-cache";
+/** Keys per DEL in revalidateTag, so one popular tag cannot block the server. */
+const DEL_CHUNK = 500;
 const DEFAULT_RATELIMIT_PREFIX = "next-ratelimit";
 
 /**
@@ -115,8 +117,13 @@ export function cacheHandler(
   const defaultTtlSeconds = options.defaultTtlSeconds;
   const getClient = createClientResolver(options.client);
 
-  const entryKey = (key: string) => `${prefix}:entry:${key}`;
-  const tagKey = (tag: string) => `${prefix}:tag:${tag}`;
+  // One hash tag over every key keeps the whole cache in a single Cluster
+  // slot, which is what lets revalidateTag DEL entries and tag sets together.
+  // Without it that DEL is CROSSSLOT and the handler is simply broken on a
+  // cluster; on a single node the layout behaves identically.
+  const base = `{${prefix}}`;
+  const entryKey = (key: string) => `${base}:entry:${key}`;
+  const tagKey = (tag: string) => `${base}:tag:${tag}`;
 
   const ttlSecondsFor = (revalidate: number | false | undefined) => {
     if (typeof revalidate === "number" && revalidate > 0) {
@@ -185,7 +192,15 @@ export function cacheHandler(
           doomed.push(entryKey(member));
         }
       }
-      await client.send(["DEL", ...doomed, ...tagKeys]);
+      // Entries first, then the tag sets. A popular tag can name tens of
+      // thousands of entries, and one DEL over all of them is a multi-megabyte
+      // command that blocks the server, so chunk it. The order matters if we
+      // die partway: a tag pointing at already-deleted entries is harmless and
+      // self-healing, while entries whose tag is gone can never be revalidated.
+      const victims = [...doomed, ...tagKeys];
+      for (let index = 0; index < victims.length; index += DEL_CHUNK) {
+        await client.send(["DEL", ...victims.slice(index, index + DEL_CHUNK)]);
+      }
     }
 
     resetRequestCache(): void {

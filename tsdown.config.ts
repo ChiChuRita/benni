@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     schema: "src/schema.ts",
     "core/index": "src/core/index.ts",
+    cluster: "src/cluster.ts",
     "node/index": "src/node/index.ts",
     "bun/index": "src/bun/index.ts",
     "upstash/index": "src/upstash/index.ts",

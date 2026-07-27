@@ -29,14 +29,8 @@ export default defineConfig({
             {
               label: "Advanced",
               description:
-                "Incremental scans, MULTI/EXEC transactions, optimistic WATCH transactions, Lua scripts, dedicated-connection sessions, and blocking operations.",
+                "Incremental scans, MULTI/EXEC transactions, optimistic WATCH transactions, Lua scripts, dedicated-connection sessions, blocking operations, and Redis Cluster slot co-location.",
               paths: ["advanced/**"],
-            },
-            {
-              label: "Comparisons",
-              description:
-                "How Beni relates to ioredis and @upstash/redis: what each library types, which features Beni does not cover, and how to choose between them.",
-              paths: ["comparisons/**"],
             },
             {
               label: "Primitives",
@@ -54,6 +48,12 @@ export default defineConfig({
               label: "Patterns and Examples",
               description: "Worked examples and implementation patterns.",
               paths: ["patterns/**", "examples"],
+            },
+            {
+              label: "Comparisons",
+              description:
+                "How Beni relates to ioredis and @upstash/redis: what each library types, which features Beni does not cover, and how to choose between them.",
+              paths: ["comparisons/**"],
             },
           ],
         }),
@@ -174,6 +174,7 @@ export default defineConfig({
               label: "Blocking Operations",
               slug: "advanced/blocking-operations",
             },
+            { label: "Redis Cluster", slug: "advanced/cluster" },
           ],
         },
         {

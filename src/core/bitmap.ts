@@ -1,5 +1,13 @@
 import { replyShapeError, ValidationError } from "./errors.js";
 import { createKeyLifecycleOps, expectNumber } from "./helpers.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
+import type { SlotGuard } from "./slot.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
 import type {
   RedisClient,
   RedisCommandArgument,
@@ -10,11 +18,15 @@ import type {
 
 export type BitmapSchema<
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = {
   readonly kind: "bitmap";
   readonly prefix: TPrefix;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  readonly hashTag?: THashTag;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
 };
 
 export type BitmapRangeUnit = "BYTE" | "BIT";
@@ -72,18 +84,22 @@ export interface BitfieldBuilder<T extends readonly (number | null)[]> {
 
 export function defineBitmap<
   TPrefix extends string,
-  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[]
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
 >(
   prefix: TPrefix,
-  _options?: { readonly ids?: TIds }
-): BitmapSchema<TPrefix, TIds[number]> {
-  return {
+  options?: KeyOptions<TIds, THashTag>
+): BitmapSchema<TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  const schema: BitmapSchema<TPrefix, TIds[number], THashTag> = {
     kind: "bitmap",
     prefix,
-    key(id) {
-      return `${prefix}:${String(id)}` as `${TPrefix}:${typeof id}`;
-    }
+    // Spread so the property is absent, not `undefined`, on the default
+    // layout: a schema still enumerates as the plain data it looks like.
+    ...(hashTag === undefined ? {} : { hashTag }),
+    key: keyBuilder(prefix, hashTag)
   };
+  return withStore(schema, bitmapBinding);
 }
 
 function bitOffset(offset: number): number {
@@ -212,7 +228,8 @@ function makeBitfieldBuilder<T extends readonly (number | null)[]>(
 
 export function createBitmapStore<TId extends RedisKeyPart = RedisKeyPart>(
   client: RedisClient,
-  schema: BitmapSchema<string, TId>
+  schema: BitmapSchema<string, TId>,
+  assertSameSlot?: SlotGuard
 ) {
   return {
     ...createKeyLifecycleOps(client, (id: TId) => schema.key(id)),
@@ -303,13 +320,13 @@ export function createBitmapStore<TId extends RedisKeyPart = RedisKeyPart>(
           "bitop with NOT requires exactly one source id"
         );
       }
+      const keys = [
+        schema.key(destination),
+        ...sources.map((source) => schema.key(source))
+      ];
+      assertSameSlot?.("BITOP", keys, schema);
       return expectNumber(
-        await client.send([
-          "BITOP",
-          operation,
-          schema.key(destination),
-          ...sources.map((source) => schema.key(source))
-        ]),
+        await client.send(["BITOP", operation, ...keys]),
         "BITOP"
       );
     },
@@ -326,3 +343,17 @@ export function createBitmapStore<TId extends RedisKeyPart = RedisKeyPart>(
     }
   };
 }
+
+/** The bitmap resource: the store plus the schema's own typed `key()`. */
+export function createBitmapResource<
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(ctx: StoreContext, schema: BitmapSchema<TPrefix, TId, THashTag>) {
+  return withKey(
+    schema,
+    createBitmapStore(ctx.client, schema, ctx.assertSameSlot)
+  );
+}
+
+const bitmapBinding: StoreBinding = { resource: createBitmapResource };

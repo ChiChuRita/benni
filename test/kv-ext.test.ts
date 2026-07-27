@@ -3,9 +3,9 @@ import { codecs } from "../src/core/codecs.js";
 import { createCounterStore } from "../src/core/counter.js";
 import {
   createKeyValueStore,
+  defineKeyspace,
   type KeyValueSetOptions
 } from "../src/core/key-value.js";
-import { defineKeyspace } from "../src/core/schemas.js";
 import {
   createStringStore,
   type LcsIdxResult,

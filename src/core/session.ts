@@ -1,4 +1,5 @@
 import { replyShapeError, ValidationError } from "./errors.js";
+import type { SlotGuard } from "./slot.js";
 import {
   createWatchedTransaction,
   type WatchedRedisTransaction
@@ -122,7 +123,10 @@ export type BeniSessionKernel = {
  * it can promptly reject an in-flight blocking read; queued-but-unsent
  * work then rejects with SessionClosedError.
  */
-export function createBeniSession(raw: RedisSession): BeniSessionKernel {
+export function createBeniSession(
+  raw: RedisSession,
+  assertSameSlot?: SlotGuard
+): BeniSessionKernel {
   let closed = false;
   let tail: Promise<void> = Promise.resolve();
 
@@ -184,6 +188,7 @@ export function createBeniSession(raw: RedisSession): BeniSessionKernel {
       if (keys.length === 0) {
         throw new ValidationError("watch requires at least one key");
       }
+      assertSameSlot?.("WATCH", keys);
       await run(async () => {
         const reply = await raw.send(["WATCH", ...keys]);
         if (reply !== "OK") {
@@ -200,7 +205,7 @@ export function createBeniSession(raw: RedisSession): BeniSessionKernel {
       });
     },
     multi() {
-      return createWatchedTransaction(kernel);
+      return createWatchedTransaction(kernel, assertSameSlot);
     },
     watchedTransaction(commands) {
       return run(() => raw.watchedTransaction(commands));

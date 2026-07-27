@@ -5,8 +5,17 @@ import {
   decodeStringOrNull,
   expectNumber
 } from "./helpers.js";
+import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
 import { type BlockingWait, blockingTimeoutSeconds } from "./session.js";
+import type { SlotGuard, SlotHint } from "./slot.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withKey,
+  withStore
+} from "./store.js";
 import type {
+  Codec,
   ListSchema,
   RedisClient,
   RedisCommandArgument,
@@ -69,13 +78,19 @@ function listPopCount(count: number): number {
  */
 function requestedKeyIds<TId>(
   ids: readonly TId[],
-  key: (id: TId) => string
+  key: (id: TId) => string,
+  command: string,
+  assertSameSlot?: SlotGuard,
+  hint?: SlotHint
 ): Map<string, TId> {
   if (ids.length === 0) {
     throw new ValidationError("ids must contain at least one id");
   }
   const idsByKey = new Map<string, TId>();
   for (const id of ids) idsByKey.set(key(id), id);
+  // Guarding the map keys rather than `ids` also de-duplicates, which is
+  // right: blpop(["a", "a", "b"]) only has two distinct slots to check.
+  assertSameSlot?.(command, [...idsByKey.keys()], hint);
   return idsByKey;
 }
 
@@ -110,7 +125,11 @@ export function createListStore<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, schema: ListSchema<TInput, TOutput, string, TId>) {
+>(
+  client: RedisClient,
+  schema: ListSchema<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
   async function lpopScalar(id: TId): Promise<TOutput | null> {
     return decodeStringOrNull(
       await client.send(["LPOP", schema.key(id)]),
@@ -148,7 +167,13 @@ export function createListStore<
     ids: readonly TPick[],
     options: ListMultiPopOptions
   ): Promise<{ id: TPick; values: TOutput[] } | null> {
-    const idsByKey = requestedKeyIds(ids, (id) => schema.key(id));
+    const idsByKey = requestedKeyIds(
+      ids,
+      (id) => schema.key(id),
+      "LMPOP",
+      assertSameSlot,
+      schema
+    );
     const command: [string, ...RedisCommandArgument[]] = [
       "LMPOP",
       ids.length,
@@ -409,11 +434,14 @@ export function createListStore<
       from: ListEnd,
       to: ListEnd
     ): Promise<TOutput | null> {
+      const sourceKey = schema.key(source);
+      const destKey = schema.key(destination);
+      assertSameSlot?.("LMOVE", [sourceKey, destKey], schema);
       return decodeStringOrNull(
         await client.send([
           "LMOVE",
-          schema.key(source),
-          schema.key(destination),
+          sourceKey,
+          destKey,
           from.toUpperCase(),
           to.toUpperCase()
         ]),
@@ -449,7 +477,11 @@ export function createBlockingListOps<
   TInput,
   TOutput,
   TId extends RedisKeyPart = RedisKeyPart
->(client: RedisClient, schema: ListSchema<TInput, TOutput, string, TId>) {
+>(
+  client: RedisClient,
+  schema: ListSchema<TInput, TOutput, string, TId>,
+  assertSameSlot?: SlotGuard
+) {
   function decodeBlockingPopPair(
     reply: RedisReply,
     command: string
@@ -481,7 +513,13 @@ export function createBlockingListOps<
     ids: readonly TPick[],
     options: BlockingWait
   ): Promise<{ id: TPick; value: TOutput } | null> {
-    const idsByKey = requestedKeyIds(ids, (id) => schema.key(id));
+    const idsByKey = requestedKeyIds(
+      ids,
+      (id) => schema.key(id),
+      command,
+      assertSameSlot,
+      schema
+    );
     const timeout = blockingTimeoutSeconds(options.timeoutSeconds);
     const reply = await client.send([
       command,
@@ -579,12 +617,15 @@ export function createBlockingListOps<
     to: ListEnd,
     options: BlockingWait
   ): Promise<TOutput | null> {
+    const sourceKey = schema.key(source);
+    const destKey = schema.key(destination);
+    assertSameSlot?.("BLMOVE", [sourceKey, destKey], schema);
     const timeout = blockingTimeoutSeconds(options.timeoutSeconds);
     return decodeStringOrNull(
       await client.send([
         "BLMOVE",
-        schema.key(source),
-        schema.key(destination),
+        sourceKey,
+        destKey,
         from.toUpperCase(),
         to.toUpperCase(),
         timeout
@@ -598,7 +639,13 @@ export function createBlockingListOps<
     ids: readonly TPick[],
     options: ListBlockingMultiPopOptions
   ): Promise<{ id: TPick; values: TOutput[] } | null> {
-    const idsByKey = requestedKeyIds(ids, (id) => schema.key(id));
+    const idsByKey = requestedKeyIds(
+      ids,
+      (id) => schema.key(id),
+      "BLMPOP",
+      assertSameSlot,
+      schema
+    );
     const timeout = blockingTimeoutSeconds(options.timeoutSeconds);
     const command: [string, ...RedisCommandArgument[]] = [
       "BLMPOP",
@@ -654,4 +701,79 @@ export function createBlockingListOps<
     blmove,
     blmpop
   };
+}
+
+/** The list resource: the base (non-blocking) store plus the typed `key()`. */
+export function createListResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  return withKey(
+    schema,
+    createListStore(ctx.client, schema, ctx.assertSameSlot)
+  );
+}
+
+/**
+ * Session list accessor: the base store spread with the blocking pops. Its
+ * inferred return type drives BeniSession["list"], so leftPopBlocking &
+ * friends are structurally present on a session and absent on the shared
+ * Beni handle.
+ */
+export function createListSessionAccessor<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined
+>(
+  ctx: StoreContext,
+  schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>
+) {
+  const store = createListStore(ctx.client, schema, ctx.assertSameSlot);
+  return {
+    ...withKey(schema, store),
+    ...createBlockingListOps(ctx.client, schema, ctx.assertSameSlot)
+  };
+}
+
+const listBinding: StoreBinding = {
+  resource: createListResource,
+  session: createListSessionAccessor
+};
+
+export function defineList<
+  TPrefix extends string,
+  TInput,
+  TOutput = TInput,
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
+  const THashTag extends HashTagLayout | undefined = undefined
+>(
+  prefix: TPrefix,
+  codec: Codec<TInput, TOutput>,
+  options?: KeyOptions<TIds, THashTag>
+): ListSchema<TInput, TOutput, TPrefix, TIds[number], THashTag> {
+  const hashTag = options?.hashTag as THashTag;
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    kind: "list",
+    prefix,
+    // Spread so the property is absent, not `undefined`, on the default
+    // layout: a schema still enumerates as the plain data it looks like.
+    ...(hashTag === undefined ? {} : { hashTag }),
+    key: keyBuilder(prefix, hashTag),
+    encode(value) {
+      return codec.encode(value);
+    },
+    decode(stored) {
+      return codec.decode(stored);
+    }
+  } as ListSchema<TInput, TOutput, TPrefix, TIds[number], THashTag>;
+  return withStore(schema, listBinding);
 }

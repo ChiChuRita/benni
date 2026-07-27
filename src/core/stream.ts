@@ -1,5 +1,6 @@
 import { replyShapeError, ValidationError } from "./errors.js";
 import { createKeyLifecycleOps, expectNumber } from "./helpers.js";
+import type { HashTagLayout } from "./keys.js";
 import { type BlockingWait, blockingTimeoutMilliseconds } from "./session.js";
 import type {
   FieldCodecs,
@@ -16,12 +17,16 @@ import type {
 export type StreamSchema<
   TFields extends FieldCodecs,
   TPrefix extends string = string,
-  TId extends RedisKeyPart = RedisKeyPart
+  TId extends RedisKeyPart = RedisKeyPart,
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
 > = InferAnchors<InferHashInput<TFields>, Partial<InferHashOutput<TFields>>> & {
   readonly kind: "stream";
   readonly prefix: TPrefix;
+  readonly hashTag?: THashTag;
   readonly fields: TFields;
-  key<TActualId extends TId>(id: TActualId): RedisKey<TPrefix, TActualId>;
+  key<TActualId extends TId>(
+    id: TActualId
+  ): RedisKey<TPrefix, TActualId, THashTag>;
 };
 
 export type StreamEntry<TFields extends FieldCodecs> = {
@@ -71,26 +76,6 @@ export type StreamTrimOptions =
     };
 
 export type StreamBlockingReadOptions = StreamReadOptions & BlockingWait;
-
-export function defineStream<
-  TPrefix extends string,
-  TFields extends FieldCodecs,
-  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[]
->(
-  prefix: TPrefix,
-  fields: TFields,
-  _options?: { readonly ids?: TIds }
-): StreamSchema<TFields, TPrefix, TIds[number]> {
-  // The $infer* anchors are type-only phantoms — cast the literal.
-  return {
-    kind: "stream",
-    prefix,
-    fields,
-    key(id) {
-      return `${prefix}:${String(id)}` as `${TPrefix}:${typeof id}`;
-    }
-  } as StreamSchema<TFields, TPrefix, TIds[number]>;
-}
 
 function positiveCount(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) {

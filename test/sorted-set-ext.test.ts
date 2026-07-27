@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
-import { defineSortedSet } from "../src/core/schemas.js";
 import type {
   SortedSetLexBound,
   SortedSetRangeByScoreOptions,
   SortedSetScoreBound
 } from "../src/core/sorted-set.js";
-import { createSortedSetStore } from "../src/core/sorted-set.js";
+import {
+  createSortedSetStore,
+  defineSortedSet
+} from "../src/core/sorted-set.js";
 import type {
   RedisClient,
   RedisCommand,

@@ -1,0 +1,13 @@
+# A single-node Redis with cluster mode ENABLED. This is not a sharded cluster
+# and needs no routing: one node owning all 16384 slots is enough to test the
+# cluster-safe-keys feature, because Redis checks that a multi-key command's
+# keys share a slot BEFORE it considers which node owns that slot. It also
+# answers CLUSTER KEYSLOT, which a non-cluster instance refuses, so the CRC16
+# implementation can be differential-tested against the server itself.
+#
+# The test suite assigns the slots in beforeAll via CLUSTER ADDSLOTSRANGE.
+FROM redis:8-alpine
+
+EXPOSE 6379
+
+CMD ["redis-server", "--cluster-enabled", "yes", "--save", "", "--appendonly", "no"]

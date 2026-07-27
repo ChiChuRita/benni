@@ -1,14 +1,26 @@
-import { type BitmapSchema, createBitmapStore } from "./core/bitmap.js";
+// Every `create*Resource` below is imported TYPE-ONLY. QueryResource and
+// BeniSession name them through `ReturnType<typeof …>` to keep the public
+// types byte-identical, while the runtime dispatch goes through the store
+// binding each schema carries — so a bundler only ever pulls in the store
+// modules whose schemas the app actually declares. Turning any of these into
+// a value import silently re-pins every store to the root entry.
+import type { BitmapSchema, createBitmapResource } from "./core/bitmap.js";
 import { createCounterStore } from "./core/counter.js";
-import { replyShapeError } from "./core/errors.js";
-import { createGeoStore, type GeoSetSchema } from "./core/geo.js";
-import { createHashStore } from "./core/hash.js";
-import type { HyperLogLogSchema } from "./core/hyperloglog.js";
-import { createHyperLogLogStore } from "./core/hyperloglog.js";
-import { createKeyValueStore } from "./core/key-value.js";
-import { createBlockingListOps, createListStore } from "./core/list.js";
+import type { createGeoResource, GeoSetSchema } from "./core/geo.js";
+import type { createHashResource } from "./core/hash.js";
 import type {
-  InferPubSubInput,
+  createHllResource,
+  HyperLogLogSchema
+} from "./core/hyperloglog.js";
+import type { createKvResource } from "./core/key-value.js";
+import type { HashTagLayout, SameSlotArg, SameSlotList } from "./core/keys.js";
+import type {
+  createListResource,
+  createListSessionAccessor
+} from "./core/list.js";
+import type {
+  createChannelResource,
+  createPatternResource,
   PubSubChannel,
   PubSubPattern
 } from "./core/pubsub.js";
@@ -21,26 +33,31 @@ import {
   scanSet,
   scanSortedSet
 } from "./core/scan.js";
-import { createScriptRunner } from "./core/script.js";
+import type { createScriptResource, ScriptSchema } from "./core/script.js";
 import {
   createBeniSession,
   type RunWatchOptions,
   runWatch
 } from "./core/session.js";
-import { createSetStore } from "./core/set.js";
-import {
-  createBlockingSortedSetOps,
-  createSortedSetStore
+import type { createSetResource } from "./core/set.js";
+import type { SlotGuard } from "./core/slot.js";
+import type {
+  createZsetResource,
+  createZsetSessionAccessor
 } from "./core/sorted-set.js";
 import {
-  createBlockingStreamOps,
-  createStreamStore,
-  type StreamSchema
-} from "./core/stream.js";
-import {
-  createBlockingStreamGroupOps,
-  createStreamGroupOps
-} from "./core/stream-group.js";
+  createStoreContext,
+  PUBSUB_HUB_KEY,
+  resolveSessionStore,
+  resolveStore,
+  type StoreContext,
+  withKey
+} from "./core/store.js";
+import type { StreamSchema } from "./core/stream.js";
+import type {
+  createStreamResource,
+  createStreamSessionAccessor
+} from "./core/stream-resource.js";
 import { createStringStore } from "./core/string.js";
 import {
   createTransaction,
@@ -49,7 +66,6 @@ import {
 import type {
   FieldCodecs,
   HashSchema,
-  InferHashInput,
   Keyspace,
   ListSchema,
   RedisClient,
@@ -58,266 +74,179 @@ import type {
   SetSchema,
   SortedSetSchema
 } from "./core/types.js";
-import type { ScriptSchema } from "./schema.js";
 
 export type BeniSchema = Record<string, unknown>;
 
 export type BeniOptions<TSchema extends BeniSchema = BeniSchema> = {
   readonly schema?: TSchema;
-  readonly pubsub?: {
-    publish<TChannel extends PubSubChannel<any>>(
-      channel: TChannel,
-      message: InferPubSubInput<TChannel>
-    ): Promise<number>;
-    subscribe<TOutput>(
-      channel: PubSubChannel<any, TOutput>,
-      handler: (message: TOutput) => void | Promise<void>
-    ): Promise<{ unsubscribe(): Promise<void> }>;
-    subscribePattern?<TOutput>(
-      pattern: PubSubPattern<TOutput>,
-      handler: (message: TOutput, channel: string) => void | Promise<void>
-    ): Promise<{ unsubscribe(): Promise<void> }>;
-  };
+  /**
+   * Called when a Pub/Sub handler throws or rejects. Delivery to the other
+   * handlers continues either way. Without this, a failing handler is rethrown
+   * asynchronously rather than swallowed.
+   */
+  readonly onPubSubError?: (error: unknown) => void;
+  /**
+   * The Redis Cluster slot guard, which checks before sending that every key
+   * in a multi-key command hashes to one slot and throws `CrossSlotError` when
+   * it does not.
+   *
+   * ```ts
+   * import { assertSameSlot } from "beni/cluster";
+   * const redis = beni(client, { cluster: assertSameSlot });
+   * ```
+   *
+   * You pass the checker rather than `true` so the CRC16 table and the error's
+   * fix-hint prose live in `beni/cluster` instead of the root entry. `beni()`
+   * has to reference the guard to install it, so a boolean would pull all of
+   * it into every bundle, including the ones that never turn the check on.
+   *
+   * **This validates your keys; it does not route them.** Beni models slot
+   * co-location, not cluster topology: routing comes from the cluster-aware
+   * client underneath.
+   *
+   * Omitted by default, because cross-slot multi-key commands are perfectly
+   * legal on a single-node Redis and enabling this unconditionally would break
+   * every such caller. Turn it on in development and CI.
+   */
+  readonly cluster?: SlotGuard;
 };
 
-// Carry the schema's own key() type through (not a widened `(id) => string`)
-// so `redis.kv(s).key("42")` keeps the `"prefix:42"` template-literal type
-// the schemas advertise.
-function withKey<
-  TId extends RedisKeyPart,
-  TSchema extends { key(id: TId): string },
-  TStore extends object
->(schema: TSchema, store: TStore): TStore & Pick<TSchema, "key"> {
-  return {
-    ...store,
-    key: schema.key.bind(schema) as TSchema["key"]
-  };
-}
-
 /**
- * The data-store accessors shared by `beni()` and every session — each
- * bound to the connection passed in. `beni()` binds them to the shared
- * client; a session rebinds the identical set to its private connection so
+ * The data-store accessors shared by `beni()` and every session — each bound
+ * to the connection passed in. `beni()` binds them to the shared client; a
+ * session rebinds the identical set to its private connection so
  * `session.kv(x)` and `redis.kv(x)` behave the same. The list/zset/stream
- * accessors returned here are the base (non-blocking) shape; sessions spread
- * the blocking supersets over them (see createSessionAccessors).
+ * accessors returned here are the base (non-blocking) shape; sessions swap in
+ * the blocking supersets (see createBeniSessionFacade).
  *
- * The shared `stream` accessor exposes `.group(name)` for consumer groups —
- * non-blocking group ops bind to whatever connection they are given.
+ * Each accessor resolves the schema's own store binding rather than naming a
+ * store factory, so this module pulls in no store code. The casts restore the
+ * precise resource type the binding is known to produce — the accessor
+ * signatures, and therefore the public API, are unchanged.
+ *
+ * `counter` and `string` are the exceptions: they are alternate views over a
+ * plain kv keyspace rather than a kind of their own, so they cannot dispatch
+ * through the schema and stay bound directly.
  */
-function createKvResource<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: Keyspace<TInput, TOutput, TPrefix, TId>) {
-  return withKey(schema, createKeyValueStore(client, schema));
-}
-
-function createHashResource<
-  TFields extends FieldCodecs,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: HashSchema<TFields, TPrefix, TId>) {
-  return withKey(schema, createHashStore(client, schema));
-}
-
-function createSetResource<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: SetSchema<TInput, TOutput, TPrefix, TId>) {
-  return withKey(schema, createSetStore(client, schema));
-}
-
-function createListResource<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: ListSchema<TInput, TOutput, TPrefix, TId>) {
-  return withKey(schema, createListStore(client, schema));
-}
-
-function createZsetResource<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: SortedSetSchema<TInput, TOutput, TPrefix, TId>) {
-  return withKey(schema, createSortedSetStore(client, schema));
-}
-
-function createHllResource<
-  TInput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: HyperLogLogSchema<TInput, TPrefix, TId>) {
-  return withKey(schema, createHyperLogLogStore(client, schema));
-}
-
-function createStreamResource<
-  TFields extends FieldCodecs,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: StreamSchema<TFields, TPrefix, TId>) {
-  const store = createStreamStore(client, schema);
+function createStoreAccessors(ctx: StoreContext) {
   return {
-    ...withKey(schema, store),
-    ...createStreamGroupOps(client, schema)
-  };
-}
-
-function createBitmapResource<TPrefix extends string, TId extends RedisKeyPart>(
-  client: RedisClient,
-  schema: BitmapSchema<TPrefix, TId>
-) {
-  return withKey(schema, createBitmapStore(client, schema));
-}
-
-function createGeoResource<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: GeoSetSchema<TInput, TOutput, TPrefix, TId>) {
-  return withKey(schema, createGeoStore(client, schema));
-}
-
-function createCounterResource<
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: Keyspace<number, number, TPrefix, TId>) {
-  return withKey(schema, createCounterStore(client, schema));
-}
-
-function createStringResource<TPrefix extends string, TId extends RedisKeyPart>(
-  client: RedisClient,
-  schema: Keyspace<string, string, TPrefix, TId>
-) {
-  return withKey(schema, createStringStore(client, schema));
-}
-
-function createStoreAccessors(client: RedisClient) {
-  return {
-    kv: <TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-      schema: Keyspace<TInput, TOutput, TPrefix, TId>
-    ) => createKvResource(client, schema),
+    kv: <
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "kv schema") as ReturnType<
+        typeof createKvResource<TInput, TOutput, TPrefix, TId, THashTag>
+      >,
     hash: <
       TFields extends FieldCodecs,
       TPrefix extends string,
-      TId extends RedisKeyPart
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
     >(
-      schema: HashSchema<TFields, TPrefix, TId>
-    ) => createHashResource(client, schema),
-    list: <TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-      schema: ListSchema<TInput, TOutput, TPrefix, TId>
-    ) => createListResource(client, schema),
-    set: <TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-      schema: SetSchema<TInput, TOutput, TPrefix, TId>
-    ) => createSetResource(client, schema),
-    zset: <TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-      schema: SortedSetSchema<TInput, TOutput, TPrefix, TId>
-    ) => createZsetResource(client, schema),
-    hll: <TInput, TPrefix extends string, TId extends RedisKeyPart>(
-      schema: HyperLogLogSchema<TInput, TPrefix, TId>
-    ) => createHllResource(client, schema),
+      schema: HashSchema<TFields, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "hash schema") as ReturnType<
+        typeof createHashResource<TFields, TPrefix, TId, THashTag>
+      >,
+    list: <
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "list schema") as ReturnType<
+        typeof createListResource<TInput, TOutput, TPrefix, TId, THashTag>
+      >,
+    set: <
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: SetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "set schema") as ReturnType<
+        typeof createSetResource<TInput, TOutput, TPrefix, TId, THashTag>
+      >,
+    zset: <
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "zset schema") as ReturnType<
+        typeof createZsetResource<TInput, TOutput, TPrefix, TId, THashTag>
+      >,
+    hll: <
+      TInput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: HyperLogLogSchema<TInput, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "hll schema") as ReturnType<
+        typeof createHllResource<TInput, TPrefix, TId, THashTag>
+      >,
     stream: <
       TFields extends FieldCodecs,
       TPrefix extends string,
-      TId extends RedisKeyPart
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
     >(
-      schema: StreamSchema<TFields, TPrefix, TId>
-    ) => createStreamResource(client, schema),
-    bitmap: <TPrefix extends string, TId extends RedisKeyPart>(
-      schema: BitmapSchema<TPrefix, TId>
-    ) => createBitmapResource(client, schema),
-    geo: <TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-      schema: GeoSetSchema<TInput, TOutput, TPrefix, TId>
-    ) => createGeoResource(client, schema),
-    counter: <TPrefix extends string, TId extends RedisKeyPart>(
-      schema: Keyspace<number, number, TPrefix, TId>
-    ) => createCounterResource(client, schema),
-    string: <TPrefix extends string, TId extends RedisKeyPart>(
-      schema: Keyspace<string, string, TPrefix, TId>
-    ) => createStringResource(client, schema)
-  };
-}
-
-type BeniPubSubAdapter = BeniOptions["pubsub"];
-
-/**
- * A pub/sub channel resource: publish through the adapter (or the raw client
- * when no adapter is configured) and subscribe through the adapter's dedicated
- * subscriber connection.
- */
-function createChannelResource<TInput, TOutput>(
-  client: RedisClient,
-  pubsub: BeniPubSubAdapter,
-  channel: PubSubChannel<TInput, TOutput>
-) {
-  return {
-    publish(message: TInput): Promise<number> {
-      if (pubsub) return pubsub.publish(channel, message);
-      return client
-        .send(["PUBLISH", channel.name, channel.encode(message)])
-        .then((reply) => {
-          if (typeof reply !== "number") {
-            throw replyShapeError("PUBLISH", "number", reply);
-          }
-          return reply;
-        });
-    },
-    subscribe(handler: (message: TOutput) => void | Promise<void>) {
-      if (!pubsub) {
-        throw new TypeError("Pub/Sub subscribe requires a pubsub adapter");
-      }
-      return pubsub.subscribe(channel, handler);
-    }
-  };
-}
-
-/** A pub/sub pattern resource: pattern-subscribe through the adapter. */
-function createPatternResource<TOutput>(
-  pubsub: BeniPubSubAdapter,
-  pattern: PubSubPattern<TOutput>
-) {
-  return {
-    subscribe(
-      handler: (message: TOutput, channel: string) => void | Promise<void>
-    ) {
-      if (!pubsub?.subscribePattern) {
-        throw new TypeError(
-          "Pub/Sub pattern subscribe requires a pubsub adapter"
-        );
-      }
-      return pubsub.subscribePattern(pattern, handler);
-    }
-  };
-}
-
-/** A typed Lua script resource: run with named keys and args. */
-function createScriptResource<
-  TName extends string,
-  TKeys extends readonly string[],
-  TArgs extends FieldCodecs,
-  TResult
->(
-  scriptRunner: ReturnType<typeof createScriptRunner>,
-  schema: ScriptSchema<TName, TKeys, TArgs, TResult>
-) {
-  return {
-    run(input: {
-      readonly keys: { readonly [K in TKeys[number]]: string };
-      readonly args: InferHashInput<TArgs>;
-    }): Promise<TResult> {
-      return scriptRunner.run(
-        schema,
-        schema.keys.map((key) => input.keys[key as TKeys[number]]),
-        schema.encodeArgs(input.args)
-      );
-    }
+      schema: StreamSchema<TFields, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "stream schema") as ReturnType<
+        typeof createStreamResource<TFields, TPrefix, TId, THashTag>
+      >,
+    bitmap: <
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: BitmapSchema<TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "bitmap schema") as ReturnType<
+        typeof createBitmapResource<TPrefix, TId, THashTag>
+      >,
+    geo: <
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: GeoSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
+    ) =>
+      resolveStore(schema, ctx, "geo schema") as ReturnType<
+        typeof createGeoResource<TInput, TOutput, TPrefix, TId, THashTag>
+      >,
+    counter: <
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: Keyspace<number, number, TPrefix, TId, THashTag>
+    ) => withKey(schema, createCounterStore(ctx.client, schema)),
+    string: <
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(
+      schema: Keyspace<string, string, TPrefix, TId, THashTag>
+    ) => withKey(schema, createStringStore(ctx.client, schema))
   };
 }
 
@@ -349,44 +278,63 @@ export type SchemaKind =
  * shapes (kv/set/list/zset/geo) still resolve to distinct resources.
  */
 export type QueryResource<T> = T extends { readonly kind: "hash" }
-  ? T extends HashSchema<infer TFields, infer TPrefix extends string, infer TId>
-    ? ReturnType<typeof createHashResource<TFields, TPrefix, TId>>
+  ? T extends HashSchema<
+      infer TFields,
+      infer TPrefix extends string,
+      infer TId,
+      infer THashTag extends HashTagLayout | undefined
+    >
+    ? ReturnType<typeof createHashResource<TFields, TPrefix, TId, THashTag>>
     : never
   : T extends { readonly kind: "stream" }
     ? T extends StreamSchema<
         infer TFields,
         infer TPrefix extends string,
-        infer TId
+        infer TId,
+        infer THashTag extends HashTagLayout | undefined
       >
-      ? ReturnType<typeof createStreamResource<TFields, TPrefix, TId>>
+      ? ReturnType<typeof createStreamResource<TFields, TPrefix, TId, THashTag>>
       : never
     : T extends { readonly kind: "kv" }
       ? T extends Keyspace<
           infer TInput,
           infer TOutput,
           infer TPrefix extends string,
-          infer TId
+          infer TId,
+          infer THashTag extends HashTagLayout | undefined
         >
-        ? ReturnType<typeof createKvResource<TInput, TOutput, TPrefix, TId>>
+        ? ReturnType<
+            typeof createKvResource<TInput, TOutput, TPrefix, TId, THashTag>
+          >
         : never
       : T extends { readonly kind: "set" }
         ? T extends SetSchema<
             infer TInput,
             infer TOutput,
             infer TPrefix extends string,
-            infer TId
+            infer TId,
+            infer THashTag extends HashTagLayout | undefined
           >
-          ? ReturnType<typeof createSetResource<TInput, TOutput, TPrefix, TId>>
+          ? ReturnType<
+              typeof createSetResource<TInput, TOutput, TPrefix, TId, THashTag>
+            >
           : never
         : T extends { readonly kind: "list" }
           ? T extends ListSchema<
               infer TInput,
               infer TOutput,
               infer TPrefix extends string,
-              infer TId
+              infer TId,
+              infer THashTag extends HashTagLayout | undefined
             >
             ? ReturnType<
-                typeof createListResource<TInput, TOutput, TPrefix, TId>
+                typeof createListResource<
+                  TInput,
+                  TOutput,
+                  TPrefix,
+                  TId,
+                  THashTag
+                >
               >
             : never
           : T extends { readonly kind: "zset" }
@@ -394,34 +342,57 @@ export type QueryResource<T> = T extends { readonly kind: "hash" }
                 infer TInput,
                 infer TOutput,
                 infer TPrefix extends string,
-                infer TId
+                infer TId,
+                infer THashTag extends HashTagLayout | undefined
               >
               ? ReturnType<
-                  typeof createZsetResource<TInput, TOutput, TPrefix, TId>
+                  typeof createZsetResource<
+                    TInput,
+                    TOutput,
+                    TPrefix,
+                    TId,
+                    THashTag
+                  >
                 >
               : never
             : T extends { readonly kind: "bitmap" }
-              ? T extends BitmapSchema<infer TPrefix extends string, infer TId>
-                ? ReturnType<typeof createBitmapResource<TPrefix, TId>>
+              ? T extends BitmapSchema<
+                  infer TPrefix extends string,
+                  infer TId,
+                  infer THashTag extends HashTagLayout | undefined
+                >
+                ? ReturnType<
+                    typeof createBitmapResource<TPrefix, TId, THashTag>
+                  >
                 : never
               : T extends { readonly kind: "geo" }
                 ? T extends GeoSetSchema<
                     infer TInput,
                     infer TOutput,
                     infer TPrefix extends string,
-                    infer TId
+                    infer TId,
+                    infer THashTag extends HashTagLayout | undefined
                   >
                   ? ReturnType<
-                      typeof createGeoResource<TInput, TOutput, TPrefix, TId>
+                      typeof createGeoResource<
+                        TInput,
+                        TOutput,
+                        TPrefix,
+                        TId,
+                        THashTag
+                      >
                     >
                   : never
                 : T extends { readonly kind: "hll" }
                   ? T extends HyperLogLogSchema<
                       infer TInput,
                       infer TPrefix extends string,
-                      infer TId
+                      infer TId,
+                      infer THashTag extends HashTagLayout | undefined
                     >
-                    ? ReturnType<typeof createHllResource<TInput, TPrefix, TId>>
+                    ? ReturnType<
+                        typeof createHllResource<TInput, TPrefix, TId, THashTag>
+                      >
                     : never
                   : T extends { readonly kind: "channel" }
                     ? T extends PubSubChannel<
@@ -479,26 +450,43 @@ export type QueryRegistry<TSchema extends BeniSchema> = {
  * block, or watch-then-commit.
  */
 export type BeniSession = Omit<StoreAccessors, "list" | "zset" | "stream"> & {
-  list<TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-    schema: ListSchema<TInput, TOutput, TPrefix, TId>
+  list<
+    TInput,
+    TOutput,
+    TPrefix extends string,
+    TId extends RedisKeyPart,
+    THashTag extends HashTagLayout | undefined
+  >(
+    schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>
   ): ReturnType<
-    typeof createListSessionAccessor<TInput, TOutput, TPrefix, TId>
+    typeof createListSessionAccessor<TInput, TOutput, TPrefix, TId, THashTag>
   >;
-  zset<TInput, TOutput, TPrefix extends string, TId extends RedisKeyPart>(
-    schema: SortedSetSchema<TInput, TOutput, TPrefix, TId>
+  zset<
+    TInput,
+    TOutput,
+    TPrefix extends string,
+    TId extends RedisKeyPart,
+    THashTag extends HashTagLayout | undefined
+  >(
+    schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
   ): ReturnType<
-    typeof createZsetSessionAccessor<TInput, TOutput, TPrefix, TId>
+    typeof createZsetSessionAccessor<TInput, TOutput, TPrefix, TId, THashTag>
   >;
   stream<
     TFields extends FieldCodecs,
     TPrefix extends string,
-    TId extends RedisKeyPart
+    TId extends RedisKeyPart,
+    THashTag extends HashTagLayout | undefined
   >(
-    schema: StreamSchema<TFields, TPrefix, TId>
-  ): ReturnType<typeof createStreamSessionAccessor<TFields, TPrefix, TId>>;
+    schema: StreamSchema<TFields, TPrefix, TId, THashTag>
+  ): ReturnType<
+    typeof createStreamSessionAccessor<TFields, TPrefix, TId, THashTag>
+  >;
 
-  /** WATCH k1 k2…; throws on empty. */
-  watch(keys: readonly string[]): Promise<void>;
+  /** WATCH k1 k2…; throws on empty. Keys must share one Cluster hash slot. */
+  watch<const TKeys extends readonly string[]>(
+    keys: TKeys & SameSlotList<TKeys>
+  ): Promise<void>;
   /** UNWATCH. */
   unwatch(): Promise<void>;
   /** Abort-aware builder; exec() resolves the tuple or null on abort. */
@@ -523,60 +511,19 @@ export type BeniWatchOptions = Omit<RunWatchOptions<BeniSession>, "session"> & {
 };
 
 /**
- * Session list accessor: the base store spread with the blocking pops. Its
- * inferred return type drives BeniSession["list"], so leftPopBlocking &
- * friends are structurally present on a session and absent on the shared
- * Beni handle.
+ * A session's own accessors: identical to the shared set, except that list,
+ * zset, and stream resolve the schema's *session* binding — the blocking
+ * superset — over the session's private connection.
  */
-function createListSessionAccessor<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: ListSchema<TInput, TOutput, TPrefix, TId>) {
-  const store = createListStore(client, schema);
-  return {
-    ...withKey(schema, store),
-    ...createBlockingListOps(client, schema)
-  };
-}
-
-/** Session zset accessor: base store spread with the blocking pops. */
-function createZsetSessionAccessor<
-  TInput,
-  TOutput,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: SortedSetSchema<TInput, TOutput, TPrefix, TId>) {
-  const store = createSortedSetStore(client, schema);
-  return {
-    ...withKey(schema, store),
-    ...createBlockingSortedSetOps(client, schema)
-  };
-}
-
-/**
- * Session stream accessor: base store + blocking XREAD + the blocking-consumer
- * group superset. createBlockingStreamGroupOps is spread last so its group()
- * (returning the full BlockingStreamGroup) wins the `group` key.
- */
-function createStreamSessionAccessor<
-  TFields extends FieldCodecs,
-  TPrefix extends string,
-  TId extends RedisKeyPart
->(client: RedisClient, schema: StreamSchema<TFields, TPrefix, TId>) {
-  const store = createStreamStore(client, schema);
-  return {
-    ...withKey(schema, store),
-    ...createBlockingStreamOps(client, schema),
-    ...createBlockingStreamGroupOps(client, schema)
-  };
-}
-
-function createBeniSessionFacade(raw: RedisSession): BeniSession {
-  const kernel = createBeniSession(raw);
-  const client = kernel.client;
-  const base = createStoreAccessors(client);
+function createBeniSessionFacade(
+  raw: RedisSession,
+  parent: StoreContext
+): BeniSession {
+  const kernel = createBeniSession(raw, parent.assertSameSlot);
+  // A session shares the parent's singletons (hub, script runner) but binds
+  // every store to its own connection.
+  const ctx: StoreContext = { ...parent, client: kernel.client };
+  const base = createStoreAccessors(ctx);
   const accessors: BeniSession = {
     kv: base.kv,
     hash: base.hash,
@@ -586,14 +533,49 @@ function createBeniSessionFacade(raw: RedisSession): BeniSession {
     geo: base.geo,
     counter: base.counter,
     string: base.string,
-    list(schema) {
-      return createListSessionAccessor(client, schema);
+    list<
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>) {
+      return resolveSessionStore(schema, ctx, "list schema") as ReturnType<
+        typeof createListSessionAccessor<
+          TInput,
+          TOutput,
+          TPrefix,
+          TId,
+          THashTag
+        >
+      >;
     },
-    zset(schema) {
-      return createZsetSessionAccessor(client, schema);
+    zset<
+      TInput,
+      TOutput,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>) {
+      return resolveSessionStore(schema, ctx, "zset schema") as ReturnType<
+        typeof createZsetSessionAccessor<
+          TInput,
+          TOutput,
+          TPrefix,
+          TId,
+          THashTag
+        >
+      >;
     },
-    stream(schema) {
-      return createStreamSessionAccessor(client, schema);
+    stream<
+      TFields extends FieldCodecs,
+      TPrefix extends string,
+      TId extends RedisKeyPart,
+      THashTag extends HashTagLayout | undefined
+    >(schema: StreamSchema<TFields, TPrefix, TId, THashTag>) {
+      return resolveSessionStore(schema, ctx, "stream schema") as ReturnType<
+        typeof createStreamSessionAccessor<TFields, TPrefix, TId, THashTag>
+      >;
     },
     watch: kernel.watch,
     unwatch: kernel.unwatch,
@@ -627,14 +609,18 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
   client: RedisClient,
   options: BeniOptions<TSchema> = {}
 ) {
-  const scriptRunner = createScriptRunner(client);
-  const accessors = createStoreAccessors(client);
+  const ctx = createStoreContext(
+    client,
+    options.onPubSubError,
+    options.cluster
+  );
+  const accessors = createStoreAccessors(ctx);
 
   async function openSession(): Promise<BeniSession> {
     if (client.session === undefined) {
       throw new TypeError("Redis client does not support sessions");
     }
-    return createBeniSessionFacade(await client.session());
+    return createBeniSessionFacade(await client.session(), ctx);
   }
 
   function session(): Promise<BeniSession>;
@@ -657,56 +643,16 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
     const schema = options.schema;
     if (schema) {
       for (const name of Object.keys(schema)) {
-        const value = (
-          schema as Record<string, { readonly kind?: SchemaKind }>
-        )[name];
-        switch (value?.kind) {
-          case "kv":
-            registry[name] = createKvResource(client, value as never);
-            break;
-          case "hash":
-            registry[name] = createHashResource(client, value as never);
-            break;
-          case "set":
-            registry[name] = createSetResource(client, value as never);
-            break;
-          case "list":
-            registry[name] = createListResource(client, value as never);
-            break;
-          case "zset":
-            registry[name] = createZsetResource(client, value as never);
-            break;
-          case "stream":
-            registry[name] = createStreamResource(client, value as never);
-            break;
-          case "bitmap":
-            registry[name] = createBitmapResource(client, value as never);
-            break;
-          case "geo":
-            registry[name] = createGeoResource(client, value as never);
-            break;
-          case "hll":
-            registry[name] = createHllResource(client, value as never);
-            break;
-          case "channel":
-            registry[name] = createChannelResource(
-              client,
-              options.pubsub,
-              value as never
-            );
-            break;
-          case "pattern":
-            registry[name] = createPatternResource(
-              options.pubsub,
-              value as never
-            );
-            break;
-          case "script":
-            registry[name] = createScriptResource(scriptRunner, value as never);
-            break;
-          default:
-            break;
-        }
+        const value = (schema as Record<string, unknown>)[name];
+        // Non-schema exports (a re-exported type's runtime shim, a helper)
+        // carry no `kind` and are dropped, exactly as before. Anything that
+        // does look like a schema must resolve, so a copied schema fails here
+        // — at bind time, naming the export — rather than at first call.
+        if (
+          (value as { readonly kind?: SchemaKind } | null)?.kind === undefined
+        )
+          continue;
+        registry[name] = resolveStore(value, ctx, `schema.${name}`);
       }
     }
     return registry as QueryRegistry<TSchema>;
@@ -757,10 +703,26 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
     },
     pubsub: {
       channel<TInput, TOutput>(channel: PubSubChannel<TInput, TOutput>) {
-        return createChannelResource(client, options.pubsub, channel);
+        return resolveStore(channel, ctx, "channel schema") as ReturnType<
+          typeof createChannelResource<TInput, TOutput>
+        >;
       },
       pattern<TOutput>(pattern: PubSubPattern<TOutput>) {
-        return createPatternResource(options.pubsub, pattern);
+        return resolveStore(pattern, ctx, "pattern schema") as ReturnType<
+          typeof createPatternResource<TOutput>
+        >;
+      },
+      /**
+       * Drop every subscription and close the leased subscriber connection.
+       * Publishing keeps working — it rides the bound client.
+       *
+       * Peeks rather than resolves: the hub is created on first subscribe, so
+       * closing a handle that never subscribed must not create one (and must
+       * not make this module import the pub/sub code).
+       */
+      close(): Promise<void> {
+        const hub = ctx.peek<{ close(): Promise<void> }>(PUBSUB_HUB_KEY);
+        return hub === undefined ? Promise.resolve() : hub.close();
       }
     },
     session,
@@ -774,8 +736,20 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
      * WatchRetriesExceededError. Owned sessions close in finally; a borrowed
      * options.session is never closed.
      */
-    watch<TResults extends readonly unknown[]>(
-      keys: string | readonly string[],
+    /**
+     * WATCH the keys, run `body`, and EXEC its transaction, retrying on abort.
+     *
+     * Keys are checked for a shared Cluster hash tag wherever that is provable
+     * from their types; see {@link SameSlotList}. Keys built from runtime ids
+     * are not provable and pass silently.
+     */
+    watch<
+      const TKeys extends string | readonly string[],
+      TResults extends readonly unknown[]
+    >(
+      // The naked TKeys member is mandatory: TypeScript cannot infer through a
+      // conditional, so without it the check silently never fires.
+      keys: TKeys & SameSlotArg<TKeys>,
       body: (
         s: BeniSession
       ) => Promise<WatchedRedisTransaction<TResults> | null>,
@@ -788,7 +762,7 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
      * optimistic transactions use `redis.watch()` or a session's `multi()`).
      */
     multi() {
-      return createTransaction(client);
+      return createTransaction(client, ctx.assertSameSlot);
     },
     script<
       TName extends string,
@@ -796,7 +770,9 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
       TArgs extends FieldCodecs,
       TResult
     >(schema: ScriptSchema<TName, TKeys, TArgs, TResult>) {
-      return createScriptResource(scriptRunner, schema);
+      return resolveStore(schema, ctx, "script schema") as ReturnType<
+        typeof createScriptResource<TName, TKeys, TArgs, TResult>
+      >;
     }
   };
 }
