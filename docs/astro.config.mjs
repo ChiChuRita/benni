@@ -181,6 +181,7 @@ export default defineConfig({
           label: "Runtime",
           items: [
             { label: "Node.js Setup", slug: "runtime/node" },
+            { label: "ioredis", slug: "runtime/ioredis" },
             { label: "Bun And Deno", slug: "runtime/bun-and-deno" },
             { label: "Edge (Upstash)", slug: "runtime/edge" },
           ],

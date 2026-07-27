@@ -1,7 +1,7 @@
 {
   "name": "beni",
   "version": "0.0.0",
-  "description": "The end-to-end typed Redis client for TypeScript \u2014 one API across Node, Bun, Deno, and the edge.",
+  "description": "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge.",
   "author": "ChiChuRita",
   "license": "MIT",
   "repository": {
@@ -42,6 +42,10 @@
     "./node": {
       "types": "./dist/node/index.d.mts",
       "import": "./dist/node/index.mjs"
+    },
+    "./ioredis": {
+      "types": "./dist/ioredis/index.d.mts",
+      "import": "./dist/ioredis/index.mjs"
     },
     "./bun": {
       "types": "./dist/bun/index.d.mts",
@@ -138,6 +142,7 @@
     "@vitest/coverage-v8": "^4.1.9",
     "fast-check": "^4.9.0",
     "hono": "^4.6.0",
+    "ioredis": "^5.11.1",
     "publint": "^0.3.21",
     "redis": "^6.1.0",
     "tsdown": "^0.22.3",
@@ -147,11 +152,15 @@
   },
   "peerDependencies": {
     "hono": ">=4.0.0",
+    "ioredis": "^5.0.0",
     "redis": "^6.1.0",
     "zod": "^4.1.0"
   },
   "peerDependenciesMeta": {
     "redis": {
+      "optional": true
+    },
+    "ioredis": {
       "optional": true
     },
     "hono": {

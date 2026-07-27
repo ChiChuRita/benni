@@ -7,6 +7,7 @@ export default defineConfig({
     "core/index": "src/core/index.ts",
     cluster: "src/cluster.ts",
     "node/index": "src/node/index.ts",
+    "ioredis/index": "src/ioredis/index.ts",
     "bun/index": "src/bun/index.ts",
     "upstash/index": "src/upstash/index.ts",
     "primitives/index": "src/primitives/index.ts",
