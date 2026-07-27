@@ -1,10 +1,10 @@
 ---
 title: Beni
-description: The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge.
+description: The end-to-end typed Redis client for TypeScript, with one API across Node, Bun, Deno, and the edge.
 template: splash
 head:
   - tag: title
-    content: Beni — the end-to-end typed Redis client for TypeScript
+    content: Beni, the end-to-end typed Redis client for TypeScript
 hero:
   title: The end-to-end typed Redis client for TypeScript.
   tagline: One typed API across Node, Bun, Deno, and the edge. Declare your data model once; your types travel from write to read, so replies come back as your types, not raw strings.
@@ -51,13 +51,18 @@ const user = await redis.hash(users).hget("42");
   </Card>
   <Card title="Every data structure" icon="seti:db">
     Hashes, key-value, JSON, sets, lists, sorted sets, streams, bitmaps and
-    bitfields, geo, HyperLogLog, Pub/Sub, and Lua scripts — all typed, all with
+    bitfields, geo, HyperLogLog, Pub/Sub, and Lua scripts, all typed, all with
     command-named methods.
   </Card>
   <Card title="One API, every runtime" icon="rocket">
     The same typed client on Node, Bun, Deno, and the edge (Upstash/HTTP over
     just `fetch`). One runtime-agnostic core, thin adapters, zero required
     dependencies.
+  </Card>
+  <Card title="Batteries you'd get subtly wrong" icon="puzzle">
+    An [AI job queue](/beni/primitives/queue/) whose jobs survive a refresh, a
+    deploy, and a Stop button, plus a stampede-proof cache, a sliding-window
+    rate limiter, and a distributed lock that never frees someone else's lock.
   </Card>
   <Card title="Raw when needed" icon="right-arrow">
     The underlying Redis client stays available, so any command is one

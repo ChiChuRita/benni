@@ -24,7 +24,7 @@ await redis.geo(stores).geoadd("berlin", [
 
 Coordinates are validated before the command is sent: longitude must be between -180 and 180, latitude between -85.05112878 and 85.05112878 (the Redis geohash limits). Out-of-range values throw a `TypeError` instead of a server error.
 
-`geoadd` accepts `{ nx: true }` to only add new members, `{ xx: true }` to only update existing ones, and `{ ch: true }` to include updated members in the returned count — the same tokens `zadd` takes. `nx` and `xx` are mutually exclusive; combining them is a compile error.
+`geoadd` accepts `{ nx: true }` to only add new members, `{ xx: true }` to only update existing ones, and `{ ch: true }` to include updated members in the returned count, the same tokens `zadd` takes. `nx` and `xx` are mutually exclusive; combining them is a compile error.
 
 ## Positions And Distances
 

@@ -1,6 +1,6 @@
 ---
 title: "Rate Limiting (primitive)"
-description: "A sliding-window rate limiter over Redis — one atomic round trip per check, accurate, and edge-ready."
+description: "A sliding-window rate limiter over Redis: one atomic round trip per check, accurate, and edge-ready."
 ---
 
 `ratelimit` is a sliding-window rate limiter. Each `check(id)` is a single atomic Lua round trip that drops expired entries, counts the window, and admits the request if it is under the limit.
@@ -19,7 +19,7 @@ if (!success) {
 }
 ```
 
-`ratelimit` takes any `RedisClient`, so it runs over every adapter — including [`beni/upstash`](/beni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
+`ratelimit` takes any `RedisClient`, so it runs over every adapter, including [`beni/upstash`](/beni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
 
 ## The result
 
@@ -34,16 +34,16 @@ type RatelimitResult = {
 
 ## How it works
 
-The window is a **log of request timestamps in one sorted set** (a single key, so it is Redis Cluster safe). That makes the limit exact — no fixed-window boundary bursts — at the cost of storing up to `limit` entries per key. For typical API limits (tens to hundreds per window) that is ideal; for very high per-key rates, prefer a counter-based limiter.
+The window is a **log of request timestamps in one sorted set** (a single key, so it is Redis Cluster safe). That makes the limit exact (no fixed-window boundary bursts) at the cost of storing up to `limit` entries per key. For typical API limits (tens to hundreds per window) that is ideal; for very high per-key rates, prefer a counter-based limiter.
 
 ## Options
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `limit` | — | Maximum requests allowed within the window. |
-| `windowMs` | — | Window length in milliseconds. |
+| `limit` | - | Maximum requests allowed within the window. |
+| `windowMs` | - | Window length in milliseconds. |
 | `prefix` | `"ratelimit"` | Key namespace; keys are `<prefix>:<id>`. |
 
-Use a stable `id` per subject — a user id, API key, or IP. Each id is limited independently.
+Use a stable `id` per subject: a user id, API key, or IP. Each id is limited independently.
 
 See [Rate Limiting patterns](/beni/patterns/rate-limiting/) for the underlying Redis approach if you want to roll your own.

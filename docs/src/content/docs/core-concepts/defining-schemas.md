@@ -61,7 +61,7 @@ import {
 } from "beni/schema";
 ```
 
-When your app has a codec Beni does not ship, pass a plain `Codec` object — anything with `encode`/`decode`:
+When your app has a codec Beni does not ship, pass a plain `Codec` object, anything with `encode`/`decode`:
 
 ```ts
 import type { Codec } from "beni";

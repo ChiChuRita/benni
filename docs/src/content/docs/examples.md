@@ -85,7 +85,7 @@ export const redis = beni(client, { schema });
 
 The sections below assume these two files. The lower-level building blocks the
 client is made of (`defineKeyspace`, `createHashStore`, …) live under
-`beni/core` for adapter authors and advanced integrations — see the
+`beni/core` for adapter authors and advanced integrations; see the
 [API overview](/beni/api/overview/).
 
 ## Typed JSON Key-Value
@@ -310,17 +310,11 @@ for await (const entry of redis.scan.zset(leaderboard, "daily")) {
 
 ## Pub/Sub
 
-Subscribing needs a dedicated subscriber connection, so pass a pub/sub adapter
-when binding:
+Subscribing needs no extra setup: the first subscription leases one subscriber
+connection from the bound client and closes it again when the last subscription
+goes away.
 
 ```ts
-import { beni } from "beni";
-import { node, pubsub } from "beni/node";
-import * as schema from "./schema";
-
-const client = await node();
-const redis = beni(client, { schema, pubsub: await pubsub() });
-
 const subscription = await redis.pubsub.channel(schema.userEvents).subscribe(
   (message) => {
     // message is { id: string; action: "created" | "deleted" }
@@ -348,8 +342,23 @@ const patternSubscription = await redis.pubsub
 await patternSubscription.unsubscribe();
 ```
 
-Publishing alone works without an adapter — `redis.pubsub.channel(x).publish()`
-falls back to the bound client.
+Or consume a subscription as an async iterator, which releases it when the loop
+ends:
+
+```ts
+const controller = new AbortController();
+
+for await (const message of redis.pubsub
+  .channel(schema.userEvents)
+  .stream({ signal: controller.signal })) {
+  console.log(message.action);
+}
+```
+
+Publishing is one stateless `PUBLISH` on the bound client, so it works on every
+adapter including [`beni/upstash`](/beni/runtime/edge/). Subscribing needs a
+connection the adapter can hold, and `redis.pubsub.close()` drops every
+subscription at once. See [Pub/Sub](/beni/data-structures/pubsub/).
 
 ## Typed Transaction
 
@@ -400,8 +409,8 @@ const value = await redis.raw.send(["GET", "raw:key"]);
 
 ## Test With A Fake Client
 
-The `RedisClient` contract is three required methods — `send`, `pipeline`, and
-`close` (`transaction` and `session` are optional) — so unit tests can drive the whole
+The `RedisClient` contract is three required methods: `send`, `pipeline`, and
+`close` (`transaction` and `session` are optional), so unit tests can drive the whole
 typed API with a scripted fake:
 
 ```ts

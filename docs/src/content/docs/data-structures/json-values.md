@@ -47,7 +47,7 @@ const raw = await nodeRedis.get("settings:user:42");
 const value = raw === null ? null : JSON.parse(raw);
 ```
 
-With `json<T>()`, `T` is trusted, not validated at runtime. To validate reads, pass any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …) instead — the value type is inferred from it:
+With `json<T>()`, `T` is trusted, not validated at runtime. To validate reads, pass any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …) instead; the value type is inferred from it:
 
 ```ts
 import { z } from "zod";
@@ -60,11 +60,11 @@ const Settings = z.object({
 export const settings = kv("settings", json(Settings));
 
 const value = await redis.kv(settings).get("user:42");
-//    ^? { theme: "light" | "dark"; emailNotifications: boolean } | null — validated
+//    ^? { theme: "light" | "dark"; emailNotifications: boolean } | null (validated)
 ```
 
 Invalid stored data throws a `ReplyShapeError` naming the issues. See [schema builders](/beni/api/schema-builders/) for details.
 
-Standard Schema defines only the read direction. To also validate writes — and to store rich types like `Date` that genuinely round-trip — use a [Zod codec](/beni/integrations/zod/) via `zodJson(schema)` instead.
+Standard Schema defines only the read direction. To also validate writes, and to store rich types like `Date` that genuinely round-trip, use a [Zod codec](/beni/integrations/zod/) via `zodJson(schema)` instead.
 
 Use JSON key-value schemas when your app treats the value as a document. Use hashes when individual fields need independent Redis operations.

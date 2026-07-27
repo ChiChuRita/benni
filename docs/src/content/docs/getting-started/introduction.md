@@ -1,11 +1,11 @@
 ---
 title: "Introduction"
-description: "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge."
+description: "The end-to-end typed Redis client for TypeScript: one API across Node, Bun, Deno, and the edge."
 ---
 
-Beni is the **end-to-end typed Redis client for TypeScript** — one typed API across Node, Bun, Deno, and the edge (Upstash/HTTP).
+Beni is the **end-to-end typed Redis client for TypeScript**: one typed API across Node, Bun, Deno, and the edge (Upstash/HTTP).
 
-`node-redis` and `ioredis` are already typed, but only at the *command surface*: a reply comes back as Redis's generic wire shape (`string | null`, `Record<string, string>`), so your type is gone the moment data crosses the Redis edge and you re-parse it by hand. Beni declares your data model once with typed codecs and carries those types from write to read — **they type the commands; Beni types your data.** (Same relationship `pg` has to Drizzle.)
+`node-redis` and `ioredis` are already typed, but only at the *command surface*: a reply comes back as Redis's generic wire shape (`string | null`, `Record<string, string>`), so your type is gone the moment data crosses the Redis edge and you re-parse it by hand. Beni declares your data model once with typed codecs and carries those types from write to read. **They type the commands; Beni types your data.**
 
 ```ts
 import { hash, number, string } from "beni/schema";

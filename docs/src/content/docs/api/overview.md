@@ -53,6 +53,6 @@ await redis.raw.send(["PING"]);
 
 ## Lower-Level Core API
 
-The `beni/core` entrypoint exposes the building blocks the client is made of — `defineKeyspace`, `createKeyValueStore`, `createHashStore`, and the other store builders — for adapter authors and advanced integrations.
+The `beni/core` entrypoint exposes the building blocks the client is made of (`defineKeyspace`, `createKeyValueStore`, `createHashStore`, and the other store builders) for adapter authors and advanced integrations.
 
-Application code should prefer the schema-first API shown in the guide — every accessor is documented in the [Beni Client reference](/beni/api/beni-client/).
+Application code should prefer the schema-first API shown in the guide; every accessor is documented in the [Beni Client reference](/beni/api/beni-client/).

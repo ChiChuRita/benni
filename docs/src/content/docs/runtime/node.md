@@ -23,17 +23,10 @@ Close the client when your process or test is done:
 await client.close();
 ```
 
-For Pub/Sub, create the Pub/Sub adapter and pass it to `beni`:
-
-```ts
-import { node, pubsub } from "beni/node";
-
-const client = await node();
-const pubsubAdapter = await pubsub();
-
-const redis = beni(client, { schema, pubsub: pubsubAdapter });
-```
-
 The Node adapter defaults to RESP2 replies because the typed stores validate Redis reply shapes such as arrays, maps, numbers, strings, and nulls. You can pass normal `redis` client options to `node`.
 
 The Node adapter supports [sessions](/beni/advanced/sessions/), so `redis.session()` and `redis.watch()` work: each session duplicates the connection with reconnection disabled and closes by destroying the socket, which rejects an in-flight blocking read promptly rather than waiting out its timeout. The parent client tracks live sessions and force-closes any survivors when you close it.
+
+[Pub/Sub](/beni/data-structures/pubsub/) needs no setup either: the adapter can also lease a subscriber connection, so `redis.pubsub.channel(...).subscribe(...)` and the pattern form both work out of the box. Beni leases that connection on the first subscribe and closes it when the last subscription goes away; the parent `client.close()` force-closes it too if you skip `redis.pubsub.close()`. Pattern subscriptions work here and on [`beni/ioredis`](/beni/runtime/ioredis/); Bun is the one adapter without them.
+
+Already using ioredis instead? [`beni/ioredis`](/beni/runtime/ioredis/) gives the identical typed API and can adopt your existing client, so you do not have to switch Redis clients to use Beni.

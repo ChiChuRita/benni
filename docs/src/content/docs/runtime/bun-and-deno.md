@@ -19,18 +19,17 @@ const client = await bun({
 export const redis = beni(client, { schema });
 ```
 
-For Pub/Sub, create the Pub/Sub adapter and pass it to `beni`:
+[Pub/Sub](/beni/data-structures/pubsub/) needs no setup: the Bun adapter can lease a subscriber connection, so `redis.pubsub.channel(...).subscribe(...)` works on the bound client:
 
 ```ts
-import { bun } from "beni/bun";
+const subscription = await redis.pubsub
+  .channel(schema.userEvents)
+  .subscribe((message) => { /* ... */ });
 
-const client = await bun();
-const pubsub = await bun.pubsub();
-
-const redis = beni(client, { schema, pubsub });
+await subscription.unsubscribe();
 ```
 
-The Bun Pub/Sub adapter supports channel subscriptions only. Pattern subscriptions are not implemented because `psubscribe` is broken in Bun 1.3.14, so `redis.pubsub.pattern(...).subscribe(...)` throws until Bun ships a fix. Use channel subscriptions on Bun.
+Channel subscriptions only, though. The Bun subscriber deliberately omits `psubscribe` because it is broken in Bun 1.3.14 (it hangs rather than resolving), so `redis.pubsub.pattern(...).subscribe(...)` throws `TypeError` on Bun instead of deadlocking. Subscribe to the individual channels until Bun ships a fix, or run pattern subscriptions on the [Node adapter](/beni/runtime/node/). Publishing is unaffected: it is one stateless `PUBLISH` on the bound client.
 
 The Bun adapter supports [sessions](/beni/advanced/sessions/), so `redis.session()` and `redis.watch()` work: each session is a fresh Bun Redis client with reconnection and offline queueing disabled, and closing it rejects an in-flight blocking read promptly.
 
@@ -42,7 +41,7 @@ BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test:bun
 
 ## Deno
 
-Deno needs no dedicated adapter — it runs node-redis directly through npm compatibility, which gives full Redis 8 command support and reuses the same adapter Node uses. Use the **Node adapter** with `npm:` specifiers:
+Deno needs no dedicated adapter: it runs node-redis directly through npm compatibility, which gives full Redis 8 command support and reuses the same adapter Node uses. Use the **Node adapter** with `npm:` specifiers:
 
 ```ts
 // deno.json import map, or inline npm: specifiers
@@ -63,8 +62,9 @@ type RedisClient = {
   pipeline(commands: readonly RedisCommand[]): Promise<RedisReply[]>;
   transaction?(commands: readonly RedisCommand[]): Promise<RedisReply[]>;
   session?(): Promise<RedisSession>;
-  close?(): Promise<void>;
+  subscriber?(): Promise<RedisSubscriber>;
+  close(): Promise<void>;
 };
 ```
 
-If you already have a Deno Redis client, an adapter can implement that interface and then pass it to `beni(client)`. `transaction` and `session` are optional: an adapter that omits `session` still works, but `redis.session()` and `redis.watch()` throw `TypeError: Redis client does not support sessions` until it implements one. See [Sessions](/beni/advanced/sessions/) for the connection role a session fills.
+If you already have a Deno Redis client, an adapter can implement that interface and then pass it to `beni(client)`. `transaction`, `session`, and `subscriber` are optional, and each one gates a feature rather than the whole client: an adapter that omits `session` still works, but `redis.session()` and `redis.watch()` throw `TypeError: Redis client does not support sessions` until it implements one, and an adapter that omits `subscriber` can still publish while `redis.pubsub.channel(...).subscribe(...)` throws. See [Sessions](/beni/advanced/sessions/) for the connection role a session fills, and [Pub/Sub](/beni/data-structures/pubsub/) for the subscriber one.

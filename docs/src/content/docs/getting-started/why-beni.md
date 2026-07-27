@@ -3,7 +3,7 @@ title: "Why Beni?"
 description: "Why add a typed schema layer when node-redis and ioredis are already typed? Because they type the commands, not your data."
 ---
 
-Redis is often used like this — here with raw `node-redis`:
+Redis is often used like this, here with raw `node-redis`:
 
 ```ts
 await nodeRedis.hSet(`user:${id}`, {
@@ -18,7 +18,7 @@ const loadedUser = {
 };
 ```
 
-`node-redis` even types that `hGetAll` call — as `Record<string, string>`. The types are *present*, but they describe Redis's wire shape, not your data: `score` comes back a `string`, and you coerce it by hand. This works, but over time it creates problems:
+`node-redis` even types that `hGetAll` call, as `Record<string, string>`. The types are *present*, but they describe Redis's wire shape, not your data: `score` comes back a `string`, and you coerce it by hand. This works, but over time it creates problems:
 
 - Key names are spread across the codebase.
 - Values are manually serialized and parsed.
@@ -47,7 +47,7 @@ You still use Redis. You still understand what happens. You just stop scattering
 
 ## Beni And Redis Clients
 
-Beni is not a replacement for Redis. It is a typed layer on top of a Redis client — the same relationship Drizzle has to `pg`: the client types the commands, Beni types your data.
+Beni is not a replacement for Redis. It is a typed layer on top of a Redis client: the client types the commands, Beni types your data.
 
 | Feature | node-redis / ioredis | Beni |
 | --- | --- | --- |
@@ -59,4 +59,4 @@ Beni is not a replacement for Redis. It is a typed layer on top of a Redis clien
 | Runtime reach | Node only | Node, Bun, Deno, edge/serverless |
 | Escape hatch | Native | `redis.raw` |
 
-Use a raw client when you want direct command access everywhere. Use Beni when your application has repeated Redis data patterns and you want your declared types to survive the round-trip, safer keys, and better refactoring — across every runtime.
+Use a raw client when you want direct command access everywhere. Use Beni when your application has repeated Redis data patterns and you want your declared types to survive the round-trip, safer keys, and better refactoring, across every runtime.

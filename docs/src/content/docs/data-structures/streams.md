@@ -39,7 +39,7 @@ await redis.stream(activity).xadd(
 );
 ```
 
-With `nomkstream: true`, Redis skips missing streams (`NOMKSTREAM`) and `xadd` returns `null` instead of an entry ID — only that form types as `Promise<string | null>`; the plain form is `Promise<string>`. `maxLen` trims while adding, with the same shape as `xtrim`'s `maxLen`. Pass `entryId` to set an explicit ID instead of the default `*`.
+With `nomkstream: true`, Redis skips missing streams (`NOMKSTREAM`) and `xadd` returns `null` instead of an entry ID; only that form types as `Promise<string | null>`; the plain form is `Promise<string>`. `maxLen` trims while adding, with the same shape as `xtrim`'s `maxLen`. Pass `entryId` to set an explicit ID instead of the default `*`.
 
 ## Read Ranges
 

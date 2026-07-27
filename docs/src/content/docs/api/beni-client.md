@@ -11,16 +11,26 @@ import { beni } from "beni";
 const redis = beni(client, { schema });
 ```
 
+`BeniOptions` has three fields, all optional:
+
+| Option | Effect |
+| --- | --- |
+| `schema` | The schema module that backs [`redis.query`](#redisquery). |
+| `onPubSubError` | Called when a Pub/Sub handler throws (see [`redis.pubsub`](#redispubsub)). Without it, the error is rethrown asynchronously rather than swallowed. |
+| `cluster` | Check, before sending, that every key in a multi-key command hashes to one Redis Cluster slot, throwing `CrossSlotError` when it does not. Off by default. See [Redis Cluster](/beni/advanced/cluster/). |
+
+Everything else a client can do follows from the adapter you pass in.
+
 Every data-structure accessor exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
 
-To type a function parameter that accepts the bound handle, use the exported `Beni<TSchema>` type — the way you would Drizzle's `NodePgDatabase`:
+To type a function parameter that accepts the bound handle, use the exported `Beni<TSchema>` type:
 
 ```ts
 import type { Beni } from "beni";
 import * as schema from "./schema";
 
 export function makeHandlers(redis: Beni<typeof schema>) {
-  // redis.query.users, redis.hash(...), ... — fully typed
+  // redis.query.users, redis.hash(...), ... all fully typed
 }
 ```
 
@@ -37,14 +47,14 @@ const user = await redis.query.users.hget("42");
 await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);
 ```
 
-`redis.query.<name>` returns the same resource as the matching `redis.<kind>(schema)` accessor. It covers all twelve kinds — the data stores (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`), pub/sub channels and patterns, and scripts:
+`redis.query.<name>` returns the same resource as the matching `redis.<kind>(schema)` accessor. It covers all twelve kinds: the data stores (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`), pub/sub channels and patterns, and scripts:
 
 ```ts
 await redis.query.userEvents.publish({ id: "42", action: "created" });
 await redis.query.rateLimit.run({ keys: { counter: "user:42" }, args: { limit: 100 } });
 ```
 
-Counter and string stores are not separate kinds — a `kv` schema maps to the `kv` resource; use `redis.counter(schema)` or `redis.string(schema)` for those operations. Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/beni/core-concepts/schema-registry/).
+Counter and string stores are not separate kinds; a `kv` schema maps to the `kv` resource; use `redis.counter(schema)` or `redis.string(schema)` for those operations. Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/beni/core-concepts/schema-registry/).
 
 ## `redis.kv(schema)`
 
@@ -75,7 +85,7 @@ const slice = await redis.string(drafts).getrange("42", 0, 4);
 const length = await redis.string(drafts).strlen("42");
 const value = await redis.string(drafts).getex("42", 3600);
 
-// LCS — longest common subsequence of two keys in the same schema.
+// LCS: longest common subsequence of two keys in the same schema.
 const sub = await redis.string(drafts).lcs("42", "43"); // the subsequence string
 const len = await redis.string(drafts).lcs("42", "43", { len: true }); // its length
 const idx = await redis.string(drafts).lcs("42", "43", {
@@ -142,7 +152,7 @@ const top = await redis.zset(leaderboards).zrange("weekly", {
 });
 ```
 
-When members share a score, `zrange` with `{ byLex: true }` ranges over them lexically — as do `zlexcount`, `zremrangebylex`, and `zrangestore` with `{ byLex: true }`:
+When members share a score, `zrange` with `{ byLex: true }` ranges over them lexically, as do `zlexcount`, `zremrangebylex`, and `zrangestore` with `{ byLex: true }`:
 
 ```ts
 const names = await redis.zset(nameIndex).zrange("directory", {
@@ -191,7 +201,7 @@ await redis.bitmap(dailyActive).setbit("2026-07-04", 42, true);
 const total = await redis.bitmap(dailyActive).bitcount("2026-07-04");
 
 // Packed integer fields via BITFIELD; the result tuple is typed to the chain.
-const [views] = await redis.bitmap(dailyActive)
+const [visits] = await redis.bitmap(dailyActive)
   .bitfield("2026-07-04")
   .incrby("u32", 0, 1)
   .exec();
@@ -231,14 +241,64 @@ See [Scans](/beni/advanced/scans/) for options and iteration guarantees.
 
 ## `redis.pubsub`
 
-Typed publish and subscribe:
+Typed publish and subscribe. `PUBLISH` is a stateless command, so publishing rides the bound client and works on every adapter; it returns the number of subscribers Redis delivered to:
 
 ```ts
-await redis.pubsub.channel(userEvents).publish({
+const receivers = await redis.pubsub.channel(userEvents).publish({
   id: "42",
   action: "created"
 });
 ```
+
+`subscribe` takes just a handler and returns a subscription with `unsubscribe()`. The first subscription lazily leases one subscriber connection from the client and every channel and pattern is multiplexed onto it; it closes when the last subscription goes away:
+
+```ts
+const subscription = await redis.pubsub.channel(userEvents).subscribe((message) => {
+  // message is the channel's decoded output type
+});
+
+await subscription.unsubscribe();
+```
+
+`redis.pubsub.pattern(...).subscribe(handler)` receives every matching channel, and the handler's second argument is the concrete channel name:
+
+```ts
+const patternSubscription = await redis.pubsub
+  .pattern(userEventPattern)
+  .subscribe((message, channelName) => { /* ... */ });
+```
+
+`stream(options?)` is the async-iterator form of the same subscription. A channel stream yields decoded messages; a pattern stream yields `{ message, channel }`. Aborting `options.signal` (or leaving the loop) ends iteration and releases the subscription:
+
+```ts
+const controller = new AbortController();
+
+for await (const message of redis.pubsub
+  .channel(userEvents)
+  .stream({ signal: controller.signal })) {
+  // ...
+}
+```
+
+`redis.pubsub.close()` drops every subscription and closes the leased connection. Publishing keeps working afterwards, and the next `subscribe` leases a fresh connection:
+
+```ts
+await redis.pubsub.close();
+```
+
+Subscribing requires a client that can hold a connection. An adapter advertises this with the optional `subscriber?()` method on the `RedisClient` contract, the pub/sub counterpart to `session?()`:
+
+```ts
+import type { RedisClient, RedisSubscriber } from "beni";
+
+declare const client: RedisClient;
+//    ^? { send, pipeline, transaction?, session?, subscriber?, close }
+
+declare function open(): Promise<RedisSubscriber>;
+//    ^? { subscribe, unsubscribe, psubscribe?, punsubscribe?, closed, close }
+```
+
+Beni leases at most one subscriber per client, so adapters do no bookkeeping. When `subscriber` is undefined (the HTTP adapter), `subscribe` throws `TypeError` at call time, the same style as the session guard. `psubscribe`/`punsubscribe` are optional in turn, which is how the Bun adapter reports patterns as unsupported instead of hanging. Pass `onPubSubError` to `beni()` to route a handler that throws; without it the error is rethrown asynchronously rather than swallowed. See [Pub/Sub](/beni/data-structures/pubsub/).
 
 ## `redis.session`
 

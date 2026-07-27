@@ -65,7 +65,7 @@ const withRepeats = await redis.hash(users).hrandfield("42", { count: -5 });
 //    ^? string[]   (exactly 5 names, repeats allowed)
 ```
 
-Both forms return raw field names — like `hkeys`, the result may include fields not declared in the schema. The value-bearing form (`HRANDFIELD ... WITHVALUES`) is intentionally not provided: a random field's value cannot be soundly decoded without knowing which codec it belongs to, the same reason there is no bare `HVALS` accessor.
+Both forms return raw field names; like `hkeys`, the result may include fields not declared in the schema. The value-bearing form (`HRANDFIELD ... WITHVALUES`) is intentionally not provided: a random field's value cannot be soundly decoded without knowing which codec it belongs to, the same reason there is no bare `HVALS` accessor.
 
 ## Field Expiration
 
@@ -79,7 +79,7 @@ await redis.hash(users).hexpire("42", ["score"], { ttlMilliseconds: 500 }); // H
 await redis.hash(users).hexpire("42", ["score"], { expireAtSeconds: 1893456000 }); // HEXPIREAT
 ```
 
-Read the remaining TTL or the absolute expiry time — each in seconds by default, or milliseconds with `{ milliseconds: true }` — and clear TTLs with `hpersist`:
+Read the remaining TTL or the absolute expiry time (each in seconds by default, or milliseconds with `{ milliseconds: true }`), and clear TTLs with `hpersist`:
 
 ```ts
 await redis.hash(users).httl("42", "score"); // HTTL (seconds)
@@ -95,7 +95,7 @@ Get, set, and delete fields while touching their TTL in a single round trip:
 const seen = await redis.hash(users).hgetex("42", ["name"], { ttlSeconds: 60 });
 
 // HSETEX: set fields with a TTL atomically; fnx writes only if no field exists,
-// fxx only if all do (the Redis FNX/FXX tokens) — combining them is a compile error.
+// fxx only if all do (the Redis FNX/FXX tokens); combining them is a compile error.
 const wrote = await redis.hash(users).hsetex(
   "42",
   { name: "Ada", score: 10 },

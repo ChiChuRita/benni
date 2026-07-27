@@ -12,7 +12,7 @@ This is Redis optimistic locking (`WATCH`/`MULTI`/`EXEC`) wrapped as a retry loo
 ```ts
 await redis.watch("views:home", async (s) => {
   // read the watched keys through the session's typed stores, then return a
-  // built, un-executed transaction to commit — or null to opt out
+  // built, un-executed transaction to commit, or null to opt out
   return s.multi();
 });
 ```
@@ -21,7 +21,7 @@ Per attempt the helper opens (or borrows) a session, sends `WATCH keys`, runs yo
 
 - The commit succeeds → `redis.watch` resolves the decoded result tuple.
 - A watched key changed → `exec()` aborts, `onAbort` fires, the helper backs off (if configured) and retries with a fresh `WATCH`.
-- The body returns `null` → the helper `UNWATCH`es and resolves `null` — you opted out.
+- The body returns `null` → the helper `UNWATCH`es and resolves `null`; you opted out.
 - Attempts run out → the helper throws `WatchRetriesExceededError`.
 
 Read the watched keys through the session (`s.kv(...)`, `s.hash(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/beni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
@@ -92,19 +92,19 @@ if (outcome === null) {
 redis.watch(keys, body, {
   attempts,   // total attempts, default 5, must be >= 1
   backoff,    // (attempt: number) => ms to wait before the next retry; default: no delay
-  onAbort,    // ({ attempt }) => void — called on each conflict, before backoff
+  onAbort,    // ({ attempt }) => void, called on each conflict, before backoff
   session     // borrow a long-lived session for hot paths; the helper never closes it
 });
 ```
 
-`onAbort` fires on every conflict, so you can watch contention with metrics before it becomes an incident. `backoff` is opt-in — there is no hidden default sleep. `session` lets a hot path reuse one connection across many `redis.watch` calls; the helper closes only sessions it opened itself.
+`onAbort` fires on every conflict, so you can watch contention with metrics before it becomes an incident. `backoff` is opt-in: there is no hidden default sleep. `session` lets a hot path reuse one connection across many `redis.watch` calls; the helper closes only sessions it opened itself.
 
 ## Abort, Opt-Out, And Exhaustion
 
 Three distinct outcomes, three distinct signals:
 
-- **Abort (conflict).** A watched key changed before `exec()`, so `exec()` resolves `null` internally. The helper retries with a fresh `WATCH` — you never see this directly unless `attempts` runs out.
-- **Opt-out.** Your body returns `null`. The helper `UNWATCH`es and `redis.watch` resolves `null`. Use it for "value already correct" or "insufficient funds" — a deliberate no-op, not a failure.
+- **Abort (conflict).** A watched key changed before `exec()`, so `exec()` resolves `null` internally. The helper retries with a fresh `WATCH`, and you never see this directly unless `attempts` runs out.
+- **Opt-out.** Your body returns `null`. The helper `UNWATCH`es and `redis.watch` resolves `null`. Use it for "value already correct" or "insufficient funds": a deliberate no-op, not a failure.
 - **Exhaustion.** All `attempts` aborted. `redis.watch` throws `WatchRetriesExceededError`, which carries `.attempts`. Exhaustion is exceptional, so it throws rather than returning `null`, keeping the happy path ceremony-free.
 
 ```ts
@@ -136,12 +136,12 @@ const outcome = await s
   .exec();
 //    ^? [void] | null
 if (outcome === null) {
-  // a watched key changed — re-WATCH and retry
+  // a watched key changed, so re-WATCH and retry
 }
 ```
 
-An empty watched `exec()` throws a `TypeError` — unlike `redis.multi()`, a watched transaction that commits nothing would leave `WATCH` armed on the connection, so it is banned. `EXEC` clears watch state server-side on both success and abort, so no `UNWATCH` is needed between retries.
+An empty watched `exec()` throws a `TypeError`. Unlike `redis.multi()`, a watched transaction that commits nothing would leave `WATCH` armed on the connection, so it is banned. `EXEC` clears watch state server-side on both success and abort, so no `UNWATCH` is needed between retries.
 
 ## When To Reach For Lua Instead
 
-`WATCH` livelocks under heavy contention by design — many writers keep invalidating each other's reads, and retries pile up. For very hot check-and-set keys, prefer a [Lua script](/beni/advanced/scripts/): scripts run atomically on the server, reading before they write without any retry loop. The `onAbort` metrics exist precisely because this failure mode is load-dependent and invisible in low-traffic testing.
+`WATCH` livelocks under heavy contention by design: many writers keep invalidating each other's reads, and retries pile up. For very hot check-and-set keys, prefer a [Lua script](/beni/advanced/scripts/): scripts run atomically on the server, reading before they write without any retry loop. The `onAbort` metrics exist precisely because this failure mode is load-dependent and invisible in low-traffic testing.

@@ -28,7 +28,7 @@ await redis.hash(users).hset(
 );
 ```
 
-Every keyed store — kv, hash, set, list, sorted set, stream, geo, bitmap, HyperLogLog, string, and counter — exposes the same key-level lifecycle helpers: `exists`, `ttl`, `expire`, and `persist`:
+Every keyed store (kv, hash, set, list, sorted set, stream, geo, bitmap, HyperLogLog, string, and counter) exposes the same key-level lifecycle helpers: `exists`, `ttl`, `expire`, and `persist`:
 
 ```ts
 const ttl = await redis.kv(sessions).ttl(sessionId);
@@ -72,4 +72,4 @@ await redis.kv(sessions).set(sessionId, nextSession, {
 });
 ```
 
-`nx` and `xx` cannot be combined, and neither can `ttlSeconds` with `keepTtl` — both invalid pairs are compile errors, not runtime throws. See [Type Safety](/beni/core-concepts/type-safety/).
+`nx` and `xx` cannot be combined, and neither can `ttlSeconds` with `keepTtl`; both invalid pairs are compile errors, not runtime throws. See [Type Safety](/beni/core-concepts/type-safety/).

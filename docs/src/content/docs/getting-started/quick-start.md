@@ -1,6 +1,6 @@
 ---
 title: "Quick Start"
-description: "Declare two Redis key families, bind a client, and read your own types back — the five-minute path from install to first typed round trip."
+description: "Declare two Redis key families, bind a client, and read your own types back: the five-minute path from install to first typed round trip."
 ---
 
 This example defines two Redis key families: one hash for user metadata and one JSON key-value store for full profiles.
@@ -47,7 +47,7 @@ const client = await node({
 export const redis = beni(client, { schema });
 ```
 
-To pass the bound handle around, type it with the exported `Beni<TSchema>` — the way you would Drizzle's `NodePgDatabase`:
+To pass the bound handle around, type it with the exported `Beni<TSchema>`:
 
 ```ts
 import type { Beni } from "beni";
@@ -55,7 +55,7 @@ import type { Beni } from "beni";
 export function makeHandlers(redis: Beni<typeof schema>) { /* ... */ }
 ```
 
-Every accessor the handle exposes is listed in the [Beni Client reference](/beni/api/beni-client/). The client owns a connection, so close it when your process or test finishes — otherwise Node never exits:
+Every accessor the handle exposes is listed in the [Beni Client reference](/beni/api/beni-client/). The client owns a connection, so close it when your process or test finishes, otherwise Node never exits:
 
 ```ts
 await client.close();
@@ -84,7 +84,7 @@ await redis.query.profiles.set(
 );
 ```
 
-The explicit `redis.hash(schema)` accessors remain available and return the same store — see the [Schema Registry](/beni/core-concepts/schema-registry/).
+The explicit `redis.hash(schema)` accessors remain available and return the same store; see the [Schema Registry](/beni/core-concepts/schema-registry/).
 
 ## Drop To Redis
 

@@ -1,9 +1,9 @@
 ---
 title: "Distributed Lock"
-description: "A correct distributed lock over Redis — acquire with SET NX PX, release atomically so you never free someone else's lock."
+description: "A correct distributed lock over Redis: acquire with SET NX PX, release atomically so you never free someone else's lock."
 ---
 
-`lock` is a distributed lock built the correct way: acquire with `SET key token NX PX ttl`, and release with an atomic check-and-delete Lua so a caller can **never** delete a lock that already expired and was re-acquired by someone else — the classic footgun of a naive `DEL`.
+`lock` is a distributed lock built the correct way: acquire with `SET key token NX PX ttl`, and release with an atomic check-and-delete Lua so a caller can **never** delete a lock that already expired and was re-acquired by someone else, the classic footgun of a naive `DEL`.
 
 ```ts
 import { lock } from "beni/primitives";
@@ -11,7 +11,7 @@ import { lock } from "beni/primitives";
 const locks = lock(client, { ttlMs: 10_000 });
 
 await locks.run("order:42", async () => {
-  // critical section — the lock is released automatically, even if this throws
+  // critical section: the lock is released automatically, even if this throws
 });
 ```
 
@@ -24,14 +24,14 @@ try {
   await locks.run("order:42", processOrder);
 } catch (error) {
   if (error instanceof LockNotAcquiredError) {
-    // someone else holds error.key — back off or reschedule
+    // someone else holds error.key, so back off or reschedule
   } else {
     throw error;
   }
 }
 ```
 
-`lock` takes any `RedisClient`, so it works over every adapter — including [`beni/upstash`](/beni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
+`lock` takes any `RedisClient`, so it works over every adapter, including [`beni/upstash`](/beni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
 
 ## Acquire and release manually
 
@@ -46,7 +46,7 @@ if (handle) {
 }
 ```
 
-`acquire` resolves `null` when the lock is already held. `release()` and `extend()` resolve `true` only when your token still owns the key — both run the atomic Lua, so they are safe under expiry races.
+`acquire` resolves `null` when the lock is already held. `release()` and `extend()` resolve `true` only when your token still owns the key; both run the atomic Lua, so they are safe under expiry races.
 
 ## Retry a contended lock
 
@@ -76,4 +76,4 @@ await handle?.extend(30_000);
 | `retries` | `acquire` | `0` | Attempts when the lock is held. |
 | `retryDelayMs` | `acquire` | `100` | Delay between retries. |
 
-The TTL is the safety net: if your process dies mid-section, the lock expires instead of deadlocking. There is no lock renewal watchdog — pick a TTL comfortably larger than the work, or `extend()` explicitly.
+The TTL is the safety net: if your process dies mid-section, the lock expires instead of deadlocking. There is no lock renewal watchdog, so pick a TTL comfortably larger than the work, or `extend()` explicitly.

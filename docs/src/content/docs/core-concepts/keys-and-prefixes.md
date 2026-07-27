@@ -44,3 +44,15 @@ demo.key("test1");
 ```
 
 Prefixes should describe the data family, not the Redis command used to store it. Prefer `user`, `session`, and `feature-flag` over names like `hash-user`.
+
+## Hash Tags
+
+That same options bag takes `hashTag`, which moves braces into the key so Redis Cluster routes it deliberately rather than by accident:
+
+```ts
+kv("profile", string()); //                         "profile:42"
+kv("profile", string(), { hashTag: "prefix" }); //  "{profile}:42"
+kv("cart", string(), { hashTag: "id" }); //         "cart:{42}"
+```
+
+A cluster hashes only the text between the first `{` and the first `}`, so `"prefix"` pins a whole keyspace to one slot and `"id"` co-locates the same id across every schema tagged that way. On a single-node Redis it changes nothing but the key text. See [Redis Cluster](/beni/advanced/cluster/) for how to choose, and for the compile-time and runtime checks that come with it.

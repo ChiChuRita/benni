@@ -3,7 +3,7 @@ title: "Blocking Operations"
 description: "Block on lists, sorted sets, and streams from a session with a required timeout and typed multi-key attribution."
 ---
 
-Blocking commands park a connection until an entry is available or the timeout elapses. Because they monopolize a connection, they live only on the [session](/beni/advanced/sessions/) accessors — `session.list(x)`, `session.zset(x)`, and `session.stream(x)` — never on the shared client. Calling one on `redis.list(x)` is a compile error.
+Blocking commands park a connection until an entry is available or the timeout elapses. Because they monopolize a connection, they live only on the [session](/beni/advanced/sessions/) accessors (`session.list(x)`, `session.zset(x)`, and `session.stream(x)`), never on the shared client. Calling one on `redis.list(x)` is a compile error.
 
 ## The Timeout Is Required
 
@@ -14,13 +14,13 @@ await using s = await redis.session();
 const job = await s.list(jobs).blpop("pending", { timeoutSeconds: 5 });
 ```
 
-The unit is in the name, and fractional values are allowed (`{ timeoutSeconds: 0.1 }`). `0`, negatives, `NaN`, and `Infinity` throw a `TypeError` — Redis treats a `0` timeout as block-forever, and arriving there through arithmetic is a shutdown hazard.
+The unit is in the name, and fractional values are allowed (`{ timeoutSeconds: 0.1 }`). `0`, negatives, `NaN`, and `Infinity` throw a `TypeError`. Redis treats a `0` timeout as block-forever, and arriving there through arithmetic is a shutdown hazard.
 
 To block forever, spell it out with the literal `{ timeoutSeconds: "forever" }`:
 
 ```ts
 const job = await s.list(jobs).blpop("pending", { timeoutSeconds: "forever" });
-//    ^? Job — never null: the call either resolves a value or rejects on close
+//    ^? Job, never null: the call either resolves a value or rejects on close
 ```
 
 `{ timeoutSeconds: "forever" }` is a visible, greppable literal rather than a stray `0`. As a bonus it narrows the return type: a forever call cannot time out, so `null` drops from the result. `close()` still rejects a forever-blocked call promptly, so `await using` never hangs.
@@ -72,7 +72,7 @@ const batch = await s.stream(auditEvents).xread(
 
 ## Typed Id Attribution Across Keys
 
-Passing an **array** of keys blocks across several keys at once and tells you which key answered — with the id typed to exactly the keys you passed:
+Passing an **array** of keys blocks across several keys at once and tells you which key answered, with the id typed to exactly the keys you passed:
 
 ```ts
 const hit = await s.list(jobs).blpop(["urgent", "pending"], { timeoutSeconds: 5 });
@@ -92,7 +92,7 @@ const hit = await s.zset(priorities).bzpopmin(["high", "low"], { timeoutSeconds:
 
 ## Non-Blocking Multi-Key Pops
 
-`LMPOP` and `ZMPOP` never block, so they land on the **shared** store with the same typed attribution shape — no session needed:
+`LMPOP` and `ZMPOP` never block, so they land on the **shared** store with the same typed attribution shape, no session needed:
 
 ```ts
 const hit = await redis.list(jobs).lmpop(["urgent", "pending"], { direction: "left", count: 10 });
@@ -103,7 +103,7 @@ const scored = await redis.zset(priorities).zmpop(["high", "low"], { min: true, 
 // lmpop with { direction: "right" } and zmpop with { max: true } are the mirror-image variants.
 ```
 
-These check the keys in order and return `null` only when all of them are empty. A session inherits them too, since it reuses the same stores — but reach for the blocking `blpop`/`brpop`/`blmove`/`blmpop` when you want to wait for work rather than poll.
+These check the keys in order and return `null` only when all of them are empty. A session inherits them too, since it reuses the same stores, but reach for the blocking `blpop`/`brpop`/`blmove`/`blmpop` when you want to wait for work rather than poll.
 
 ## Blocking Counted Multi-Key Pops
 
@@ -138,7 +138,7 @@ import { list, json } from "beni/schema";
 type Job = { id: string; kind: "email" | "report" };
 export const jobs = list("jobs", json<Job>());
 
-// worker.ts — reliable BLMOVE loop, shutdown- and crash-safe
+// worker.ts: reliable BLMOVE loop, shutdown- and crash-safe
 const processing = `worker-${process.pid}`;
 const stop = new AbortController();
 process.on("SIGTERM", () => stop.abort());
@@ -159,7 +159,7 @@ while (!stop.signal.aborted) {
   try {
     const queue = s.list(jobs);
     while (!stop.signal.aborted) {
-      // redis.list(jobs).blmove(...) would be a compile error — session only.
+      // redis.list(jobs).blmove(...) would be a compile error; session only.
       const job = await queue.blmove(
         "pending", processing, "left", "right", { timeoutSeconds: 5 }
       );

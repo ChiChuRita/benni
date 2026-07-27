@@ -3,7 +3,7 @@ title: "Edge (Upstash / HTTP)"
 description: "Run the same typed Beni API on serverless and edge runtimes over Upstash's REST protocol, with nothing but fetch."
 ---
 
-The `beni/upstash` adapter speaks the [Upstash REST protocol](https://upstash.com/docs/redis/features/restapi) over HTTP, so the **same typed Beni API** runs on serverless and edge runtimes — Cloudflare Workers, Vercel Edge, Fastly, Deno Deploy — with nothing but `fetch`. It has **zero dependencies**.
+The `beni/upstash` adapter speaks the [Upstash REST protocol](https://upstash.com/docs/redis/features/restapi) over HTTP, so the **same typed Beni API** runs on serverless and edge runtimes (Cloudflare Workers, Vercel Edge, Fastly, Deno Deploy) with nothing but `fetch`. It has **zero dependencies**.
 
 ```ts
 import { beni } from "beni";
@@ -22,23 +22,29 @@ There is no connection to open, so `upstash` is synchronous (no `await`). Comman
 
 ## What works and what doesn't
 
-HTTP is stateless — one request, one response, no persistent exclusive connection. So the adapter serves the whole **command surface** but not the features that need a held connection:
+HTTP is stateless: one request, one response, no persistent exclusive connection. So the adapter serves the whole **command surface** but not the features that need a held connection:
 
 | Works over HTTP | Not available over HTTP |
 | --- | --- |
-| All typed data-structure stores (`hash`, `kv`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`) | [Sessions](/beni/advanced/sessions/) — `redis.session()` |
+| All typed data-structure stores (`hash`, `kv`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`) | [Sessions](/beni/advanced/sessions/) via `redis.session()` |
 | `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` (the cursor rides in the command) | Blocking commands (`BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`/`MAX`, `XREAD BLOCK`) |
-| Lua scripts, `BITFIELD`, geo, HyperLogLog | `WATCH`-based optimistic transactions — `redis.watch()` |
-| `redis.multi()` (atomic `/multi-exec`) | Pub/Sub **subscribing** — there is no subscriber connection to hold |
+| Lua scripts, `BITFIELD`, geo, HyperLogLog | `WATCH`-based optimistic transactions via `redis.watch()` |
+| `redis.multi()` (atomic `/multi-exec`) | [Pub/Sub](/beni/data-structures/pubsub/) **subscribing** (there is no subscriber connection to hold) |
 | Pub/Sub **publishing** (`PUBLISH` is one stateless command) | |
 
-`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. When you need those, use a TCP adapter ([Node](/beni/runtime/node/) or [Bun](/beni/runtime/bun-and-deno/)) on a long-lived server.
+`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. `redis.pubsub.channel(...).subscribe(...)` throws the same way, because it omits `subscriber` for the same reason. When you need those, use a TCP adapter ([Node](/beni/runtime/node/) or [Bun](/beni/runtime/bun-and-deno/)) on a long-lived server.
 
-Binary (`Uint8Array`) command arguments are not supported over REST — use the `bytes()` codec, which stores base64 strings, or a TCP adapter.
+Publishing is the useful half on the edge, and it needs nothing held open. An edge handler can fan an event out to long-lived workers that subscribe over TCP:
+
+```ts
+await redis.pubsub.channel(userEvents).publish({ id: "42", action: "created" });
+```
+
+Binary (`Uint8Array`) command arguments are not supported over REST; use the `bytes()` codec, which stores base64 strings, or a TCP adapter.
 
 ## Any Upstash-REST-compatible endpoint
 
-The adapter is not tied to Upstash's hosted service. It works against anything that speaks the same protocol, including [`serverless-redis-http`](https://github.com/hiett/serverless-redis-http) (SRH) — a self-hostable proxy you can run in front of a plain Redis for local development or CI:
+The adapter is not tied to Upstash's hosted service. It works against anything that speaks the same protocol, including [`serverless-redis-http`](https://github.com/hiett/serverless-redis-http) (SRH), a self-hostable proxy you can run in front of a plain Redis for local development or CI:
 
 ```sh
 docker run -p 8079:80 \

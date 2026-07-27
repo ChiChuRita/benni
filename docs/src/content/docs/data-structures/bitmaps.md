@@ -61,20 +61,20 @@ const sizeInBytes = await redis.bitmap(dailyActive).bitop("2026-week-27", "OR", 
 
 ## Packed Integer Fields
 
-`bitfield` treats a key as a row of arbitrary-width integers packed at bit offsets — ideal for compact per-entity counters. Chain operations and call `exec`; the result is a **tuple typed to match the chain**:
+`bitfield` treats a key as a row of arbitrary-width integers packed at bit offsets, ideal for compact per-entity counters. Chain operations and call `exec`; the result is a **tuple typed to match the chain**:
 
 ```ts
 const [views, previous, level] = await redis.bitmap(dailyActive)
   .bitfield("2026-07-04")
-  .get("u32", 0) //           number       — read a 32-bit unsigned field
-  .set("u32", 0, 100) //      number | null — returns the previous value
+  .get("u32", 0) //           number       (read a 32-bit unsigned field)
+  .set("u32", 0, 100) //      number | null (returns the previous value)
   .overflow("sat") //         mode for the ops that follow it
-  .incrby("u8", "#8", 1) //   number | null — the new value
+  .incrby("u8", "#8", 1) //   number | null (the new value)
   .exec();
 ```
 
-- **Encoding** — `u1`–`u63` (unsigned) or `i1`–`i64` (signed).
-- **Offset** — an absolute bit offset (`0`), or `#n` to address the _nth_ field of that width (`"#8"` = the 9th `u8`, i.e. bit offset 64).
+- **Encoding**: `u1`–`u63` (unsigned) or `i1`–`i64` (signed).
+- **Offset**: an absolute bit offset (`0`), or `#n` to address the _nth_ field of that width (`"#8"` = the 9th `u8`, i.e. bit offset 64).
 - **`get`** yields a `number`; **`set`** and **`incrby`** yield `number | null`.
 - **`overflow`** sets the mode for the operations _after_ it: `"wrap"` (the default, modular), `"sat"` (clamp to the type's min/max), or `"fail"` (leave the field unchanged and return `null`). That `null` is why `set`/`incrby` are nullable.
 

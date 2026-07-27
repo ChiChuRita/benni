@@ -1,11 +1,11 @@
 ---
 title: "Next.js"
-description: "Redis-backed ISR caching and edge-ready rate limiting for Next.js — a custom cache handler and a middleware limiter in one import."
+description: "Redis-backed ISR caching and edge-ready rate limiting for Next.js: a custom cache handler and a middleware limiter in one import."
 ---
 
 `beni/next` connects Next.js to Redis in the two places it matters: a **custom cache handler** so ISR/App-Router cache entries survive deploys and are shared across instances, and a **rate limiter** for middleware, route handlers, and Server Actions.
 
-Both work over every adapter. On Vercel and other edge runtimes, pair them with [`beni/upstash`](/beni/runtime/edge/) — middleware has no TCP, but the Upstash adapter needs nothing beyond `fetch`.
+Both work over every adapter. On Vercel and other edge runtimes, pair them with [`beni/upstash`](/beni/runtime/edge/): middleware has no TCP, but the Upstash adapter needs nothing beyond `fetch`.
 
 ## Cache handler
 
@@ -35,30 +35,30 @@ const nextConfig = {
 export default nextConfig;
 ```
 
-`cacheHandler(options)` returns a class — Next.js instantiates the module's default export itself. Pass `client` as a lazy factory (as above) so no connection is opened when Next.js loads the module at build time; the factory is awaited once and cached.
+`cacheHandler(options)` returns a class; Next.js instantiates the module's default export itself. Pass `client` as a lazy factory (as above) so no connection is opened when Next.js loads the module at build time; the factory is awaited once and cached.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `client` | — | A `RedisClient`, a promise of one, or a lazy factory (awaited once). |
+| `client` | - | A `RedisClient`, a promise of one, or a lazy factory (awaited once). |
 | `prefix` | `"next-cache"` | Key namespace. |
-| `defaultTtlSeconds` | — | Safety-cap TTL for entries without a `revalidate` period. |
+| `defaultTtlSeconds` | - | Safety-cap TTL for entries without a `revalidate` period. |
 
 The handler matches the cache-handler shape of Next.js 14.1+; the Next.js 15 `resetRequestCache()` hook is a no-op on this handler (it keeps no request-local state). Reads fail open: an entry that does not decode is treated as a miss, never an error.
 
 ### How tags map to Redis keys
 
-Each entry is stored as JSON under `<prefix>:entry:<key>` — with `SET ... EX <revalidate>` when the page declares a numeric `revalidate`, without a TTL when it opts out (`revalidate: false`), unless `defaultTtlSeconds` caps it. Each tag keeps a set of the keys written under it:
+Each entry is stored as JSON under `<prefix>:entry:<key>`, with `SET ... EX <revalidate>` when the page declares a numeric `revalidate`, without a TTL when it opts out (`revalidate: false`), unless `defaultTtlSeconds` caps it. Each tag keeps a set of the keys written under it:
 
 ```
 next-cache:entry:/blog          -> { value, lastModified, tags }
 next-cache:tag:posts            -> SMEMBERS { "/blog", "/blog/post-1" }
 ```
 
-`revalidateTag("posts")` is then one `SMEMBERS` per tag plus a single `DEL` of the matching entries and the tag sets — no scans. Only the tags Next.js passes on `set()` (`ctx.tags`) feed the index.
+`revalidateTag("posts")` is then one `SMEMBERS` per tag plus a single `DEL` of the matching entries and the tag sets, with no scans. Only the tags Next.js passes on `set()` (`ctx.tags`) feed the index.
 
 ## Rate limiting
 
-`rateLimit(options)` wraps the [`ratelimit`](/beni/primitives/ratelimit/) primitive — an exact sliding window, one atomic Lua round trip per check — in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
+`rateLimit(options)` wraps the [`ratelimit`](/beni/primitives/ratelimit/) primitive (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
 
 ```ts
 // middleware.ts
@@ -104,7 +104,7 @@ A Server Action has no `Request`. The limiter also exposes `.check(identity)`, w
 export async function submitComment(formData: FormData) {
   const { success, resetMs } = await limiter.check(await getUserId());
   if (!success) {
-    return { error: "Too many comments — try again shortly.", resetMs };
+    return { error: "Too many comments. Try again shortly.", resetMs };
   }
   // ...
 }
@@ -112,6 +112,6 @@ export async function submitComment(formData: FormData) {
 
 ## Which adapter where
 
-- **Edge middleware** — [`beni/upstash`](/beni/runtime/edge/). The edge runtime has no TCP sockets; the Upstash adapter speaks HTTP with zero dependencies.
-- **Route handlers / Server Actions on Node, and self-hosted deploys** — [`beni/node`](/beni/runtime/node/) for pooled TCP connections; `beni/upstash` also works if you are already on Upstash.
+- **Edge middleware**: [`beni/upstash`](/beni/runtime/edge/). The edge runtime has no TCP sockets; the Upstash adapter speaks HTTP with zero dependencies.
+- **Route handlers / Server Actions on Node, and self-hosted deploys**: [`beni/node`](/beni/runtime/node/) for pooled TCP connections; `beni/upstash` also works if you are already on Upstash.
 - **The cache handler** runs wherever your Next.js server runs and only needs `send`/`pipeline`, so either adapter fits.

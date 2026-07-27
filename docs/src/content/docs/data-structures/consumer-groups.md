@@ -5,7 +5,7 @@ description: "Use stream consumer groups for at-least-once delivery across many 
 
 Consumer groups let several workers share a [stream](/beni/data-structures/streams/) with at-least-once delivery. Redis tracks which entries each consumer has received but not yet acknowledged (the pending entries list, or PEL), so a crashed worker's in-flight entries can be recovered by another.
 
-Groups hang off the stream **store**, not the schema — group topology changes at deploy time, while the schema stays about data shape. You bind a group by name, then a consumer by name, and the stream id (the schema key id) stays the first argument of every call:
+Groups hang off the stream **store**, not the schema: group topology changes at deploy time, while the schema stays about data shape. You bind a group by name, then a consumer by name, and the stream id (the schema key id) stays the first argument of every call:
 
 ```ts
 const group = redis.stream(auditEvents).group("processors");
@@ -18,14 +18,14 @@ Everything except the blocking group read is non-blocking and runs on the shared
 
 ```ts
 const created = await group.create("login", { from: "start" });
-//    ^? boolean — true = created, false = the group already existed
+//    ^? boolean (true = created, false = the group already existed)
 ```
 
 `create` is idempotent: it returns `false` when the group already exists rather than throwing. `from` is **required** and says where a new group starts reading, because defaulting would silently choose between replaying all history and skipping it:
 
-- `"start"` — deliver the stream's full history to the group.
-- `"end"` — deliver only entries added after the group is created.
-- `{ entryId: "1720094400000-0" }` — deliver everything after a specific id.
+- `"start"`: deliver the stream's full history to the group.
+- `"end"`: deliver only entries added after the group is created.
+- `{ entryId: "1720094400000-0" }`: deliver everything after a specific id.
 
 `create` also creates the stream if it is missing (`MKSTREAM`); pass `{ from, mkstream: false }` to require the stream to exist first.
 
@@ -47,7 +47,7 @@ if (batch.length > 0) {
 
 ## Tombstones
 
-An entry that is `XDEL`ed from the stream while it is still in a consumer's PEL decodes as a **tombstone**: its `value` is `null`. Tombstones only ever appear on history and claim paths (`xreadgroup` with `after`, `xclaim`, `xautoclaim`), never on a live `xreadgroup`. You still have to ack a tombstone to clear it from the PEL — there is nothing left to process, so ack and move on:
+An entry that is `XDEL`ed from the stream while it is still in a consumer's PEL decodes as a **tombstone**: its `value` is `null`. Tombstones only ever appear on history and claim paths (`xreadgroup` with `after`, `xclaim`, `xautoclaim`), never on a live `xreadgroup`. You still have to ack a tombstone to clear it from the PEL; there is nothing left to process, so ack and move on:
 
 ```ts
 for (const entry of await me.xreadgroup("login", { after: "0", count: 100 })) {
@@ -85,11 +85,11 @@ do {
 } while (cursor !== "0-0");
 ```
 
-On Redis 7+, entry ids that `xautoclaim` finds already deleted from the stream are dropped from the PEL by Redis itself and reported in `deletedIds` — nothing to ack for those. To recover a **specific** set of entries by id, use `xclaim` (`XCLAIM`) with the same `minIdleMs` guard.
+On Redis 7+, entry ids that `xautoclaim` finds already deleted from the stream are dropped from the PEL by Redis itself and reported in `deletedIds`; nothing to ack for those. To recover a **specific** set of entries by id, use `xclaim` (`XCLAIM`) with the same `minIdleMs` guard.
 
 ## Inspect Pending Work
 
-For dashboards and janitors, `xpending` gives a summary and `xpending` with options lists individual pending entries — both non-blocking on the shared client:
+For dashboards and janitors, `xpending` gives a summary and `xpending` with options lists individual pending entries, both non-blocking on the shared client:
 
 ```ts
 const summary = await group.xpending("login");
@@ -104,18 +104,18 @@ for (const row of stuck) {
 }
 ```
 
-`count` is required on the `xpending` extended form because Redis requires it. Idle thresholds are milliseconds and carry a `...Ms` suffix (`minIdleMs`, `idleMs`) — the PEL speaks milliseconds, while [blocking timeouts](/beni/advanced/blocking-operations/) speak seconds (`timeoutSeconds`), and the suffixes keep the units unambiguous at call sites.
+`count` is required on the `xpending` extended form because Redis requires it. Idle thresholds are milliseconds and carry a `...Ms` suffix (`minIdleMs`, `idleMs`): the PEL speaks milliseconds, while [blocking timeouts](/beni/advanced/blocking-operations/) speak seconds (`timeoutSeconds`), and the suffixes keep the units unambiguous at call sites.
 
 `deleteConsumer` removes a consumer and destroys its PEL entries; `destroy` removes the whole group.
 
 ## Blocking Group Read (Session Only)
 
-A live worker that wants to wait for new deliveries uses `xreadgroup` with a `timeoutSeconds`, which is only reachable through a session — it parks the connection like any other [blocking operation](/beni/advanced/blocking-operations/):
+A live worker that wants to wait for new deliveries uses `xreadgroup` with a `timeoutSeconds`, which is only reachable through a session, since it parks the connection like any other [blocking operation](/beni/advanced/blocking-operations/):
 
 ```ts
 await redis.session(async (s) => {
   const live = s.stream(auditEvents).group("processors").consumer(`c-${process.pid}`);
-  while (!stop.signal.aborted) {
+  while (!shutdown.signal.aborted) {
     const batch = await live.xreadgroup("login", { timeoutSeconds: 5, count: 20 });
     for (const entry of batch) await handleEntry(entry.value);
     if (batch.length > 0) {
@@ -125,7 +125,7 @@ await redis.session(async (s) => {
 });
 ```
 
-Blocking `xreadgroup` always reads `>` (new deliveries), because Redis only honors `BLOCK` for new entries — so there is no id parameter, and no tombstones. It returns an empty array on timeout, which the `{ timeoutSeconds: 5 }` loop above treats as a heartbeat.
+Blocking `xreadgroup` always reads `>` (new deliveries), because Redis only honors `BLOCK` for new entries, so there is no id parameter, and no tombstones. It returns an empty array on timeout, which the `{ timeoutSeconds: 5 }` loop above treats as a heartbeat.
 
 ## Full Worker Lifecycle
 
@@ -156,10 +156,10 @@ do {
   cursor = res.cursor;
 } while (cursor !== "0-0");
 
-// (c) live loop — the blocking group read is only reachable through a session
+// (c) live loop: the blocking group read is only reachable through a session
 await redis.session(async (s) => {
   const live = s.stream(auditEvents).group("processors").consumer(`c-${process.pid}`);
-  while (!stop.signal.aborted) {
+  while (!shutdown.signal.aborted) {
     const batch = await live.xreadgroup("login", { timeoutSeconds: 5, count: 20 });
     for (const entry of batch) await handleEntry(entry.value);
     if (batch.length > 0) await group.xack("login", batch.map((e) => e.id));

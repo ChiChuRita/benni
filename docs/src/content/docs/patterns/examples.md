@@ -55,4 +55,4 @@ const key = redis.hash(users).key("42");
 const exists = await redis.raw.send(["EXISTS", key]);
 ```
 
-For a copy-pasteable example of every data structure in turn, see [Examples](/beni/examples/). The lower-level store builders live under `beni/core` — see the [API Overview](/beni/api/overview/).
+For a copy-pasteable example of every data structure in turn, see [Examples](/beni/examples/). The lower-level store builders live under `beni/core`; see the [API Overview](/beni/api/overview/).

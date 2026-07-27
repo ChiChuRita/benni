@@ -11,7 +11,7 @@ import { zset, string } from "beni/schema";
 export const leaderboards = zset("leaderboard", string());
 ```
 
-Add members with scores — `zadd` takes a single entry or an array:
+Add members with scores; `zadd` takes a single entry or an array:
 
 ```ts
 await redis.zset(leaderboards).zadd("global", { member: "user:42", score: 100 });
@@ -22,7 +22,7 @@ await redis.zset(leaderboards).zadd("global", [
 ]);
 ```
 
-Conditions mirror the Redis tokens: `nx` (only add new members), `xx` (only update existing), `gt`/`lt` (only move a score up/down), and `ch` (count changed members instead of only added ones). Illegal combinations — `nx` with `xx`, `gt`, or `lt`, and `gt` with `lt` — are compile errors:
+Conditions mirror the Redis tokens: `nx` (only add new members), `xx` (only update existing), `gt`/`lt` (only move a score up/down), and `ch` (count changed members instead of only added ones). Illegal combinations (`nx` with `xx`, `gt`, or `lt`, and `gt` with `lt`) are compile errors:
 
 ```ts
 await redis.zset(leaderboards).zadd("global", entries, { gt: true, ch: true });
@@ -60,7 +60,7 @@ Sorted sets are a good fit for leaderboards, ranking search candidates, rate-lim
 
 ## Lexicographic Ranges
 
-When every member in a sorted set shares the same score, Redis orders them lexically by member value. That turns a sorted set into a sorted index — handy for autocomplete, prefix search, or any alphabetized listing. Calling `zrange` with `byLex: true` exposes Redis's `BYLEX` family over that ordering.
+When every member in a sorted set shares the same score, Redis orders them lexically by member value. That turns a sorted set into a sorted index, handy for autocomplete, prefix search, or any alphabetized listing. Calling `zrange` with `byLex: true` exposes Redis's `BYLEX` family over that ordering.
 
 ```ts
 import { zset, string } from "beni/schema";
@@ -102,7 +102,7 @@ const openEnded = await redis.zset(names).zrange("directory", {
 //    → ["adam"]
 ```
 
-Use the `"-"` and `"+"` sentinels for open ranges — this reads every member, in order. `offset` and `count` apply a `LIMIT` and must be provided together:
+Use the `"-"` and `"+"` sentinels for open ranges; this reads every member, in order. `offset` and `count` apply a `LIMIT` and must be provided together:
 
 ```ts
 const firstThree = await redis.zset(names).zrange("directory", {
@@ -160,7 +160,7 @@ const stored = await redis.zset(names).zrangestore("b-names", "directory", {
 //    ^? number   → 2   ("bella", "ben" written to the "b-names" key)
 ```
 
-The member `value` in a bound is encoded through the schema's codec, exactly like a member passed to `zadd`. Lex ranges assume **all scores are equal** — this is standard Redis `BYLEX` behavior, and results are undefined when scores differ. Because Redis rejects `WITHSCORES` alongside `BYLEX`, you cannot combine `byLex: true` with `withScores: true`; use `zrange` with `{ byScore: true, withScores: true }` when you need scores back.
+The member `value` in a bound is encoded through the schema's codec, exactly like a member passed to `zadd`. Lex ranges assume **all scores are equal**. This is standard Redis `BYLEX` behavior, and results are undefined when scores differ. Because Redis rejects `WITHSCORES` alongside `BYLEX`, you cannot combine `byLex: true` with `withScores: true`; use `zrange` with `{ byScore: true, withScores: true }` when you need scores back.
 
 Raw Redis equivalent:
 

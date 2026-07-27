@@ -43,7 +43,7 @@ Both `keys` and `args` are checked at compile time: missing or misspelled names 
 
 ## EVALSHA Caching
 
-The first run loads the script with `SCRIPT LOAD` and caches its SHA per client. Later runs send only the hash via `EVALSHA`. When Redis replies with `NOSCRIPT` — after a server restart or `SCRIPT FLUSH` — Beni reloads the script and retries automatically, so callers never see the error.
+The first run loads the script with `SCRIPT LOAD` and caches its SHA per client. Later runs send only the hash via `EVALSHA`. When Redis replies with `NOSCRIPT` (after a server restart or `SCRIPT FLUSH`), Beni reloads the script and retries automatically, so callers never see the error.
 
 ## Scalar Returns Only
 
