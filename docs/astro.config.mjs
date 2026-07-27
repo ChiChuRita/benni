@@ -33,6 +33,12 @@ export default defineConfig({
               paths: ["advanced/**"],
             },
             {
+              label: "Comparisons",
+              description:
+                "How Beni relates to ioredis and @upstash/redis: what each library types, which features Beni does not cover, and how to choose between them.",
+              paths: ["comparisons/**"],
+            },
+            {
               label: "Primitives",
               description:
                 "Batteries-included helpers built on the typed client: a stampede-proof cache, a correct distributed lock, and a sliding-window rate limiter.",
@@ -60,7 +66,7 @@ export default defineConfig({
         src: "./src/assets/logo.svg",
       },
       description:
-        "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge. Your declared types travel from write to read.",
+        "The end-to-end typed Redis client for TypeScript: one API across Node, Bun, Deno, and the edge. Your declared types travel from write to read.",
       social: [
         {
           icon: "github",
@@ -80,8 +86,19 @@ export default defineConfig({
           items: [
             { label: "Introduction", slug: "getting-started/introduction" },
             { label: "Why Beni?", slug: "getting-started/why-beni" },
+            { label: "Philosophy", slug: "getting-started/philosophy" },
             { label: "Installation", slug: "getting-started/installation" },
             { label: "Quick Start", slug: "getting-started/quick-start" },
+          ],
+        },
+        {
+          label: "Comparisons",
+          items: [
+            { label: "Beni vs ioredis", slug: "comparisons/ioredis" },
+            {
+              label: "Beni vs @upstash/redis",
+              slug: "comparisons/upstash-redis",
+            },
           ],
         },
         {
@@ -180,7 +197,7 @@ export default defineConfig({
         },
         {
           label: "LLM Docs",
-          link: "/beni/llms-full.txt",
+          link: "/llms-full.txt",
           attrs: {
             target: "_blank",
             rel: "noopener noreferrer",
