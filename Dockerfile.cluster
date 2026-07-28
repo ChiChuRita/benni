@@ -6,8 +6,21 @@
 # implementation can be differential-tested against the server itself.
 #
 # The test suite assigns the slots in beforeAll via CLUSTER ADDSLOTSRANGE.
+#
+# The announce settings matter for any *cluster-aware client* (an
+# ioredis.Cluster, say) rather than a plain connection: such a client reads
+# CLUSTER SLOTS and then dials whatever host/port it finds there. Without
+# these it finds the in-container 6379 and connects to something else
+# entirely, or nothing. They hard-code the documented `-p 6381:6379` mapping
+# below, so run the container on that port or override them.
 FROM redis:8-alpine
 
 EXPOSE 6379
 
-CMD ["redis-server", "--cluster-enabled", "yes", "--save", "", "--appendonly", "no"]
+CMD ["redis-server", \
+  "--cluster-enabled", "yes", \
+  "--save", "", \
+  "--appendonly", "no", \
+  "--cluster-announce-ip", "127.0.0.1", \
+  "--cluster-announce-port", "6381", \
+  "--cluster-announce-bus-port", "16381"]
