@@ -92,8 +92,8 @@ describe("lock", () => {
 describe("ratelimit", () => {
   it("runs the sliding-window script and reports an allowed request", async () => {
     const commands: RedisCommand[] = [];
-    // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset]
-    const client = fakeClient(commands, ["sha1", [1, 9, 1_700_000_060_000]]);
+    // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset, retryAfter]
+    const client = fakeClient(commands, ["sha1", [1, 9, 1_700_000_060_000, 0]]);
     const limiter = ratelimit(client, { limit: 10, windowMs: 60_000 });
 
     const result = await limiter.check("user:1");
@@ -101,7 +101,8 @@ describe("ratelimit", () => {
       success: true,
       limit: 10,
       remaining: 9,
-      resetMs: 1_700_000_060_000
+      resetMs: 1_700_000_060_000,
+      retryAfterMs: 0
     });
 
     const evalsha = commands.at(-1);
@@ -111,21 +112,26 @@ describe("ratelimit", () => {
       1,
       "ratelimit:user:1"
     ]);
-    // [EVALSHA, sha, keyCount, key, now, windowMs, limit, member]
-    expect(typeof evalsha?.[4]).toBe("string"); // now
-    expect(evalsha?.[5]).toBe("60000"); // windowMs
-    expect(evalsha?.[6]).toBe("10"); // limit
-    expect(typeof evalsha?.[7]).toBe("string"); // unique member
+    // [EVALSHA, sha, keyCount, key, windowMs, limit, member]. No timestamp is
+    // sent: the script reads it from the server, so app-server clock skew
+    // cannot shift the window.
+    expect(evalsha?.[4]).toBe("60000"); // windowMs
+    expect(evalsha?.[5]).toBe("10"); // limit
+    expect(typeof evalsha?.[6]).toBe("string"); // unique member
+    expect(evalsha).toHaveLength(7);
   });
 
-  it("reports a denied request", async () => {
-    const client = fakeClient([], ["sha1", [0, 0, 1_700_000_099_000]]);
+  it("reports a denied request with a skew-free retry delay", async () => {
+    const client = fakeClient([], ["sha1", [0, 0, 1_700_000_099_000, 850]]);
     const limiter = ratelimit(client, { limit: 5, windowMs: 1_000 });
 
     const result = await limiter.check("user:2");
     expect(result.success).toBe(false);
     expect(result.remaining).toBe(0);
     expect(result.resetMs).toBe(1_700_000_099_000);
+    // A duration computed server-side, so `Retry-After` never has to
+    // difference a Redis timestamp against a possibly-skewed local clock.
+    expect(result.retryAfterMs).toBe(850);
   });
 
   it("rejects a non-positive limit or window", () => {

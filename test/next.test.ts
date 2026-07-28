@@ -172,9 +172,10 @@ describe("rateLimit", () => {
   });
 
   it("returns a 429 with Retry-After and X-RateLimit headers when denied", async () => {
-    vi.useFakeTimers({ now: 1_700_000_000_000 });
-    const resetMs = 1_700_000_030_000; // 30s from the frozen now
-    const client = fakeClient([], ["sha1", [0, 0, resetMs]]);
+    const resetMs = 1_700_000_030_000;
+    // No fake timers needed any more: Retry-After comes from the server's own
+    // duration, so the local clock is irrelevant to it.
+    const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
     const limiter = rateLimit({ client, limit: 5, windowMs: 60_000 });
 
     const response = await limiter(new Request("https://example.com/api"));
@@ -220,7 +221,10 @@ describe("rateLimit", () => {
 
   it(".check works without a Request (Server Actions)", async () => {
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["sha1", [0, 0, 1_700_000_099_000]]);
+    const client = fakeClient(commands, [
+      "sha1",
+      [0, 0, 1_700_000_099_000, 900]
+    ]);
     const limiter = rateLimit({ client, limit: 3, windowMs: 10_000 });
 
     const result = await limiter.check("user:42");
@@ -229,7 +233,8 @@ describe("rateLimit", () => {
       success: false,
       limit: 3,
       remaining: 0,
-      resetMs: 1_700_000_099_000
+      resetMs: 1_700_000_099_000,
+      retryAfterMs: 900
     });
     expect(commands.at(-1)?.[3]).toBe("next-ratelimit:user:42");
   });

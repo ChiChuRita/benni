@@ -95,10 +95,9 @@ export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
   return async (c, next) => {
     const result = await limiter.check(await key(c));
     if (!result.success) {
-      const retryAfterSeconds = Math.max(
-        0,
-        Math.ceil((result.resetMs - Date.now()) / 1000)
-      );
+      // retryAfterMs is a server-derived duration, so this never differences
+      // a Redis timestamp against a possibly-skewed local clock.
+      const retryAfterSeconds = Math.ceil(result.retryAfterMs / 1000);
       c.header("Retry-After", String(retryAfterSeconds));
       return c.json({ error: "rate limit exceeded" }, 429);
     }

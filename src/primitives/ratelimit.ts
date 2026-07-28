@@ -8,29 +8,37 @@ const DEFAULT_PREFIX = "ratelimit";
  * Sliding-window log in a single sorted set (one key, so it is Redis Cluster
  * safe). Drop entries older than the window, count what remains, and admit +
  * record the request if under the limit. Decodes to the internal
- * `{ allowed, remaining, reset }` tuple that `check()` maps onto the public
- * `RatelimitResult` (`{ success, limit, remaining, resetMs }`).
+ * `{ allowed, remaining, reset, retryAfter }` tuple that `check()` maps onto
+ * the public `RatelimitResult`.
  */
 const slidingWindowScript = defineScript<
-  readonly [nowMs: string, windowMs: string, limit: string, member: string],
-  { allowed: number; remaining: number; reset: number }
+  readonly [windowMs: string, limit: string, member: string],
+  { allowed: number; remaining: number; reset: number; retryAfter: number }
 >({
   keyCount: 1,
   lua: `
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
+-- Server time, not the caller's. Two app servers with skewed clocks would
+-- otherwise disagree about where the window starts, and the limit would be
+-- enforced differently depending on which one answered the request.
+local t = redis.call("TIME")
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local window = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
 redis.call("ZREMRANGEBYSCORE", KEYS[1], 0, now - window)
 local count = redis.call("ZCARD", KEYS[1])
 if count < limit then
-  redis.call("ZADD", KEYS[1], now, ARGV[4])
+  redis.call("ZADD", KEYS[1], now, ARGV[3])
   redis.call("PEXPIRE", KEYS[1], window)
-  return {1, limit - count - 1, now + window}
+  return {1, limit - count - 1, now + window, 0}
 end
 local oldest = redis.call("ZRANGE", KEYS[1], 0, 0, "WITHSCORES")
 local reset = now + window
 if oldest[2] then reset = tonumber(oldest[2]) + window end
-return {0, 0, reset}
+-- retryAfter is derived here, from the same clock as reset, so the caller
+-- never has to difference a server timestamp against its own clock.
+local retryAfter = reset - now
+if retryAfter < 0 then retryAfter = 0 end
+return {0, 0, reset, retryAfter}
 `,
   decode: (reply) => {
     if (!Array.isArray(reply)) {
@@ -42,7 +50,8 @@ return {0, 0, reset}
     return {
       allowed: Number(reply[0]),
       remaining: Number(reply[1]),
-      reset: Number(reply[2])
+      reset: Number(reply[2]),
+      retryAfter: Number(reply[3])
     };
   }
 });
@@ -63,8 +72,19 @@ export type RatelimitResult = {
   readonly limit: number;
   /** Requests left in the current window (0 when denied). */
   readonly remaining: number;
-  /** Epoch-ms when the window next frees a slot. */
+  /**
+   * Server epoch-ms when the window next frees a slot. Compare it against your
+   * own clock only if you know the two agree; prefer {@link retryAfterMs}.
+   */
   readonly resetMs: number;
+  /**
+   * How long to wait before retrying, in milliseconds (`0` when allowed).
+   *
+   * Derived server-side from the same clock as `resetMs`, so it is immune to
+   * skew between your process and Redis. This is what the `Retry-After` header
+   * wants.
+   */
+  readonly retryAfterMs: number;
 };
 
 /**
@@ -89,19 +109,20 @@ export function ratelimit(client: RedisClient, options: RatelimitOptions) {
 
   return {
     async check(id: string): Promise<RatelimitResult> {
-      const now = Date.now();
       const key = `${prefix}:${id}`;
-      const member = `${now}-${globalThis.crypto.randomUUID()}`;
+      // Uniqueness only: the timestamp comes from the server inside the script.
+      const member = globalThis.crypto.randomUUID();
       const result = await scripts.run(
         slidingWindowScript,
         [key],
-        [String(now), String(windowMs), String(limit), member]
+        [String(windowMs), String(limit), member]
       );
       return {
         success: result.allowed === 1,
         limit,
         remaining: result.remaining,
-        resetMs: result.reset
+        resetMs: result.reset,
+        retryAfterMs: result.retryAfter
       };
     }
   };

@@ -23,7 +23,9 @@ describe("hono ratelimit", () => {
 
   it("denies with a JSON 429 and Retry-After once the limit is hit", async () => {
     const resetMs = Date.now() + 30_000;
-    const client = fakeClient([], ["sha1", [0, 0, resetMs]]);
+    // The 4th element is the server-derived retry delay; the middleware uses
+    // it directly rather than differencing resetMs against its own clock.
+    const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
     const app = new Hono();
     app.use("*", ratelimit({ client, limit: 5, windowMs: 60_000 }));
     app.get("/", (c) => c.text("hello"));
@@ -31,9 +33,7 @@ describe("hono ratelimit", () => {
     const res = await app.request("/");
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "rate limit exceeded" });
-    const retryAfter = Number(res.headers.get("Retry-After"));
-    expect(retryAfter).toBeGreaterThanOrEqual(1);
-    expect(retryAfter).toBeLessThanOrEqual(30);
+    expect(res.headers.get("Retry-After")).toBe("30");
     expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
   });
 

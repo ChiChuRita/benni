@@ -325,10 +325,9 @@ export function rateLimit(options: NextRateLimitOptions): NextRateLimitHandler {
   const handler = async (request: Request): Promise<Response | null> => {
     const result = await check(await identify(request));
     if (result.success) return null;
-    const retryAfterSeconds = Math.max(
-      0,
-      Math.ceil((result.resetMs - Date.now()) / 1000)
-    );
+    // retryAfterMs is a server-derived duration, so this never differences a
+    // Redis timestamp against a possibly-skewed local clock.
+    const retryAfterSeconds = Math.ceil(result.retryAfterMs / 1000);
     return new Response("Too Many Requests", {
       status: 429,
       headers: {
