@@ -19,8 +19,23 @@ import type {
  */
 type AdoptableClient = Pick<
   IORedisClient,
-  "call" | "pipeline" | "multi" | "duplicate" | "quit" | "disconnect" | "status"
->;
+  "call" | "pipeline" | "multi" | "quit" | "disconnect"
+> & {
+  /**
+   * Widened from `RedisStatus`. `Cluster` reports its own union (it adds
+   * `"disconnecting"`), so picking `Redis`'s status made a Cluster fail to
+   * satisfy the very type this comment says it should. Only ever compared
+   * against terminal names, so the narrow union bought nothing.
+   */
+  readonly status: string;
+  /**
+   * Widened for the same reason: the two shapes disagree on both parameters
+   * and return type (`Redis.duplicate(override): Redis` against
+   * `Cluster.duplicate(nodes, options): Cluster`). `duplicateOf` dispatches on
+   * the actual shape and is the only caller.
+   */
+  duplicate(...args: never[]): unknown;
+};
 
 export type IoredisOptions = RedisOptions & {
   /** Connection URL, e.g. `redis://localhost:6379`. */
@@ -36,6 +51,55 @@ function isAdoptable(source: IoredisSource): source is AdoptableClient {
     source !== null &&
     typeof (source as AdoptableClient).call === "function" &&
     typeof (source as AdoptableClient).duplicate === "function"
+  );
+}
+
+/** `Cluster` exposes `nodes()`; a plain `Redis` does not. */
+function isCluster(client: AdoptableClient): boolean {
+  return typeof (client as { nodes?: unknown }).nodes === "function";
+}
+
+/**
+ * Duplicate a client, applying `overrides` whichever shape it is.
+ *
+ * `Redis.duplicate(override)` takes one options object, but
+ * `Cluster.duplicate(overrideStartupNodes, overrideOptions)` takes options
+ * *second*. Handing a Cluster a single object lands it in
+ * `overrideStartupNodes`, which is then dropped for having no `length` — so
+ * every override is silently lost, `lazyConnect` included. The duplicate
+ * starts dialing on its own and the connect below fails with "Redis is
+ * already connecting/connected", which took out `session()` and
+ * `subscriber()` on every adopted Cluster.
+ */
+function duplicateOf(
+  client: AdoptableClient,
+  overrides: RedisOptions
+): IORedisClient {
+  const duplicate = isCluster(client)
+    ? (
+        client.duplicate as unknown as (
+          nodes: unknown[],
+          options: RedisOptions
+        ) => IORedisClient
+      )([], overrides)
+    : (client.duplicate as (options: RedisOptions) => IORedisClient)(overrides);
+  return duplicate;
+}
+
+/**
+ * ioredis rewrites key *arguments* with `keyPrefix` but leaves SCAN patterns
+ * alone, so a prefixed client stores at `<prefix><key>` while `schema.key()`,
+ * every `MATCH` pattern, and any key a Lua script builds from a prefix argument
+ * still say `<key>`. Scans then return nothing, silently. Beni's schemas own
+ * key naming, so refuse the option rather than half-honour it.
+ */
+function assertNoKeyPrefix(keyPrefix: unknown, where: string): void {
+  if (typeof keyPrefix !== "string" || keyPrefix.length === 0) return;
+  throw new TypeError(
+    `beni/ioredis cannot be used with ioredis's keyPrefix (${where} sets "${keyPrefix}"). ` +
+      "ioredis prefixes key arguments but not SCAN patterns, so every scan would " +
+      "silently return nothing and schema.key() would not match what is stored. " +
+      'Drop keyPrefix and build the prefix into the schema name instead, e.g. hash(prefix + "user", …).'
   );
 }
 
@@ -68,17 +132,15 @@ function isAdoptable(source: IoredisSource): source is AdoptableClient {
  */
 export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
   const adopted = source !== undefined && isAdoptable(source);
+  if (adopted) {
+    assertNoKeyPrefix(
+      (source as { options?: RedisOptions }).options?.keyPrefix,
+      "the adopted client"
+    );
+  }
   const client: AdoptableClient = adopted
     ? source
-    : await connect(createFrom(source as string | IoredisOptions | undefined));
-
-  if (!adopted) {
-    // ioredis re-emits socket errors as client 'error' events; with no
-    // listener, a network blip while idle crashes the process. It reconnects
-    // on its own — the listener just absorbs. Only for clients we created;
-    // see the note above about adopted ones.
-    (client as IORedisClient).on("error", () => {});
-  }
+    : await open(createFrom(source as string | IoredisOptions | undefined));
 
   // Leak backstops: the parent close() force-closes any survivors, so a leaked
   // session or subscriber cannot pin a connection past the client's lifetime.
@@ -106,8 +168,8 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       return unwrap(await transaction.exec(), "transaction");
     },
     async session(): Promise<RedisSession> {
-      const duplicate = await connect(
-        client.duplicate({
+      const duplicate = await open(
+        duplicateOf(client, {
           // Fail-fast, per the session contract: a drop must reject in-flight
           // and subsequent commands rather than silently reconnecting, which
           // would lose WATCH state and blocked reads.
@@ -115,7 +177,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
           maxRetriesPerRequest: null,
           enableOfflineQueue: false,
           // duplicate() inherits the parent's options; forcing lazyConnect
-          // keeps it from dialing before we own it, so connect() below is the
+          // keeps it from dialing before we own it, so open() below is the
           // single place the connection is established.
           lazyConnect: true
         })
@@ -165,8 +227,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
     async subscriber(): Promise<RedisSubscriber> {
       // Subscriber mode monopolizes a connection, so duplicate rather than
       // borrow the shared one.
-      const duplicate = await connect(client.duplicate({ lazyConnect: true }));
-      duplicate.on("error", () => {});
+      const duplicate = await open(duplicateOf(client, { lazyConnect: true }));
       let closed = false;
 
       // ioredis delivers every subscription through one 'message'/'pmessage'
@@ -252,6 +313,7 @@ function createFrom(
     return new IORedis(source, { lazyConnect: true });
   }
   const { url, ...options } = source ?? {};
+  assertNoKeyPrefix(options.keyPrefix, "the options passed to ioredis()");
   return url === undefined
     ? new IORedis({ ...options, lazyConnect: true })
     : new IORedis(url, { ...options, lazyConnect: true });
@@ -262,10 +324,31 @@ function createFrom(
  * command is never issued against a socket that is not ready — which matters
  * because sessions disable the offline queue and would reject instead of
  * waiting.
+ *
+ * The 'error' listener goes on *before* connecting, for two reasons. ioredis
+ * re-emits socket errors as client 'error' events and a client with no
+ * listener crashes the process, so attaching afterwards leaves the whole
+ * connect window uncovered. And a rejected connect does not stop the client:
+ * it keeps retrying on its own schedule, so an unguarded failure left an
+ * orphan reconnecting forever, logging "Unhandled error event" and holding the
+ * process open. Tear it down instead.
+ *
+ * Only ever called for clients this adapter created; an adopted client carries
+ * its own listener, per the note on `ioredis()`.
  */
-async function connect(client: IORedisClient): Promise<IORedisClient> {
+async function open(client: IORedisClient): Promise<IORedisClient> {
+  client.on("error", () => {});
   if (client.status === "ready") return client;
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (error) {
+    try {
+      client.disconnect();
+    } catch {
+      // Nothing left to close; the connect failure is what matters.
+    }
+    throw error;
+  }
   return client;
 }
 

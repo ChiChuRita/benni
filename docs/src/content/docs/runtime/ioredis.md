@@ -61,6 +61,16 @@ A client Beni created from a URL or options is **owned**, and `close()` quits it
 
 One consequence worth knowing: Beni attaches an `"error"` listener only to clients it created. An adopted client keeps whatever error handling you gave it, and Beni will not silently swallow errors on a client it does not own. Make sure yours has a listener, or an idle network blip will crash the process (that is ioredis behaviour, not Beni's).
 
+### `keyPrefix` is not supported
+
+`ioredis({ keyPrefix })`, and adopting a client that sets it, both throw. ioredis rewrites key *arguments* but leaves `SCAN`/`MATCH` patterns alone, so a prefixed client stores at `<prefix><key>` while `schema.key()` and every scan still say `<key>`. Scans would return nothing at all, without an error.
+
+Beni's schemas already own key naming, so put the prefix there instead:
+
+```ts
+const users = hash(prefix + "user", { name: string() });
+```
+
 ## What's supported
 
 Everything. ioredis speaks RESP2, whose flat reply shapes are exactly what the typed stores decode, so replies pass through with no normalization:

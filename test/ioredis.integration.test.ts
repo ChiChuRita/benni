@@ -14,6 +14,17 @@ import { expectRedisClientContract } from "./redis-contract.js";
 const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
+/** Open TCP handles, so a client left reconnecting in the background shows up. */
+function activeSockets(): number {
+  const handles = (
+    process as unknown as {
+      _getActiveHandles(): Array<{ constructor?: { name?: string } }>;
+    }
+  )._getActiveHandles();
+  return handles.filter((handle) => handle.constructor?.name === "Socket")
+    .length;
+}
+
 describeRedis("ioredis", () => {
   it("passes the shared Redis client contract", async () => {
     expect(redisUrl).toBeDefined();
@@ -39,6 +50,116 @@ describeRedis("ioredis", () => {
       await expect(client.send(["PING"])).resolves.toBe("PONG");
     } finally {
       await client.close();
+    }
+  });
+
+  it("refuses ioredis keyPrefix rather than silently breaking scans", async () => {
+    // ioredis prefixes key arguments but not SCAN patterns, so a prefixed
+    // client stored at `app:user:1` while every MATCH pattern and
+    // schema.key() still said `user:1`. Scans returned nothing, silently.
+    await expect(ioredis({ url: redisUrl, keyPrefix: "app:" })).rejects.toThrow(
+      /keyPrefix/
+    );
+
+    const raw = new IORedis(redisUrl as string, { keyPrefix: "app:" });
+    try {
+      await expect(ioredis(raw)).rejects.toThrow(/keyPrefix/);
+    } finally {
+      raw.disconnect();
+    }
+  });
+
+  it("does not leave a retrying client behind when connect fails", async () => {
+    // The absorbing 'error' listener went on after await connect(), so a
+    // failed connect left an orphan reconnecting forever: "Unhandled error
+    // event" on repeat, and a process that never exits.
+    // ioredis reports it through console.error rather than throwing, and the
+    // retries are what keep the socket alive, so watch for both: the log line
+    // and the leftover handle.
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...parts: unknown[]) => {
+      logged.push(parts.map(String).join(" "));
+    };
+    const socketsBefore = activeSockets();
+    try {
+      await expect(
+        ioredis({ host: "127.0.0.1", port: 6399, connectTimeout: 300 })
+      ).rejects.toThrow();
+      // Long enough for at least one reconnect attempt to fire.
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    } finally {
+      console.error = original;
+    }
+
+    expect(logged.filter((line) => line.includes("Unhandled error"))).toEqual(
+      []
+    );
+    expect(activeSockets()).toBeLessThanOrEqual(socketsBefore);
+  });
+});
+
+const clusterUrl = process.env.BENI_REDIS_CLUSTER_URL;
+const describeCluster = clusterUrl ? describe : describe.skip;
+
+describeCluster("ioredis (adopted Cluster)", () => {
+  // Cluster.duplicate takes options as its *second* argument, so the adapter's
+  // single-object call landed them in overrideStartupNodes and dropped every
+  // one, lazyConnect included. The duplicate dialed on its own and connect()
+  // then failed with "Redis is already connecting/connected", which took out
+  // session() and subscriber() on every adopted Cluster.
+  const nodeOf = (url: string) => {
+    const parsed = new URL(url);
+    return {
+      host: parsed.hostname,
+      port: Number(parsed.port || 6379)
+    };
+  };
+
+  async function adopt() {
+    const cluster = new IORedis.Cluster([nodeOf(clusterUrl as string)]);
+    cluster.on("error", () => {});
+    await new Promise((resolve) => cluster.once("ready", resolve));
+    return { cluster, client: await ioredis(cluster) };
+  }
+
+  it("supports session() on an adopted Cluster", async () => {
+    const { cluster, client } = await adopt();
+    try {
+      const session = await client.session?.();
+      if (!session) throw new Error("session() is required on this adapter");
+      // Hash-tagged so the watched key and the transaction share a slot.
+      await session.send(["SET", "{beni-t}:k", "v1"]);
+      await session.send(["WATCH", "{beni-t}:k"]);
+      await expect(
+        session.watchedTransaction([["GET", "{beni-t}:k"]])
+      ).resolves.toEqual(["v1"]);
+      expect(session.closed).toBe(false);
+      await session.close();
+      expect(session.closed).toBe(true);
+      await client.send(["DEL", "{beni-t}:k"]);
+    } finally {
+      await client.close();
+      cluster.disconnect();
+    }
+  });
+
+  it("supports subscriber() on an adopted Cluster", async () => {
+    const { cluster, client } = await adopt();
+    try {
+      const subscriber = await client.subscriber?.();
+      if (!subscriber)
+        throw new Error("subscriber() is required on this adapter");
+      const received = new Promise<string>((resolve) => {
+        void subscriber.subscribe("beni-t-chan", resolve);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await client.send(["PUBLISH", "beni-t-chan", "hello"]);
+      await expect(received).resolves.toBe("hello");
+      await subscriber.close();
+    } finally {
+      await client.close();
+      cluster.disconnect();
     }
   });
 });
