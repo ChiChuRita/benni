@@ -59,6 +59,25 @@ return 1
   decode: (reply) => (typeof reply === "number" ? reply : 0)
 });
 
+/** Drop our slot, reporting whether we still actually held it. */
+const releaseScript = defineScript<readonly [token: string], number>({
+  keyCount: 1,
+  lua: `
+local t = redis.call("TIME")
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+-- Presence is not ownership, exactly as in extend. An expired member sits in
+-- the set until some acquire prunes it, so a bare ZREM answered "yes, you held
+-- it" for a lease that had already lapsed and may already have been handed to
+-- someone else. Clear the tombstone either way, but report the truth.
+local score = redis.call("ZSCORE", KEYS[1], ARGV[1])
+if score == false then return 0 end
+redis.call("ZREM", KEYS[1], ARGV[1])
+if tonumber(score) <= now then return 0 end
+return 1
+`,
+  decode: (reply) => (typeof reply === "number" ? reply : 0)
+});
+
 /** Live holders, after dropping any whose lease has lapsed. */
 const countScript = defineScript<readonly [], number>({
   keyCount: 1,
@@ -151,8 +170,7 @@ export function semaphore(client: RedisClient, options: SemaphoreOptions) {
       key,
       token,
       async release() {
-        const reply = await client.send(["ZREM", key, token]);
-        return reply === 1;
+        return (await scripts.run(releaseScript, [key], [token])) === 1;
       },
       async extend(leaseMs = defaultLeaseMs) {
         const ttl = String(positiveInt(leaseMs, "leaseMs"));

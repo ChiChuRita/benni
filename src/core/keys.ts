@@ -1,4 +1,27 @@
+import { ValidationError } from "./errors.js";
 import type { RedisKey, RedisKeyPart } from "./types.js";
+
+/**
+ * True when wrapping `part` in braces would produce a tag Redis ignores.
+ *
+ * Redis reads the tag as the text between the first `{` and the next `}`, and
+ * falls back to hashing the whole key when that text is empty. So `""` gives
+ * `{}`, and anything starting with `}` closes the brace immediately: both
+ * silently opt the key out of co-location rather than failing.
+ */
+function isVoidHashTag(part: string): boolean {
+  return part === "" || part.startsWith("}");
+}
+
+function voidHashTagMessage(layout: "prefix" | "id", part: string): string {
+  return (
+    `hashTag: "${layout}" needs a non-empty Redis hash tag, but ${layout} ` +
+    `${JSON.stringify(part)} yields an empty one. Redis ignores "{}" and ` +
+    "hashes the whole key instead, so these keys would scatter across slots " +
+    "rather than sharing one, and the multi-key commands the layout exists " +
+    "for would fail with CROSSSLOT."
+  );
+}
 
 /**
  * Where a schema puts its Redis Cluster hash tag, if anywhere.
@@ -50,11 +73,26 @@ export function keyBuilder<
   prefix: TPrefix,
   hashTag: THashTag
 ): <TId extends RedisKeyPart>(id: TId) => RedisKey<TPrefix, TId, THashTag> {
+  if (hashTag === "prefix" && isVoidHashTag(prefix)) {
+    throw new ValidationError(voidHashTagMessage("prefix", prefix));
+  }
   const build =
     hashTag === "prefix"
       ? (id: RedisKeyPart) => `{${prefix}}:${String(id)}`
       : hashTag === "id"
-        ? (id: RedisKeyPart) => `${prefix}:{${String(id)}}`
+        ? (id: RedisKeyPart) => {
+            const part = String(id);
+            // Checked per id, because the id is runtime data. An empty tag is
+            // not a smaller tag, it is *no* tag: the whole key gets hashed
+            // instead, so this id's keys scatter across slots while every
+            // other id's co-locate. The multi-key commands and Lua scripts
+            // that "id" exists to enable then fail with CROSSSLOT for this
+            // one id and no other, which is a miserable thing to debug.
+            if (isVoidHashTag(part)) {
+              throw new ValidationError(voidHashTagMessage("id", part));
+            }
+            return `${prefix}:{${part}}`;
+          }
         : (id: RedisKeyPart) => `${prefix}:${String(id)}`;
   return build as <TId extends RedisKeyPart>(
     id: TId

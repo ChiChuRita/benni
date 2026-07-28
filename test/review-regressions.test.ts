@@ -11,6 +11,7 @@ import {
   defineStream,
   ValidationError
 } from "../src/core/index.js";
+import { keyBuilder } from "../src/core/keys.js";
 import { createScriptRunner, defineScript } from "../src/core/script.js";
 import { assertSameSlot, CrossSlotError, slotOf } from "../src/core/slot.js";
 import type {
@@ -355,6 +356,36 @@ describe("medium-severity sweep (review #10)", () => {
     } finally {
       process.off("unhandledRejection", onRejection);
     }
+  });
+});
+
+describe("empty hash tags are no hash tag (review #11)", () => {
+  // Redis reads the tag as the text between the first `{` and the next `}`,
+  // and hashes the WHOLE key when that is empty. So `{}` silently opts a key
+  // out of co-location instead of failing, and only for the id that produced
+  // it — the multi-key commands the layout exists for then fail with
+  // CROSSSLOT for that one id and no other.
+  it("rejects an id that yields an empty tag under hashTag: id", () => {
+    const build = keyBuilder("user", "id");
+    expect(() => build("")).toThrow(ValidationError);
+    expect(() => build("}oops")).toThrow(ValidationError);
+    expect(build("42")).toBe("user:{42}");
+  });
+
+  it("rejects an empty prefix under hashTag: prefix, at build time", () => {
+    expect(() => keyBuilder("", "prefix")).toThrow(ValidationError);
+    expect(keyBuilder("user", "prefix")("42")).toBe("{user}:42");
+  });
+
+  it("leaves the untagged layout alone", () => {
+    expect(keyBuilder("user", undefined)("")).toBe("user:");
+  });
+
+  it("confirms Redis really ignores an empty tag", () => {
+    // The premise, stated as a test so it cannot rot: these would be equal
+    // if `{}` were a tag.
+    expect(slotOf("a:{}:1")).not.toBe(slotOf("a:{}:2"));
+    expect(slotOf("a:{t}:1")).toBe(slotOf("a:{t}:2"));
   });
 });
 

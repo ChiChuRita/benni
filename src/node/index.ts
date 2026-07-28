@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { RedisArgument } from "redis";
-import { createClient, WatchError } from "redis";
+import { createClient, MultiErrorReply, WatchError } from "redis";
 import type {
   RedisClient,
   RedisCommand,
@@ -12,12 +12,37 @@ import type {
 
 export type NodeOptions = Parameters<typeof createClient>[0];
 
-// node-redis decodes RESP3 map replies (HGETALL, XREAD, CONFIG GET, ...) as
-// plain objects, which fall outside the RedisReply union the typed stores
-// validate against. Default to RESP2 flat-array replies; callers can still
-// opt into RESP3 explicitly.
+// node-redis decodes RESP3 map replies (HGETALL, CONFIG GET, ...) as plain
+// objects, which fall outside the RedisReply union the typed stores validate
+// against, and returns doubles as numbers where RESP2 gives strings. So the
+// typed API needs RESP2, and this pins it.
+//
+// Passing `RESP: 3` yourself still reaches node-redis, but it is not a
+// supported configuration: hash reads throw ReplyShapeError and ZSCORE
+// changes type under you. Use it only with `client.send()` directly.
 function withReplyDefaults(options?: NodeOptions): NodeOptions {
-  return { RESP: 2, ...options };
+  // Resolved, not spread over. `{ RESP: 2, ...options }` looks equivalent but
+  // an options object carrying an explicit `RESP: undefined` — the ordinary
+  // result of forwarding an optional config field — overwrites the default,
+  // and node-redis resolves it with `?? DEFAULT_RESP`, which is 3. HGETALL
+  // then arrives as a plain object and every hash read throws.
+  const merged = { ...options } as NodeOptions & { RESP?: 2 | 3 };
+  if (merged.RESP === undefined) merged.RESP = 2;
+  return merged;
+}
+
+/**
+ * node-redis rejects a committed `MULTI` with a `MultiErrorReply`, an
+ * aggregate whose message is only "N commands failed, see .replies and
+ * .errorIndexes". Surface the first real error instead, so a per-command
+ * failure reads the same here as it does through `beni/ioredis`.
+ */
+function unwrapMultiError(error: unknown): unknown {
+  if (!(error instanceof MultiErrorReply)) return error;
+  for (const inner of error.errors()) {
+    if (inner instanceof Error) return inner;
+  }
+  return error;
 }
 
 /**
@@ -64,7 +89,11 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       for (const command of commands) {
         transaction.sendCommand(toRedisArguments(command));
       }
-      return transaction.exec() as unknown as Promise<RedisReply[]>;
+      try {
+        return (await transaction.exec()) as unknown as RedisReply[];
+      } catch (error) {
+        throw unwrapMultiError(error);
+      }
     },
     async session(): Promise<RedisSession> {
       // reconnectStrategy: false makes the leased connection fail-fast: a
@@ -93,11 +122,11 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
           try {
             return (await transaction.exec()) as unknown as RedisReply[];
           } catch (error) {
-            // WATCH violation -> the one cross-adapter abort signal. Other
-            // failures (e.g. MultiErrorReply for a per-command runtime
-            // error inside a committed EXEC) rethrow unchanged.
+            // WATCH violation -> the one cross-adapter abort signal. A
+            // per-command runtime error inside a committed EXEC surfaces as
+            // the failing command's own error, not node-redis's aggregate.
             if (error instanceof WatchError) return null;
-            throw error;
+            throw unwrapMultiError(error);
           }
         },
         get closed() {

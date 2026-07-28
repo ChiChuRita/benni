@@ -540,4 +540,73 @@ describeRedis("primitives (live)", () => {
     await pause(600);
     expect((await b.check(id)).remaining).toBe(10);
   });
+  it("semaphore: release reports false once the lease has lapsed", async () => {
+    // An expired member sits in the set until some acquire prunes it, so a
+    // bare ZREM answered "yes, you held it" for a slot already handed on.
+    // A second, longer-lived holder is what makes this observable: it keeps
+    // the ZSET key alive, so the lapsed member is still physically there.
+    const slots = semaphore(client, {
+      limit: 2,
+      prefix: `${run}:sem-lapse`
+    });
+    const id = uid();
+    const shortLived = await slots.acquire(id, { leaseMs: 300 });
+    const longLived = await slots.acquire(id, { leaseMs: 30_000 });
+    expect(shortLived).not.toBeNull();
+    expect(longLived).not.toBeNull();
+
+    await pause(500);
+    // The key still exists (longLived holds it) and the lapsed member is
+    // still in it, so ZREM alone would have removed it and reported true.
+    await expect(shortLived?.release()).resolves.toBe(false);
+    await expect(longLived?.release()).resolves.toBe(true);
+  });
+
+  it("ratelimit: resetMs on the allowed path tracks the oldest entry", async () => {
+    // The allowed branch returned now + window, but in a sliding window a slot
+    // frees when the OLDEST entry ages out. With requests spread through a
+    // window that put X-RateLimit-Reset up to a full window late.
+    const limiter = ratelimit(client, {
+      limit: 5,
+      windowMs: 3_000,
+      prefix: `${run}:rl-reset`
+    });
+    const id = uid();
+    const first = await limiter.check(id);
+    await pause(600);
+    const second = await limiter.check(id);
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    // Both resets point at the first entry ageing out, so they agree to well
+    // within the 600ms gap. The bug made the second a full 600ms later.
+    expect(Math.abs(second.resetMs - first.resetMs)).toBeLessThan(250);
+  });
+
+  it("budget: check reports a real retryAfterMs when it reports not ok", async () => {
+    // check's script always returns status 1, and resultOf zeroes retryAfter
+    // for status 1, so a check with no headroom said "not ok, retry in 0ms".
+    const b = budget(client, { limit: 10, windowMs: 60_000 });
+    const id = uid();
+    expect((await b.charge(id, 10)).ok).toBe(true);
+
+    const checked = await b.check(id);
+    expect(checked.ok).toBe(false);
+    expect(checked.remaining).toBe(0);
+    expect(checked.retryAfterMs).toBeGreaterThan(0);
+
+    // A check with headroom still reports 0.
+    const other = await b.check(uid());
+    expect(other.ok).toBe(true);
+    expect(other.retryAfterMs).toBe(0);
+  });
+
+  it("budget: refuses an id that would build an empty hash tag", async () => {
+    // budget:{}:0 is not a smaller tag, it is no tag: Redis hashes the whole
+    // key, so this id's three keys scatter and every script for it fails with
+    // CROSSSLOT -- for this one id and no other.
+    const b = budget(client, { limit: 10, windowMs: 60_000 });
+    await expect(b.charge("", 1)).rejects.toThrow(/hash tag/);
+    await expect(b.check("}oops")).rejects.toThrow(/hash tag/);
+  });
 });

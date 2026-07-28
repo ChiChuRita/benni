@@ -146,4 +146,45 @@ describeRedis("node pubsub", () => {
       await client.close();
     }
   });
+  it("keeps RESP2 when the caller passes an explicit RESP: undefined", async () => {
+    // `{ RESP: 2, ...options }` let an explicit undefined — the ordinary
+    // result of forwarding an optional config field — erase the default, and
+    // node-redis resolves undefined with `?? 3`. HGETALL then arrives as a
+    // plain object outside the RedisReply union and every hash read throws.
+    const client = await node({ url: redisUrl, RESP: undefined });
+    const key = `beni:test:resp:${Date.now()}`;
+    try {
+      await client.send(["HSET", key, "a", "1"]);
+      const reply = await client.send(["HGETALL", key]);
+      expect(Array.isArray(reply)).toBe(true);
+      // Doubles stay strings under RESP2; RESP3 would hand back a number.
+      await client.send(["ZADD", `${key}:z`, "1.5", "m"]);
+      expect(typeof (await client.send(["ZSCORE", `${key}:z`, "m"]))).toBe(
+        "string"
+      );
+      await client.send(["DEL", key, `${key}:z`]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("surfaces the failing command's error from a committed MULTI", async () => {
+    // node-redis rejects with MultiErrorReply, whose message is only
+    // "N commands failed, see .replies and .errorIndexes". beni/ioredis
+    // throws the underlying error, so the two adapters disagreed on what a
+    // per-command failure looks like.
+    const client = await node({ url: redisUrl });
+    const key = `beni:test:multi:${Date.now()}`;
+    try {
+      await expect(
+        client.transaction?.([
+          ["SET", key, "not-a-number"],
+          ["INCR", key]
+        ])
+      ).rejects.toThrow(/not an integer/);
+      await client.send(["DEL", key]);
+    } finally {
+      await client.close();
+    }
+  });
 });

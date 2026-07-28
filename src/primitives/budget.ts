@@ -327,11 +327,21 @@ export function budget(client: RedisClient, options: BudgetOptions) {
   // Every key for one id shares the `{<id>}` hash tag, so the two buckets and
   // the reservation set are always on one Cluster node and the scripts can
   // touch all three. Different ids still spread across the keyspace.
-  const keysFor = (id: string, bucket: number) => [
-    `${prefix}:{${id}}:${bucket}`,
-    `${prefix}:{${id}}:${bucket - 1}`,
-    `${prefix}:{${id}}:holds`
-  ];
+  const keysFor = (id: string, bucket: number) => {
+    // An empty tag is no tag: Redis hashes the whole key instead, so this id's
+    // three keys land on three different slots and every script for it fails
+    // with CROSSSLOT — for this one id and no other.
+    if (id === "" || id.startsWith("}")) {
+      throw new ValidationError(
+        `budget id must form a non-empty Redis hash tag, received ${JSON.stringify(id)}`
+      );
+    }
+    return [
+      `${prefix}:{${id}}:${bucket}`,
+      `${prefix}:{${id}}:${bucket - 1}`,
+      `${prefix}:{${id}}:holds`
+    ];
+  };
 
   /**
    * Run `send` against the caller's best guess at the current bucket, and
@@ -480,7 +490,16 @@ export function budget(client: RedisClient, options: BudgetOptions) {
           String(limit)
         ])
       );
-      return { ...resultOf(reply), ok: reply.remaining > 0 };
+      const ok = reply.remaining > 0;
+      // resultOf zeroes retryAfterMs whenever status is 1, and check's script
+      // always returns 1 — it is reporting headroom, not a verdict. So a
+      // check that came back with no headroom said "not ok, retry in 0ms".
+      // The script does send the real time to the window roll; use it.
+      return {
+        ...resultOf(reply),
+        ok,
+        retryAfterMs: ok ? 0 : reply.retryAfter
+      };
     },
 
     /** Clear this id's spend and holds outright. */

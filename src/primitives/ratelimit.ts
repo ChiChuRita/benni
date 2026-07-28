@@ -29,7 +29,15 @@ local count = redis.call("ZCARD", KEYS[1])
 if count < limit then
   redis.call("ZADD", KEYS[1], now, ARGV[3])
   redis.call("PEXPIRE", KEYS[1], window)
-  return {1, limit - count - 1, now + window, 0}
+  -- reset is when a slot next frees, which in a sliding window is the oldest
+  -- entry ageing out -- not a full window from now. Reporting now + window on
+  -- the allowed path put X-RateLimit-Reset up to a whole window late, so a
+  -- client that waited for it waited longer than it had to. After the ZADD the
+  -- set is never empty; if we are the only entry the two agree anyway.
+  local first = redis.call("ZRANGE", KEYS[1], 0, 0, "WITHSCORES")
+  local nextFree = now + window
+  if first[2] then nextFree = tonumber(first[2]) + window end
+  return {1, limit - count - 1, nextFree, 0}
 end
 local oldest = redis.call("ZRANGE", KEYS[1], 0, 0, "WITHSCORES")
 local reset = now + window

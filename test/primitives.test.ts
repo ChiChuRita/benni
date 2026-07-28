@@ -382,9 +382,11 @@ describe("budget", () => {
 });
 
 describe("semaphore", () => {
-  it("acquires a slot through the script and releases with ZREM", async () => {
+  it("acquires a slot through the script and releases through one too", async () => {
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["sha1", 1, 1]);
+    // acquire: SCRIPT LOAD + EVALSHA. release: its own SCRIPT LOAD + EVALSHA,
+    // because a bare ZREM cannot tell a live lease from a lapsed one.
+    const client = fakeClient(commands, ["sha1", 1, "sha2", 1]);
     const slots = semaphore(client, { limit: 5, leaseMs: 30_000 });
 
     const held = await slots.acquire("openai");
@@ -402,7 +404,12 @@ describe("semaphore", () => {
     expect(evalsha).toHaveLength(7);
 
     expect(await held?.release()).toBe(true);
-    expect(commands.at(-1)?.slice(0, 2)).toEqual(["ZREM", "semaphore:openai"]);
+    expect(commands.at(-1)?.slice(0, 4)).toEqual([
+      "EVALSHA",
+      "sha2",
+      1,
+      "semaphore:openai"
+    ]);
   });
 
   it("returns null when full, and retries when asked", async () => {
@@ -421,13 +428,17 @@ describe("semaphore", () => {
 
   it("run releases even when the body throws", async () => {
     const commands: RedisCommand[] = [];
-    const slots = semaphore(fakeClient(commands, ["sha1", 1, 1]), { limit: 2 });
+    const slots = semaphore(fakeClient(commands, ["sha1", 1, "sha2", 1]), {
+      limit: 2
+    });
     await expect(
       slots.run("x", () => {
         throw new Error("boom");
       })
     ).rejects.toThrow("boom");
-    expect(commands.at(-1)?.[0]).toBe("ZREM");
+    // The release script ran, so the slot is back even on the throwing path.
+    expect(commands.at(-1)?.[0]).toBe("EVALSHA");
+    expect(commands.at(-1)?.[1]).toBe("sha2");
   });
 
   it("run throws SemaphoreNotAcquiredError when no slot came free", async () => {

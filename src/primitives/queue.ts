@@ -868,6 +868,14 @@ export function queue<TPayload, TResult = unknown>(
 
   // One hash tag over every key keeps the whole queue in a single Cluster slot,
   // which is what lets the scripts derive per-job key names from `base`.
+  if (prefix === "" || prefix.startsWith("}")) {
+    // Every queue key hangs off this one tag so the scripts can touch several
+    // at once. An empty tag is no tag: Redis hashes the whole key instead and
+    // the keys scatter, which breaks every script on a cluster.
+    throw new ValidationError(
+      `queue prefix must form a non-empty Redis hash tag, received ${JSON.stringify(prefix)}`
+    );
+  }
   const base = `{${prefix}}`;
   const readyKey = `${base}:ready`;
   const scheduledKey = `${base}:scheduled`;
