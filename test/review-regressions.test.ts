@@ -166,6 +166,20 @@ describe("cluster-safe primitive and adapter keys", () => {
     expect(slotOf("cache:{42}")).not.toBe(slotOf("cache:{43}"));
   });
 
+  it("keeps every budget key for one id in a single slot", () => {
+    // budget touches three keys per id in one script (two window buckets and
+    // the reservation set), so they must co-locate or the script is illegal
+    // on a cluster. Different ids still spread.
+    const bucket = 29_753;
+    const keys = [
+      `budget:{u1}:${bucket}`,
+      `budget:{u1}:${bucket - 1}`,
+      "budget:{u1}:holds"
+    ];
+    expect(new Set(keys.map(slotOf)).size).toBe(1);
+    expect(slotOf("budget:{u1}:holds")).not.toBe(slotOf("budget:{u2}:holds"));
+  });
+
   it("keeps every Next.js cache key in one slot", () => {
     // revalidateTag DELs entries and tag sets in one command, so they must
     // share a slot or the handler is simply broken on a cluster.

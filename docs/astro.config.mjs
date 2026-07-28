@@ -35,7 +35,7 @@ export default defineConfig({
             {
               label: "Primitives",
               description:
-                "Batteries-included helpers built on the typed client: an AI job queue with resumable output streams, a stampede-proof cache, a correct distributed lock, and a sliding-window rate limiter.",
+                "Batteries-included helpers built on the typed client: an AI job queue with resumable output streams, cost-weighted spend budgets, a stampede-proof cache, exactly-once idempotency keys, a correct distributed lock, a sliding-window rate limiter, and a distributed semaphore.",
               paths: ["primitives/**"],
             },
             {
@@ -135,9 +135,12 @@ export default defineConfig({
           label: "Primitives",
           items: [
             { label: "AI Job Queue", slug: "primitives/queue" },
+            { label: "Budget", slug: "primitives/budget" },
             { label: "Cache", slug: "primitives/cache" },
+            { label: "Idempotency", slug: "primitives/idempotency" },
             { label: "Distributed Lock", slug: "primitives/lock" },
             { label: "Rate Limiting", slug: "primitives/ratelimit" },
+            { label: "Semaphore", slug: "primitives/semaphore" },
           ],
         },
         {
