@@ -349,6 +349,52 @@ describeRedis("queue (live)", () => {
     await worker.stop();
   });
 
+  it("settles a cancelled job on reclaim instead of running it again", async () => {
+    // cancel() on an *active* job only flags the record and leaves the owning
+    // worker to abort its own signal. If that worker then dies, the reclaim
+    // path saw an ordinary stalled job and pushed it back to ready, starting a
+    // fresh, paid-for generation of work the caller had already stopped.
+    const prefix = nextPrefix();
+    const stalling = queue<string, string>(client, { prefix, leaseMs: 300 });
+    const rescuing = queue<string, string>(client, { prefix, leaseMs: 30_000 });
+
+    let firstRuns = 0;
+    let secondRuns = 0;
+
+    const dying = stalling.worker(
+      async () => {
+        firstRuns += 1;
+        await sleep(3_000); // never finishes within the test
+        return "never";
+      },
+      { heartbeatMs: 60_000, onError: () => {} }
+    );
+
+    const { id } = await stalling.enqueue("stop-me");
+    while (firstRuns === 0) await sleep(10);
+
+    // Cancel while it is active: returns true, flags the record, leaves the
+    // job in leases for the (now doomed) worker to notice.
+    await expect(stalling.cancel(id)).resolves.toBe(true);
+
+    // Let the lease lapse, then bring up a second worker to do the reclaiming.
+    await sleep(400);
+    const rescuer = rescuing.worker(async () => {
+      secondRuns += 1;
+      return "should never run";
+    });
+    await sleep(600);
+
+    expect(secondRuns).toBe(0);
+    const record = await rescuing.get(id);
+    expect(record?.status).toBe("cancelled");
+    expect(record?.finishedAt).toBeGreaterThan(0);
+    await expect(rescuing.stats()).resolves.toMatchObject({ dead: 0 });
+
+    await rescuer.stop();
+    await dying.stop();
+  });
+
   it("reclaims a job whose worker stopped heartbeating", async () => {
     const prefix = nextPrefix();
     // A worker that cannot heartbeat in time: the lease is far shorter than the

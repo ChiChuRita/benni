@@ -82,28 +82,48 @@ describe("cacheHandler", () => {
     expect(await new Handler().get("/corrupt")).toBeNull();
   });
 
-  it("revalidateTag reads members and deletes entries plus tag sets", async () => {
+  it("revalidateTag deletes entries and SREMs only the members it saw", async () => {
     const commands: RedisCommand[] = [];
-    // pipeline: SMEMBERS -> members; send: DEL -> deleted count
-    const client = fakeClient(commands, [["/blog", "/blog/post-1"], 3]);
+    // pipeline: SMEMBERS -> members; send: DEL, then SREM
+    const client = fakeClient(commands, [["/blog", "/blog/post-1"], 3, 2]);
     const Handler = cacheHandler({ client });
 
     await new Handler().revalidateTag("posts");
 
+    // SREM of the observed members, never DEL of the tag set: a set() racing
+    // between the SMEMBERS and this point would otherwise lose its tag
+    // membership while its entry survived, leaving a page that can never be
+    // revalidated again.
     expect(commands).toEqual([
       ["SMEMBERS", "{next-cache}:tag:posts"],
-      [
-        "DEL",
-        "{next-cache}:entry:/blog",
-        "{next-cache}:entry:/blog/post-1",
-        "{next-cache}:tag:posts"
-      ]
+      ["DEL", "{next-cache}:entry:/blog", "{next-cache}:entry:/blog/post-1"],
+      ["SREM", "{next-cache}:tag:posts", "/blog", "/blog/post-1"]
     ]);
+  });
+
+  it("revalidateTag keeps a member added while it was running", async () => {
+    // The concrete race: /b is SADD-ed to the tag after SMEMBERS returned
+    // ["/a"]. DEL-ing the tag set dropped /b's membership while /b itself
+    // stayed cached, so no later revalidateTag could ever reach it.
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [["/a"], 1, 1]);
+    const Handler = cacheHandler({ client });
+
+    await new Handler().revalidateTag("posts");
+
+    const srem = commands.find((command) => command[0] === "SREM");
+    expect(srem).toEqual(["SREM", "{next-cache}:tag:posts", "/a"]);
+    expect(
+      commands.some(
+        (command) =>
+          command[0] === "DEL" && command.includes("{next-cache}:tag:posts")
+      )
+    ).toBe(false);
   });
 
   it("revalidateTag accepts an array of tags", async () => {
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, [["/a"], ["/b"], 4]);
+    const client = fakeClient(commands, [["/a"], ["/b"], 4, 1, 1]);
     const Handler = cacheHandler({ client });
 
     await new Handler().revalidateTag(["one", "two"]);
@@ -111,13 +131,9 @@ describe("cacheHandler", () => {
     expect(commands).toEqual([
       ["SMEMBERS", "{next-cache}:tag:one"],
       ["SMEMBERS", "{next-cache}:tag:two"],
-      [
-        "DEL",
-        "{next-cache}:entry:/a",
-        "{next-cache}:entry:/b",
-        "{next-cache}:tag:one",
-        "{next-cache}:tag:two"
-      ]
+      ["DEL", "{next-cache}:entry:/a", "{next-cache}:entry:/b"],
+      ["SREM", "{next-cache}:tag:one", "/a"],
+      ["SREM", "{next-cache}:tag:two", "/b"]
     ]);
   });
 

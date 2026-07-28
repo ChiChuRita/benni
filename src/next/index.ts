@@ -186,20 +186,32 @@ export function cacheHandler(
       const memberReplies = await client.pipeline(
         tagKeys.map((key): RedisCommand => ["SMEMBERS", key])
       );
-      const doomed: string[] = [];
-      for (const reply of memberReplies) {
-        for (const member of iterateMembers(reply)) {
-          doomed.push(entryKey(member));
-        }
-      }
-      // Entries first, then the tag sets. A popular tag can name tens of
+      const perTag = tagKeys.map((key, index) => ({
+        key,
+        members: iterateMembers(memberReplies[index])
+      }));
+      const doomed = perTag.flatMap(({ members }) => members.map(entryKey));
+      // Entries first, then the tag memberships. A popular tag can name tens of
       // thousands of entries, and one DEL over all of them is a multi-megabyte
       // command that blocks the server, so chunk it. The order matters if we
       // die partway: a tag pointing at already-deleted entries is harmless and
       // self-healing, while entries whose tag is gone can never be revalidated.
-      const victims = [...doomed, ...tagKeys];
-      for (let index = 0; index < victims.length; index += DEL_CHUNK) {
-        await client.send(["DEL", ...victims.slice(index, index + DEL_CHUNK)]);
+      for (let index = 0; index < doomed.length; index += DEL_CHUNK) {
+        await client.send(["DEL", ...doomed.slice(index, index + DEL_CHUNK)]);
+      }
+      // SREM exactly what SMEMBERS returned, rather than DEL-ing the set. A
+      // concurrent set() can SADD to this tag between the read above and here,
+      // and DEL would drop that membership while the new entry itself survives
+      // — the "can never be revalidated" case the paragraph above is about.
+      // Redis drops a set once its last member goes, so this still cleans up.
+      for (const { key, members } of perTag) {
+        for (let index = 0; index < members.length; index += DEL_CHUNK) {
+          await client.send([
+            "SREM",
+            key,
+            ...members.slice(index, index + DEL_CHUNK)
+          ]);
+        }
       }
     }
 

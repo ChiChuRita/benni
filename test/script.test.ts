@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createScriptRunner, defineScript } from "../src/core/script.js";
+import { codecs } from "../src/core/codecs.js";
+import { ReplyShapeError } from "../src/core/errors.js";
+import {
+  createScriptRunner,
+  defineScript,
+  script
+} from "../src/core/script.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -257,6 +263,53 @@ describe("createScriptRunner", () => {
       "a",
       "b"
     ]);
+  });
+});
+
+describe("script(): nil replies", () => {
+  // Lua converts both nil and false to a RESP nil, so `return nil` branches,
+  // a GET on a missing key, and a losing `SET NX` all land here. The decoder
+  // accepted only string/number, so those threw a bare TypeError with the
+  // reply discarded, and there was no way to declare the reply as optional.
+  const acquire = <T extends boolean>(nullable: T) =>
+    script("acquire", {
+      keys: ["lock"],
+      args: { token: codecs.string() },
+      returns: codecs.boolean(),
+      nullable: nullable as true,
+      lua: 'return redis.call("SET", KEYS[1], ARGV[1], "NX") and true or false'
+    });
+
+  it("decodes a nil reply as null when nullable is set", async () => {
+    const runner = createScriptRunner(fakeClient([], ["sha-1", null]));
+    await expect(
+      runner.run(acquire(true), ["lock:1"], ["tok"])
+    ).resolves.toBeNull();
+  });
+
+  it("reports a nil reply as a ReplyShapeError, not a bare TypeError", async () => {
+    const runner = createScriptRunner(fakeClient([], ["sha-1", null]));
+    const failure = await runner
+      .run(acquire(false), ["lock:1"], ["tok"])
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ReplyShapeError);
+    expect((failure as Error).message).toContain("nullable");
+  });
+
+  it("still decodes an ordinary scalar reply", async () => {
+    const runner = createScriptRunner(fakeClient([], ["sha-1", 1]));
+    await expect(runner.run(acquire(false), ["lock:1"], ["tok"])).resolves.toBe(
+      true
+    );
+  });
+
+  it("names the script when the reply is not a scalar at all", async () => {
+    const runner = createScriptRunner(fakeClient([], ["sha-1", ["a"]]));
+    const failure = await runner
+      .run(acquire(false), ["lock:1"], ["tok"])
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ReplyShapeError);
+    expect((failure as Error).message).toContain("acquire");
   });
 });
 

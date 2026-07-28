@@ -427,7 +427,23 @@ for _, id in ipairs(stalled) do
   local attempt = tonumber(redis.call("HGET", key, "attempt") or "0")
   local maxAttempts = tonumber(redis.call("HGET", key, "maxAttempts") or "1")
   redis.call("HDEL", key, "token")
-  if attempt < maxAttempts then
+  if redis.call("HGET", key, "cancelRequested") == "1" then
+    -- cancel() returns 3 for an active job: it flags the record and leaves the
+    -- owning worker to abort its own signal. If that worker then dies, nobody
+    -- settles the job, and reclaiming it as ordinary stalled work started a
+    -- fresh, paid-for generation of something the caller already stopped.
+    -- Settle it here instead, exactly as cancel() would have.
+    redis.call("ZREM", ready, id)
+    redis.call("ZREM", scheduled, id)
+    redis.call("HSET", key, "status", "cancelled", "updatedAt", n(now),
+      "finishedAt", n(now))
+    redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
+      "t", "cancelled", "d", "")
+    redis.call("PEXPIRE", key, n(deadTtl))
+    redis.call("PEXPIRE", eventsKey(id), n(deadTtl))
+    local idem = redis.call("HGET", key, "idempotencyKey")
+    if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+  elseif attempt < maxAttempts then
     redis.call("HSET", key, "status", "waiting", "updatedAt", n(now),
       "error", "Worker lease expired before the job finished")
     pushReady(id, tonumber(redis.call("HGET", key, "priority") or "0"))

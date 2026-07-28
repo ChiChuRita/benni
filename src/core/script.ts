@@ -1,4 +1,4 @@
-import { replyShapeError, ValidationError } from "./errors.js";
+import { ReplyShapeError, replyShapeError, ValidationError } from "./errors.js";
 import type { SameSlotScriptKeys } from "./keys.js";
 import type { SlotGuard } from "./slot.js";
 import {
@@ -188,6 +188,17 @@ export type ScriptOptions<
   readonly args: TArgs;
   readonly returns: Codec<TResult, TResult>;
   readonly lua: string;
+  /**
+   * Allow the script to return nil, decoding it as `null` and widening the
+   * result to `TResult | null`.
+   *
+   * Lua converts both `nil` and `false` to a RESP nil, so any script with a
+   * `return nil` branch — or one that forwards a `GET` on a missing key, or a
+   * `SET NX` that lost — needs this. Without it a nil reply is a
+   * `ReplyShapeError`, because the alternative is inventing a value the codec
+   * never produced.
+   */
+  readonly nullable?: boolean;
 };
 
 /**
@@ -254,22 +265,54 @@ export function script<
   TResult
 >(
   name: TName,
+  options: ScriptOptions<TKeys, TArgs, TResult> & { readonly nullable: true }
+): ScriptSchema<TName, TKeys, TArgs, TResult | null>;
+export function script<
+  TName extends string,
+  const TKeys extends readonly string[],
+  TArgs extends FieldCodecs,
+  TResult
+>(
+  name: TName,
   options: ScriptOptions<TKeys, TArgs, TResult>
-): ScriptSchema<TName, TKeys, TArgs, TResult> {
+): ScriptSchema<TName, TKeys, TArgs, TResult>;
+export function script<
+  TName extends string,
+  const TKeys extends readonly string[],
+  TArgs extends FieldCodecs,
+  TResult
+>(
+  name: TName,
+  options: ScriptOptions<TKeys, TArgs, TResult>
+): ScriptSchema<TName, TKeys, TArgs, TResult | null> {
   const argNames = Object.keys(options.args) as Array<keyof TArgs & string>;
-  const redisScript = defineScript<readonly RedisCommandArgument[], TResult>({
+  const redisScript = defineScript<
+    readonly RedisCommandArgument[],
+    TResult | null
+  >({
     lua: options.lua,
     keyCount: options.keys.length,
     decode(reply: RedisReply) {
-      if (typeof reply !== "string" && typeof reply !== "number") {
-        throw new TypeError(
-          "Expected Redis script reply to decode from scalar"
+      // Lua turns nil *and* false into a RESP nil, so this is the reply a
+      // `return nil` branch or a losing `SET NX` produces — common enough that
+      // it used to escape as a bare TypeError with the reply discarded.
+      if (reply === null) {
+        if (options.nullable) return null;
+        throw new ReplyShapeError(
+          `Script "${name}" returned nil, which its returns codec cannot decode. ` +
+            "Lua converts both nil and false to a nil reply; declare " +
+            "nullable: true to receive null, or return a sentinel the codec " +
+            "understands (e.g. `... and 1 or 0` for a boolean).",
+          reply
         );
+      }
+      if (typeof reply !== "string" && typeof reply !== "number") {
+        throw replyShapeError(`script "${name}"`, "a scalar reply", reply);
       }
       return options.returns.decode(String(reply));
     }
   });
-  const schema: ScriptSchema<TName, TKeys, TArgs, TResult> = {
+  const schema: ScriptSchema<TName, TKeys, TArgs, TResult | null> = {
     ...redisScript,
     kind: "script",
     name,
