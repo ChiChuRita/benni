@@ -452,6 +452,7 @@ for _, id in ipairs(stalled) do
       "finishedAt", n(now),
       "error", "Worker lease expired before the job finished")
     redis.call("ZADD", dead, n(now), id)
+    redis.call("ZREMRANGEBYSCORE", dead, 0, n(now - deadTtl))
     redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
       "t", "failed", "d", "Worker lease expired before the job finished")
     redis.call("PEXPIRE", key, n(deadTtl))
@@ -629,6 +630,10 @@ elseif status == "cancelled" then
 else
   redis.call("HSET", key, "error", ARGV[6])
   redis.call("ZADD", dead, n(now), id)
+  -- The job record expires after resultTtlMs but its dead-letter entry did
+  -- not, so the set grew for the life of the deployment and dead() listed ids
+  -- whose records were long gone. Trim to the same horizon.
+  redis.call("ZREMRANGEBYSCORE", dead, 0, n(now - tonumber(ARGV[7])))
   redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
     "t", "failed", "d", ARGV[6])
 end

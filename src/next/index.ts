@@ -173,6 +173,18 @@ export function cacheHandler(
       ];
       for (const tag of tags) {
         commands.push(["SADD", tagKey(tag), key]);
+        // A tag set has to outlive its longest-lived member, so extend the
+        // expiry but never shorten it (GT, which treats a key with no TTL as
+        // infinite and so leaves a permanent set permanent), and drop it
+        // outright for an entry that never expires. Without this the sets had
+        // no expiry at all: they grew for the life of the deployment, kept
+        // naming entries that had long since expired, and revalidateTag
+        // SMEMBERS'd the whole accumulation on every call.
+        commands.push(
+          ttl === undefined
+            ? ["PERSIST", tagKey(tag)]
+            : ["EXPIRE", tagKey(tag), ttl, "GT"]
+        );
       }
       const client = await getClient();
       await client.pipeline(commands);

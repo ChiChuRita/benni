@@ -590,4 +590,37 @@ describeRedis("queue (live)", () => {
     const leaseScore = await client.send(["ZSCORE", `{${prefix}}:leases`, id]);
     expect(leaseScore).toBeNull();
   });
+  it("trims dead-letter entries once their records have expired", async () => {
+    // The job record expires after resultTtlMs but its entry in the dead ZSET
+    // did not, so the set grew for the life of the deployment and dead()
+    // returned ids whose records were long gone.
+    const prefix = nextPrefix();
+    const jobs = queue<string, string>(client, {
+      prefix,
+      maxAttempts: 1,
+      resultTtlMs: 400
+    });
+    const worker = jobs.worker(
+      async () => {
+        throw new Error("always fails");
+      },
+      { onError: () => {} }
+    );
+
+    const first = await jobs.enqueue("one");
+    await expect(jobs.wait(first.id)).rejects.toThrow("always fails");
+    await expect(jobs.dead()).resolves.toContain(first.id);
+
+    // Past the first job's resultTtlMs, so its record is gone. The next
+    // dead-letter settle is what trims the stale entry.
+    await sleep(600);
+    const second = await jobs.enqueue("two");
+    await expect(jobs.wait(second.id)).rejects.toThrow("always fails");
+
+    const dead = await jobs.dead();
+    expect(dead).toContain(second.id);
+    expect(dead).not.toContain(first.id);
+
+    await worker.stop();
+  });
 });

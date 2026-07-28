@@ -109,7 +109,12 @@ export type StreamGroupConsumer<
    */
   xreadgroup(
     id: TId,
-    options?: StreamReadOptions
+    // `after?: undefined` is what keeps this overload from swallowing the one
+    // below. A *variable* typed StreamPendingReadOptions is assignable to a
+    // bare StreamReadOptions (no excess-property check outside a literal), so
+    // it matched here first and a tombstone-bearing history read came back
+    // typed as new deliveries with non-nullable values.
+    options?: StreamReadOptions & { readonly after?: undefined }
   ): Promise<Array<StreamEntry<TFields>>>;
   /**
    * XREADGROUP with an explicit id via `{ after }` (default "0") — this

@@ -41,9 +41,10 @@ export type SortedSetRangeByScoreOptions = {
 /**
  * Discriminated union of range selectors for {@link createSortedSetStore}'s
  * `zrange`: by index `{ start, stop }`, by score `{ byScore: true, min, max }`,
- * or by lex `{ byLex: true, min, max }`. Any variant may set `withScores` to
- * switch the return type from members to `SortedSetEntry`s; by-index also
- * accepts `rev`. Score/lex variants carry `rev` and `LIMIT offset/count` via
+ * or by lex `{ byLex: true, min, max }`. The index and score variants may set
+ * `withScores` to switch the return type from members to `SortedSetEntry`s;
+ * the lex variant may not, because Redis rejects `BYLEX WITHSCORES`. By-index
+ * also accepts `rev`. Score/lex variants carry `rev` and `LIMIT offset/count` via
  * their respective option types.
  */
 export type SortedSetRangeOptions<TInput> =
@@ -63,7 +64,8 @@ export type SortedSetRangeOptions<TInput> =
   | ({
       readonly byLex: true;
       readonly byScore?: undefined;
-      readonly withScores?: boolean;
+      /** Not available with BYLEX: Redis rejects the combination outright. */
+      readonly withScores?: undefined;
     } & SortedSetRangeByLexOptions<TInput>);
 
 /**
@@ -296,7 +298,17 @@ function rangeSelectorArgs<TInput>(
   encode: (value: TInput) => string
 ): SortedSetCommandArg[] {
   if (options.byScore === true) return byScoreArgs(options);
-  if (options.byLex === true) return byLexArgs(options, encode);
+  if (options.byLex === true) {
+    // The type forbids it, but a JavaScript caller can still get here, and
+    // Redis answers a bare "ERR syntax error" that says nothing about which
+    // pair is illegal.
+    if ((options as { withScores?: unknown }).withScores === true) {
+      throw new ValidationError(
+        "withScores is not available with byLex: Redis rejects ZRANGE ... BYLEX WITHSCORES. Lex ranges order by member, so the scores are all equal anyway."
+      );
+    }
+    return byLexArgs(options, encode);
+  }
   const args: SortedSetCommandArg[] = [
     rankIndex(options.start, "start"),
     rankIndex(options.stop, "stop")
@@ -441,7 +453,11 @@ export function createSortedSetStore<
   ): Promise<Array<SortedSetEntry<TOutput>>>;
   function zpopmin(
     id: TId,
-    options?: SortedSetPopOptions
+    // Excludes count: the reply shape depends on whether it is present, so a
+    // value typed SortedSetPopOptions (count optional) cannot be typed here.
+    // It used to land on this overload and be typed as a single entry while
+    // the server returned an array.
+    options?: SortedSetPopOptions & { readonly count?: undefined }
   ): Promise<SortedSetEntry<TOutput> | null>;
   function zpopmin(
     id: TId,
@@ -456,7 +472,11 @@ export function createSortedSetStore<
   ): Promise<Array<SortedSetEntry<TOutput>>>;
   function zpopmax(
     id: TId,
-    options?: SortedSetPopOptions
+    // Excludes count: the reply shape depends on whether it is present, so a
+    // value typed SortedSetPopOptions (count optional) cannot be typed here.
+    // It used to land on this overload and be typed as a single entry while
+    // the server returned an array.
+    options?: SortedSetPopOptions & { readonly count?: undefined }
   ): Promise<SortedSetEntry<TOutput> | null>;
   function zpopmax(
     id: TId,

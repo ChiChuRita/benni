@@ -14,11 +14,23 @@ import {
 import { keyBuilder } from "../src/core/keys.js";
 import { createScriptRunner, defineScript } from "../src/core/script.js";
 import { assertSameSlot, CrossSlotError, slotOf } from "../src/core/slot.js";
+import type { StreamEntry } from "../src/core/stream.js";
 import type {
+  PendingStreamEntry,
+  StreamGroupConsumer,
+  StreamPendingReadOptions
+} from "../src/core/stream-group.js";
+import type {
+  Codec,
   RedisClient,
   RedisCommand,
   RedisReply
 } from "../src/core/types.js";
+
+import { node } from "../src/node/index.js";
+import { cache, lock } from "../src/primitives/index.js";
+import { upstash } from "../src/upstash/index.js";
+import { fakeClient } from "./fake-client.js";
 
 /** A client whose queued replies may be Errors, so a rejection can be scripted. */
 function rejecting(
@@ -39,11 +51,6 @@ function rejecting(
     async close() {}
   };
 }
-
-import { node } from "../src/node/index.js";
-import { cache, lock } from "../src/primitives/index.js";
-import { upstash } from "../src/upstash/index.js";
-import { fakeClient } from "./fake-client.js";
 
 // Regressions for the 2026-07-11 adversarial review. Each block pins one
 // confirmed finding so it cannot quietly return.
@@ -388,6 +395,75 @@ describe("empty hash tags are no hash tag (review #11)", () => {
     expect(slotOf("a:{t}:1")).toBe(slotOf("a:{t}:2"));
   });
 });
+
+describe("overloads that lied about the reply shape (review #12)", () => {
+  const board = defineSortedSet("board", codecs.string());
+
+  it("rejects byLex with withScores at runtime too", async () => {
+    // Redis answers a bare "ERR syntax error" for ZRANGE ... BYLEX WITHSCORES,
+    // and the option union used to allow the pair, so it typechecked.
+    const store = createSortedSetStore(fakeClient([], []), board);
+    await expect(
+      store.zrange("d", {
+        byLex: true,
+        min: "-",
+        max: "+",
+        withScores: true
+      } as never)
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("still allows withScores on the index and score variants", async () => {
+    const store = createSortedSetStore(fakeClient([], [["a", "1"]]), board);
+    await expect(
+      store.zrange("d", { start: 0, stop: -1, withScores: true })
+    ).resolves.toEqual([{ member: "a", score: 1 }]);
+  });
+});
+
+// Type-level regressions. These assert at compile time; tsc is the runner.
+function overloadTypeAssertions() {
+  const store = createSortedSetStore(
+    null as unknown as RedisClient,
+    defineSortedSet("board", codecs.string())
+  );
+
+  // A literal count still resolves to the array overload.
+  const popped: Promise<Array<{ member: string; score: number }>> =
+    store.zpopmin("d", { count: 2 });
+  void popped;
+
+  // The single-entry overload no longer accepts a value whose count is merely
+  // optional: the reply shape depends on whether count is there, so such a
+  // call used to be typed as one entry while the server returned an array.
+  const ambiguous = { count: 2 } as { count?: number };
+  // @ts-expect-error count is not typeable on either overload.
+  void store.zpopmin("d", ambiguous);
+
+  // A variable typed StreamPendingReadOptions is assignable to a bare
+  // StreamReadOptions, so it matched the `>` overload first and a
+  // tombstone-bearing history read came back typed as new deliveries with
+  // non-nullable values. Pending entries have a nullable value; assigning the
+  // result to the pending shape is the assertion.
+  const consumer = null as unknown as StreamGroupConsumer<{
+    action: Codec<string>;
+  }>;
+  const history: Promise<Array<PendingStreamEntry<{ action: Codec<string> }>>> =
+    consumer.xreadgroup("42", { after: "0" } as StreamPendingReadOptions);
+  void history;
+
+  // That assignment alone proves little: a pending entry is assignable to the
+  // wider new-delivery shape, so it held before the fix too. This is the
+  // direction that bites — before the fix the `>` overload won and this line
+  // compiled.
+  // @ts-expect-error a { after } read yields pending entries, whose value is nullable.
+  const notNewDeliveries: Promise<
+    Array<StreamEntry<{ action: Codec<string> }>>
+  > = consumer.xreadgroup("42", { after: "0" } as StreamPendingReadOptions);
+  void notNewDeliveries;
+}
+
+void overloadTypeAssertions;
 
 const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;

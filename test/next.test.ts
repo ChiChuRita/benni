@@ -6,7 +6,7 @@ import { fakeClient } from "./fake-client.js";
 describe("cacheHandler", () => {
   it("stores an entry with EX from revalidate and one SADD per tag", async () => {
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK", 1, 1]);
+    const client = fakeClient(commands, ["OK", 1, 1, 1, 1]);
     const Handler = cacheHandler({ client });
     const handler = new Handler();
 
@@ -16,17 +16,42 @@ describe("cacheHandler", () => {
       { revalidate: 60, tags: ["posts", "layout"] }
     );
 
-    expect(commands).toHaveLength(3);
-    const [set, ...sadds] = commands;
+    expect(commands).toHaveLength(5);
+    const [set, ...rest] = commands;
     expect(set?.slice(0, 2)).toEqual(["SET", "{next-cache}:entry:/blog"]);
     expect(set?.slice(3)).toEqual(["EX", 60]);
     const entry = JSON.parse(set?.[2] as string);
     expect(entry.value).toEqual({ kind: "PAGE" });
     expect(entry.tags).toEqual(["posts", "layout"]);
     expect(typeof entry.lastModified).toBe("number");
-    expect(sadds).toEqual([
+    // Each tag set is expired alongside its member, extended but never
+    // shortened. Without a TTL the sets grew for the life of the deployment.
+    expect(rest).toEqual([
       ["SADD", "{next-cache}:tag:posts", "/blog"],
-      ["SADD", "{next-cache}:tag:layout", "/blog"]
+      ["EXPIRE", "{next-cache}:tag:posts", 60, "GT"],
+      ["SADD", "{next-cache}:tag:layout", "/blog"],
+      ["EXPIRE", "{next-cache}:tag:layout", 60, "GT"]
+    ]);
+  });
+
+  it("makes a tag set permanent when its entry never expires", async () => {
+    // GT never clears an existing expiry, so a permanent entry needs an
+    // explicit PERSIST: otherwise a tag set that earlier held a short-lived
+    // entry would expire out from under this one, and the page could never be
+    // revalidated by tag again.
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, ["OK", 1, 1]);
+    const Handler = cacheHandler({ client });
+
+    await new Handler().set(
+      "/page",
+      { kind: "PAGE" },
+      { revalidate: false, tags: ["static"] }
+    );
+
+    expect(commands.slice(1)).toEqual([
+      ["SADD", "{next-cache}:tag:static", "/page"],
+      ["PERSIST", "{next-cache}:tag:static"]
     ]);
   });
 
