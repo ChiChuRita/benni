@@ -160,8 +160,16 @@ export function createScriptRunner(
   };
 }
 
+/**
+ * Anchored, not a substring search. Redis prefixes the reply with the error
+ * code, so a real NOSCRIPT always *starts* with it. A substring test also
+ * matched a script's own failure whose text merely mentions NOSCRIPT — Redis
+ * wraps those as "ERR Error running script ...: @user_script:N: <message>" —
+ * and the retry then re-ran a script that had already applied its side
+ * effects.
+ */
 function isNoScriptError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("NOSCRIPT");
+  return error instanceof Error && /^\s*NOSCRIPT\b/.test(error.message);
 }
 
 export type ScriptSchema<

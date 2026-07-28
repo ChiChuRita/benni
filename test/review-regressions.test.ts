@@ -11,8 +11,34 @@ import {
   defineStream,
   ValidationError
 } from "../src/core/index.js";
+import { createScriptRunner, defineScript } from "../src/core/script.js";
 import { assertSameSlot, CrossSlotError, slotOf } from "../src/core/slot.js";
-import type { RedisCommand } from "../src/core/types.js";
+import type {
+  RedisClient,
+  RedisCommand,
+  RedisReply
+} from "../src/core/types.js";
+
+/** A client whose queued replies may be Errors, so a rejection can be scripted. */
+function rejecting(
+  commands: RedisCommand[],
+  replies: Array<RedisReply | Error>
+): RedisClient {
+  return {
+    async send(command) {
+      commands.push(command);
+      const reply = replies.shift();
+      if (reply === undefined) throw new Error("No fake Redis reply queued");
+      if (reply instanceof Error) throw reply;
+      return reply;
+    },
+    async pipeline() {
+      throw new Error("pipeline is not used here");
+    },
+    async close() {}
+  };
+}
+
 import { node } from "../src/node/index.js";
 import { cache, lock } from "../src/primitives/index.js";
 import { upstash } from "../src/upstash/index.js";
@@ -220,6 +246,115 @@ describe("json codec and non-finite numbers (review #9)", () => {
   it("reports a BigInt as a ValidationError, not a raw TypeError", () => {
     const codec = codecs.json<unknown>();
     expect(() => codec.encode({ n: 1n })).toThrow(ValidationError);
+  });
+});
+
+describe("medium-severity sweep (review #10)", () => {
+  it("does not treat a script's own error text as NOSCRIPT", async () => {
+    // isNoScriptError was a substring test, so a script whose failure merely
+    // mentions NOSCRIPT triggered a reload and a re-run — side effects twice.
+    // Redis wraps script failures as "ERR Error running script ...".
+    const commands: RedisCommand[] = [];
+    const runner = createScriptRunner(
+      rejecting(commands, [
+        "sha-1",
+        new Error(
+          "ERR Error running script (call to f_x): @user_script:2: NOSCRIPT is not a valid mode"
+        )
+      ])
+    );
+    const noop = defineScript<[], number>({
+      lua: "return 1",
+      keyCount: 0,
+      decode: (reply) => Number(reply)
+    });
+
+    await expect(runner.run(noop, [], [])).rejects.toThrow("Error running");
+    // SCRIPT LOAD + one EVALSHA. A retry would make four.
+    expect(commands).toHaveLength(2);
+  });
+
+  it("still retries a genuine NOSCRIPT", async () => {
+    const commands: RedisCommand[] = [];
+    const runner = createScriptRunner(
+      rejecting(commands, [
+        "sha-1",
+        new Error("NOSCRIPT No matching script. Please use EVAL."),
+        "sha-2",
+        7
+      ])
+    );
+    const noop = defineScript<[], number>({
+      lua: "return 1",
+      keyCount: 0,
+      decode: (reply) => Number(reply)
+    });
+
+    await expect(runner.run(noop, [], [])).resolves.toBe(7);
+    expect(commands).toHaveLength(4);
+  });
+
+  it("hset with a ttl is one transaction, not a pipeline", async () => {
+    // A pipeline only batches. Between the HSET and the EXPIRE another client
+    // sees a record with no expiry, and a connection lost in that window
+    // leaves one that never expires.
+    const batched: RedisCommand[] = [];
+    const transacted: RedisCommand[] = [];
+    const client: RedisClient = {
+      async send() {
+        return 1;
+      },
+      async pipeline(commands) {
+        batched.push(...commands);
+        return commands.map(() => 1);
+      },
+      async transaction(commands) {
+        transacted.push(...commands);
+        return commands.map(() => 1);
+      },
+      async close() {}
+    };
+    const users = defineHash("user", { name: codecs.string() });
+
+    await createHashStore(client, users).hset(
+      "42",
+      { name: "Ada" },
+      { ttlSeconds: 120 }
+    );
+    expect(transacted.map((command) => command[0])).toEqual(["HSET", "EXPIRE"]);
+    expect(batched).toEqual([]);
+  });
+
+  it("hset without a ttl stays a single-command pipeline", async () => {
+    const commands: RedisCommand[] = [];
+    const users = defineHash("user", { name: codecs.string() });
+    await createHashStore(fakeClient(commands, [1]), users).hset("42", {
+      name: "Ada"
+    });
+    expect(commands).toEqual([["HSET", "user:42", "name", "Ada"]]);
+  });
+
+  it("json(schema) claims an async validator's promise", async () => {
+    // decode() throws for an async validator, but nothing awaited the promise
+    // it had already started, so a rejecting one became an unhandled
+    // rejection — fatal under --unhandled-rejections=strict.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const codec = codecs.json({
+        "~standard": {
+          version: 1,
+          vendor: "test",
+          validate: () => Promise.reject(new Error("validator blew up"))
+        }
+      } as never);
+      expect(() => codec.decode('{"a":1}')).toThrow(ValidationError);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
   });
 });
 

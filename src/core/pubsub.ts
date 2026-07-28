@@ -337,6 +337,11 @@ export function createPubSubHub(
     async close(): Promise<void> {
       channels.clear();
       patterns.clear();
+      // A lease still being established is not in `leased` yet, so
+      // releaseIfIdle would find nothing to close and the connection would
+      // outlive close() — a leak for anyone who closes while the very first
+      // subscribe is still in flight.
+      if (leasing) await leasing.catch(() => undefined);
       await releaseIfIdle();
     }
   };

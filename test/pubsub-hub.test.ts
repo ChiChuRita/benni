@@ -274,6 +274,22 @@ describe("pub/sub hub lease lifecycle", () => {
     expect(second.status).toBe("rejected");
   });
 
+  it("closes a connection whose lease was still in flight", async () => {
+    // close() only looked at `leased`, which is set when subscriber()
+    // resolves. Closing during the very first subscribe therefore found
+    // nothing to close and the connection outlived the hub.
+    const fake = subscriberClient();
+    const hub = createPubSubHub(fake.client, () => {});
+    const subscribing = hub.subscribeChannel(events, () => {});
+
+    await hub.close();
+    await subscribing.catch(() => undefined);
+
+    expect(fake.leases).toBe(1);
+    expect(fake.log).toContain("close");
+    expect(fake.live).toBeNull();
+  });
+
   it("closes the leased connection and drops every subscription on close()", async () => {
     const fake = subscriberClient();
     const hub = createPubSubHub(fake.client);

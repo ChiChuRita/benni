@@ -331,13 +331,20 @@ export function createBlockingStreamOps<
     async xread(
       id: TId,
       afterEntryId: string,
-      options: StreamBlockingReadOptions
+      options: StreamBlockingReadOptions | StreamReadOptions = {}
     ): Promise<Array<StreamEntry<TFields>>> {
       const args: RedisCommandArgument[] = [];
       if (options.count !== undefined) {
         args.push("COUNT", positiveCount(options.count, "count"));
       }
-      args.push("BLOCK", blockingTimeoutMilliseconds(options.timeoutSeconds));
+      // On a session this method is spread *over* the base store's
+      // non-blocking xread, so it has to answer for both shapes. Without a
+      // timeout it is the plain read, which is what a two-argument call means
+      // — that call used to reach here with `options` undefined and throw a
+      // TypeError, making the non-blocking form unreachable on a session.
+      if ("timeoutSeconds" in options) {
+        args.push("BLOCK", blockingTimeoutMilliseconds(options.timeoutSeconds));
+      }
       args.push("STREAMS", schema.key(id), afterEntryId);
       const reply = await client.send(["XREAD", ...args]);
       return decodeSingleStreamXread(reply, schema.fields);

@@ -68,7 +68,11 @@ function json(schema?: StandardSchemaV1): Codec<unknown, unknown> {
       const result = standard.validate(decodeJson(stored));
       if (result instanceof Promise) {
         // Codec.decode is synchronous by contract; an async validator can
-        // never produce a value here, so fail with the reason.
+        // never produce a value here, so fail with the reason. Claim the
+        // promise first: nothing else will await it, and a validator that
+        // rejects would otherwise surface as an unhandled rejection, which
+        // is fatal under --unhandled-rejections=strict.
+        result.catch(() => undefined);
         throw new ValidationError(
           `json(schema) requires a synchronous validator, but the ${standard.vendor} schema returned a Promise. Use a schema without async refinements.`
         );

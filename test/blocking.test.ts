@@ -681,6 +681,26 @@ describe("createBlockingStreamOps xread", () => {
     ]);
   });
 
+  it("reads without BLOCK when no timeout is given", async () => {
+    // The session accessor spreads these ops *over* the base store, so this
+    // method shadows the non-blocking xread. Requiring a timeout made a
+    // two-argument call throw `Cannot read properties of undefined`, which
+    // left the plain read unreachable on a session.
+    const commands: RedisCommand[] = [];
+    const ops = createBlockingStreamOps(
+      fakeClient(commands, [null, null]),
+      events
+    );
+
+    await expect(ops.xread("42", "0")).resolves.toEqual([]);
+    await expect(ops.xread("42", "0", { count: 3 })).resolves.toEqual([]);
+
+    expect(commands).toEqual([
+      ["XREAD", "STREAMS", "events:42", "0"],
+      ["XREAD", "COUNT", 3, "STREAMS", "events:42", "0"]
+    ]);
+  });
+
   it("omits COUNT when not provided and converts whole seconds", async () => {
     const commands: RedisCommand[] = [];
     const ops = createBlockingStreamOps(fakeClient(commands, [null]), events);
@@ -922,8 +942,12 @@ function expectTypeErrorsOnly() {
   // @ts-expect-error the timeout option is required on blocking pops.
   void blockingJobs.blpop("a", {});
 
-  // @ts-expect-error the timeout option is required on blocking stream reads.
+  // A session's xread is spread over the base store's non-blocking one and so
+  // answers for both: omitting the timeout is the plain read, not an error.
+  // Requiring it here made the non-blocking form unreachable on a session.
+  void blockingEvents.xread("42", "$");
   void blockingEvents.xread("42", "$", { count: 1 });
+  void blockingEvents.xread("42", "$", { count: 1, timeoutSeconds: 5 });
 
   // @ts-expect-error only "forever" is a valid non-numeric timeout.
   void blockingJobs.blpop("a", { timeoutSeconds: "never" });
