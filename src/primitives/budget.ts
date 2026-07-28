@@ -373,26 +373,40 @@ export function budget(client: RedisClient, options: BudgetOptions) {
         const charged = wholeAmount(actual, "actual");
         if (settled) return;
         settled = true;
-        await withBucket(id, (keys, bucket) =>
-          scripts.run(settleScript, keys, [
-            String(windowMs),
-            String(bucket),
-            token,
-            String(charged)
-          ])
-        );
+        try {
+          await withBucket(id, (keys, bucket) =>
+            scripts.run(settleScript, keys, [
+              String(windowMs),
+              String(bucket),
+              token,
+              String(charged)
+            ])
+          );
+        } catch (error) {
+          // Nothing was charged, so the handle has to stay usable. Staying
+          // settled would turn the caller's retry — and the `finally` that
+          // calls release() — into silent no-ops, forgetting the spend while
+          // the reservation blocks that headroom until its TTL lapses.
+          settled = false;
+          throw error;
+        }
       },
       async release() {
         if (settled) return;
         settled = true;
-        await withBucket(id, (keys, bucket) =>
-          scripts.run(settleScript, keys, [
-            String(windowMs),
-            String(bucket),
-            token,
-            "0"
-          ])
-        );
+        try {
+          await withBucket(id, (keys, bucket) =>
+            scripts.run(settleScript, keys, [
+              String(windowMs),
+              String(bucket),
+              token,
+              "0"
+            ])
+          );
+        } catch (error) {
+          settled = false;
+          throw error;
+        }
       },
       async extend(nextTtlMs = holdTtlMs) {
         const ttl = positiveInt(nextTtlMs, "holdTtlMs");

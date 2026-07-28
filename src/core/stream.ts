@@ -108,6 +108,11 @@ export function decodeStreamEntry<TFields extends FieldCodecs>(
     if (typeof field !== "string" || typeof stored !== "string") {
       throw replyShapeError(command, "field/value pairs", entry);
     }
+    // Own-property only: field names come off the wire, so a plain index read
+    // resolves "toString"/"constructor"/"__proto__" to an Object.prototype
+    // member and throws on .decode. One such entry would make the whole stream
+    // unreadable through the typed API.
+    if (!Object.hasOwn(fields, field)) continue;
     const codec = fields[field];
     if (!codec) continue;
     value[field as keyof TFields] = codec.decode(

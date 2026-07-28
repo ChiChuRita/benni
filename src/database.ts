@@ -246,7 +246,8 @@ function createStoreAccessors(ctx: StoreContext) {
       THashTag extends HashTagLayout | undefined
     >(
       schema: Keyspace<string, string, TPrefix, TId, THashTag>
-    ) => withKey(schema, createStringStore(ctx.client, schema))
+    ) =>
+      withKey(schema, createStringStore(ctx.client, schema, ctx.assertSameSlot))
   };
 }
 

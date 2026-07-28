@@ -499,6 +499,21 @@ describe("idempotency", () => {
     expect(error.cause).toBeDefined();
   });
 
+  it("surfaces a write-back the script declined, not just one that threw", async () => {
+    // The complete script reports "your marker lapsed, or a later caller owns
+    // this key now" as a 0 return rather than an error, so awaiting it without
+    // reading the reply let the miss pass for success: nothing was stored, and
+    // the next call with this key silently ran the handler a second time.
+    // SET NX -> OK (claimed), SCRIPT LOAD -> sha, EVALSHA -> 0 (declined).
+    const once = idempotency<string>(fakeClient([], ["OK", "sha1", 0]));
+    const error = (await once
+      .run("k9", () => "did-the-work")
+      .catch((e: unknown) => e)) as IdempotencyNotRecordedError<string>;
+    expect(error).toBeInstanceOf(IdempotencyNotRecordedError);
+    expect(error.value).toBe("did-the-work");
+    expect(error.key).toBe("k9");
+  });
+
   it("throws on a concurrent holder under onConflict: throw", async () => {
     // SET NX -> null (someone holds it), GET -> a running marker.
     const client = fakeClient([], [null, "Rsomeone-elses-token"]);

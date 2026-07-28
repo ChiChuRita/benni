@@ -225,11 +225,20 @@ export function idempotency<T>(
             throw error;
           }
           try {
-            await scripts.run(
+            const stored = await scripts.run(
               completeScript,
               [redisKey],
               [token, codec.encode(value), String(ttlMs)]
             );
+            // 0 means the marker lapsed or a later caller now owns the key, so
+            // nothing was written. Same broken guarantee as a failed round
+            // trip, and reported the same way — the script surfaces it as a
+            // return value, so a bare `await` lets it pass for success.
+            if (stored !== 1) {
+              throw new Error(
+                "the running marker lapsed or was taken over by a later caller"
+              );
+            }
           } catch (cause) {
             // Deliberately NOT swallowed, even though the effect succeeded.
             //

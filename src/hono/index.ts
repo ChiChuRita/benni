@@ -139,6 +139,22 @@ function defaultCacheKey(c: Context): string {
 }
 
 /**
+ * Set by `session()` on its bag so `cache()` can tell whether the response it
+ * is about to store was derived from session state. A module-local symbol, not
+ * part of the public `Session` shape.
+ */
+const SESSION_TOUCHED = Symbol("beni.hono.sessionTouched");
+
+type TouchTracked = { readonly [SESSION_TOUCHED]?: () => boolean };
+
+/** True when the handler actually read or wrote the session on this request. */
+function sessionWasTouched(c: Context): boolean {
+  const bag = c.get("session") as (Session & TouchTracked) | undefined;
+  const probe = bag?.[SESSION_TOUCHED];
+  return typeof probe === "function" && probe();
+}
+
+/**
  * Read-through response caching as Hono middleware. `GET`/`HEAD` responses
  * are stored in Redis as `{ status, headers, body }` JSON (`SET PX ttlMs`)
  * and replayed on hit with an `X-Beni-Cache: hit` header. Other methods
@@ -171,10 +187,19 @@ export function cache(options: CacheOptions): MiddlewareHandler {
       await next();
       return;
     }
+    // A shared cache must not store or replay a response to a request that
+    // carried credentials. Pass those straight through.
+    if (c.req.header("Authorization") !== undefined) {
+      await next();
+      return;
+    }
 
     let cacheKey = `${prefix}:${key(c)}`;
     for (const name of vary) {
-      cacheKey += `|${name.toLowerCase()}=${c.req.header(name) ?? ""}`;
+      // Length-prefixed, so a header value containing the separator cannot
+      // make two different header sets build the same key.
+      const value = c.req.header(name) ?? "";
+      cacheKey += `|${name.toLowerCase()}=${value.length}:${value}`;
     }
 
     try {
@@ -194,6 +219,14 @@ export function cache(options: CacheOptions): MiddlewareHandler {
 
     const res = c.res;
     if (!res.ok || res.headers.get("set-cookie") !== null) return;
+    // The set-cookie check alone is not enough to catch a per-user response.
+    // A returning visitor already has their sid cookie, so session() sets no
+    // Set-Cookie at all, and when session() is the outer middleware (the
+    // documented `app.use("*", session())` shape) it appends its header after
+    // this runs anyway. Either way the guard never fires and one user's
+    // authenticated body gets stored under a key that does not vary by
+    // session, then served to everyone else. Ask the session itself instead.
+    if (sessionWasTouched(c)) return;
     try {
       const contentType = res.headers.get("content-type");
       const entry: CacheEntry = {
@@ -265,7 +298,15 @@ function readCookie(
     const separator = part.indexOf("=");
     if (separator === -1) continue;
     if (part.slice(0, separator).trim() === name) {
-      return decodeURIComponent(part.slice(separator + 1).trim());
+      const raw = part.slice(separator + 1).trim();
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        // A stray "%" makes decodeURIComponent throw a URIError. That is a
+        // malformed cookie, not a server fault, so treat it as no cookie
+        // rather than turning every request from that browser into a 500.
+        return undefined;
+      }
     }
   }
   return undefined;
@@ -311,8 +352,18 @@ export function session(options: SessionOptions): MiddlewareHandler {
     if (sid) {
       const reply = await client.send(["GET", `${prefix}:${sid}`]);
       if (typeof reply === "string") {
-        data = JSON.parse(reply) as Record<string, unknown>;
-        id = sid;
+        try {
+          const parsed = JSON.parse(reply) as unknown;
+          // Anything that is not a plain object (a corrupt record, a key
+          // collision with another writer) would otherwise throw out of the
+          // middleware and 500 the request. Start a fresh session instead.
+          if (parsed !== null && typeof parsed === "object") {
+            data = parsed as Record<string, unknown>;
+            id = sid;
+          }
+        } catch {
+          // Same: an unparseable record is a fresh session, not a 500.
+        }
       }
     }
 
@@ -322,23 +373,37 @@ export function session(options: SessionOptions): MiddlewareHandler {
     if (id === undefined) id = globalThis.crypto.randomUUID();
 
     let dirty = false;
+    // Reads count too, not just writes: a handler that only *reads* the
+    // session still produces a per-user response, which is what cache() has
+    // to know before it stores anything.
+    let touched = false;
     const bag: Session = {
-      get: <T = unknown>(key: string) => data[key] as T | undefined,
+      get: <T = unknown>(key: string) => {
+        touched = true;
+        return data[key] as T | undefined;
+      },
       set(key, value) {
+        touched = true;
         data[key] = value;
         dirty = true;
       },
       delete(key) {
+        touched = true;
         delete data[key];
         dirty = true;
       },
       clear() {
+        touched = true;
         data = {};
         dirty = true;
       },
       id,
       isNew
     };
+    Object.defineProperty(bag, SESSION_TOUCHED, {
+      value: () => touched,
+      enumerable: false
+    });
     c.set("session", bag);
 
     await next();

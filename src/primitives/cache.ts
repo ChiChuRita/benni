@@ -76,6 +76,28 @@ export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
     return value;
   }
 
+  type FillLock = NonNullable<Awaited<ReturnType<typeof fillLocks.acquire>>>;
+
+  async function loadUnder(
+    handle: FillLock,
+    id: string,
+    loader: () => Promise<T> | T
+  ): Promise<T> {
+    try {
+      // Double-check: another caller may have filled between miss and lock.
+      const second = await read(id);
+      if (second.hit) return second.value as T;
+      return await fill(id, loader);
+    } finally {
+      try {
+        await handle.release();
+      } catch {
+        // A failed release must not mask the load's outcome; the fill
+        // lock's TTL frees it regardless.
+      }
+    }
+  }
+
   return {
     /**
      * Read `id`, running `loader` on a miss. Concurrent misses collapse to one
@@ -86,31 +108,26 @@ export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
       if (first.hit) return first.value as T;
 
       const handle = await fillLocks.acquire(tagged(id));
-      if (handle) {
-        try {
-          // Double-check: another caller may have filled between miss and lock.
-          const second = await read(id);
-          if (second.hit) return second.value as T;
-          return await fill(id, loader);
-        } finally {
-          try {
-            await handle.release();
-          } catch {
-            // A failed release must not mask the load's outcome; the fill
-            // lock's TTL frees it regardless.
-          }
-        }
-      }
+      if (handle) return loadUnder(handle, id, loader);
 
-      // Someone else is loading; poll until they fill or their lock expires.
+      // Someone else is loading; poll until they fill or their lock frees up.
       const deadline = Date.now() + lockTtlMs;
       while (Date.now() < deadline) {
         await sleep(pollMs);
         const polled = await read(id);
         if (polled.hit) return polled.value as T;
+        // Re-try the lock, not just the value. A holder whose loader threw
+        // releases within milliseconds; polling the value alone left every
+        // waiter asleep for the whole lockTtlMs and then let all of them load
+        // at once — one backend 503 turned into a full-TTL stall followed by
+        // an unthrottled stampede. Taking the lock here keeps single-flight
+        // across a failed load.
+        const retry = await fillLocks.acquire(tagged(id));
+        if (retry) return loadUnder(retry, id, loader);
       }
-      // Fail open — the holder died; load for ourselves rather than
-      // error. Worst case is a brief duplicate load, never a deadlock.
+      // Fail open — the holder died without releasing; load for ourselves
+      // rather than error. Worst case is a brief duplicate load, never a
+      // deadlock.
       return fill(id, loader);
     },
     /** Read without loading. */

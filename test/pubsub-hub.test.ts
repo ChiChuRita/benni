@@ -201,6 +201,79 @@ describe("pub/sub hub lease lifecycle", () => {
     expect((errors[0] as Error).message).toBe("handler blew up");
   });
 
+  it("delivers to a handler that returns a truthy non-promise", async () => {
+    // `(m) => arr.push(m)` returns the new array length. Treating every truthy
+    // return as a promise threw `result.catch is not a function`, which the
+    // default onError rethrows asynchronously — an uncaught exception that
+    // takes the process down. The declared handler type is
+    // `void | Promise<void>`, which TypeScript will not let a number satisfy,
+    // so this reaches us from JavaScript callers and through `any`; the cast
+    // stands in for both. Every existing test used a block body.
+    const fake = subscriberClient();
+    const errors: unknown[] = [];
+    const hub = createPubSubHub(fake.client, (error) => errors.push(error));
+    const delivered: number[] = [];
+    const pushing = ((m: { n: number }) =>
+      delivered.push(m.n)) as unknown as (message: { n: number }) => void;
+    await hub.subscribeChannel(events, pushing);
+
+    fake.emit("events", JSON.stringify({ n: 3 }));
+    expect(delivered).toEqual([3]);
+    expect(errors).toEqual([]);
+  });
+
+  it("still routes a rejected async handler to onError", async () => {
+    const fake = subscriberClient();
+    const errors: unknown[] = [];
+    const hub = createPubSubHub(fake.client, (error) => errors.push(error));
+    await hub.subscribeChannel(events, async () => {
+      throw new Error("async blew up");
+    });
+
+    fake.emit("events", JSON.stringify({ n: 1 }));
+    await Promise.resolve();
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("async blew up");
+  });
+
+  it("makes a concurrent joiner wait for the first SUBSCRIBE to be acked", async () => {
+    // The map entry was published before attach was awaited, so a second
+    // concurrent subscriber to the same channel skipped attach and resolved
+    // immediately. When the first caller's SUBSCRIBE then failed, it deleted
+    // the entry and closed the leased connection — and the joiner was left
+    // holding a subscription that looked live, received nothing forever, and
+    // whose unsubscribe() silently no-oped.
+    const fake = subscriberClient();
+    let failSubscribe = true;
+    const live = fake.client;
+    const client: RedisClient = {
+      ...live,
+      async subscriber() {
+        const subscriber = await live.subscriber?.();
+        if (!subscriber) throw new Error("no subscriber");
+        const original = subscriber.subscribe.bind(subscriber);
+        subscriber.subscribe = async (channel, listener) => {
+          if (failSubscribe) {
+            failSubscribe = false;
+            throw new Error("connection dropped mid-SUBSCRIBE");
+          }
+          return original(channel, listener);
+        };
+        return subscriber;
+      }
+    };
+    const hub = createPubSubHub(client, () => {});
+
+    const [first, second] = await Promise.allSettled([
+      hub.subscribeChannel(events, () => {}),
+      hub.subscribeChannel(events, () => {})
+    ]);
+
+    // Both learn about the failure; neither ends up with a dead handle.
+    expect(first.status).toBe("rejected");
+    expect(second.status).toBe("rejected");
+  });
+
   it("closes the leased connection and drops every subscription on close()", async () => {
     const fake = subscriberClient();
     const hub = createPubSubHub(fake.client);

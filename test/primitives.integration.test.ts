@@ -135,6 +135,43 @@ describeRedis("primitives (live)", () => {
       for (const result of results) expect(result).toEqual({ n: 7 });
     });
 
+    it("recovers immediately when the lock holder's loader throws", async () => {
+      // The waiters polled only for the value, never re-tried the lock. A
+      // holder whose loader threw released within milliseconds, but every
+      // waiter still slept the full lockTtlMs and then all loaded at once:
+      // one backend 503 became a multi-second stall plus a stampede.
+      const store = cache<string>(client, {
+        ttlMs: 60_000,
+        prefix: `${run}:cache3`,
+        lockTtlMs: 5_000,
+        pollMs: 10
+      });
+      let loads = 0;
+      const loader = async () => {
+        loads++;
+        await pause(30);
+        if (loads === 1) throw new Error("backend is down");
+        return "recovered";
+      };
+
+      const startedAt = Date.now();
+      const settled = await Promise.allSettled(
+        Array.from({ length: 6 }, () => store.get("hot", loader))
+      );
+      const elapsed = Date.now() - startedAt;
+
+      // Well under lockTtlMs: the waiters took the freed lock instead of
+      // waiting it out.
+      expect(elapsed).toBeLessThan(2_000);
+      // Exactly one retry after the failure — single-flight survived it.
+      expect(loads).toBe(2);
+      expect(settled.filter((r) => r.status === "rejected")).toHaveLength(1);
+      for (const result of settled) {
+        if (result.status === "fulfilled")
+          expect(result.value).toBe("recovered");
+      }
+    });
+
     it("expires by ttl and reloads after del", async () => {
       const store = cache<string>(client, {
         ttlMs: 60_000,
@@ -166,6 +203,38 @@ describeRedis("primitives (live)", () => {
     expect(denied.remaining).toBe(10);
     expect(denied.retryAfterMs).toBeGreaterThan(0);
     expect((await b.charge(id, 10)).ok).toBe(true);
+  });
+
+  it("budget: a failed settle leaves the hold usable for a retry", async () => {
+    // settle()/release() flipped `settled` before awaiting Redis and never
+    // reset it, so one transient error permanently disabled the handle: the
+    // caller's retry and its finally-release both became silent no-ops, the
+    // spend was forgotten, and the reservation blocked that headroom until
+    // its TTL lapsed.
+    let failNext = false;
+    const flaky: RedisClient = {
+      ...client,
+      async send(command) {
+        if (failNext && command[0] === "EVALSHA") {
+          failNext = false;
+          throw new Error("connection reset");
+        }
+        return client.send(command);
+      }
+    };
+    const b = budget(flaky, { limit: 100, windowMs: 60_000 });
+    const id = uid();
+    const hold = await b.reserve(id, 10);
+    expect(hold).not.toBeNull();
+
+    failNext = true;
+    await expect(hold?.settle(30)).rejects.toThrow("connection reset");
+
+    // The retry has to actually reach Redis. Settling 30 against a 10
+    // estimate is what makes this observable: a no-op retry leaves the
+    // original 10 reserved (remaining 90), a real one charges 30.
+    await hold?.settle(30);
+    await expect(b.check(id)).resolves.toMatchObject({ remaining: 70 });
   });
 
   it("budget: a hold blocks others, settle charges the real cost", async () => {

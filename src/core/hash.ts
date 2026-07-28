@@ -286,7 +286,12 @@ export function createHashStore<
     keyof TFields & string
   >;
   const fieldCodec = <TField extends keyof TFields & string>(field: TField) => {
-    const codec = schema.fields[field];
+    // Own-property only: a plain index read walks the prototype chain, so
+    // "toString" or "constructor" resolves to an Object.prototype member,
+    // passes the truthiness check, and then blows up on .decode.
+    const codec = Object.hasOwn(schema.fields, field)
+      ? schema.fields[field]
+      : undefined;
     if (!codec) {
       throw new ValidationError(
         `Unknown hash field '${field}'; declared fields: ${declaredFields.join(", ")}`
@@ -501,6 +506,12 @@ export function createHashStore<
 
       const output: PartialHashOutput<TFields> = {};
       for (const [field, value] of entries) {
+        // Field names come from Redis, so the lookup has to be own-property:
+        // an undeclared field named after an Object.prototype member
+        // ("toString", "constructor", "__proto__") otherwise resolves to a
+        // truthy non-codec and throws instead of being ignored. scanHash
+        // already does it this way.
+        if (!Object.hasOwn(schema.fields, field)) continue;
         const codec = schema.fields[field];
         if (!codec) continue;
         output[field as keyof TFields] = codec.decode(

@@ -52,7 +52,15 @@ app.use(
 
 ## Response caching
 
-Read-through caching for `GET`/`HEAD` responses (other methods pass through). On a hit the stored response is replayed with an `X-Beni-Cache: hit` header; on a miss the handler runs and successful responses are stored with `SET PX ttlMs`. Responses that set cookies are never cached, and **every Redis failure fails open**: the request always runs.
+Read-through caching for `GET`/`HEAD` responses (other methods pass through). On a hit the stored response is replayed with an `X-Beni-Cache: hit` header; on a miss the handler runs and successful responses are stored with `SET PX ttlMs`. **Every Redis failure fails open**: the request always runs.
+
+The cache key is the URL (`method:path+query`) plus any `vary` headers, so it is a *shared* cache. A response is never stored when any of these hold:
+
+- the request carried an `Authorization` header;
+- the handler or an inner middleware set a cookie on the response;
+- the handler read or wrote the [`session`](#sessions) (`cache()` asks the session bag directly, so this holds whichever order the two middlewares are composed in).
+
+That last rule is what keeps a per-user route safe. Note the cookie check alone would not: a returning visitor already has their `sid`, so `session()` emits no `Set-Cookie` and there is nothing for a cookie check to see. If a route varies by anything else the cache cannot observe (a header you did not list in `vary`, a value read straight from `c.req.header("Cookie")`), do not put `cache()` on it, or give it a `key` that includes the distinguishing value.
 
 ```ts
 import { Hono } from "hono";

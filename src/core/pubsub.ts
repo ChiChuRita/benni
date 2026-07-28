@@ -108,8 +108,13 @@ function runHandler(
   onError: (error: unknown) => void
 ): void {
   try {
-    const result = fn();
-    if (result) result.catch(onError);
+    // Duck-typed rather than `if (result)`: TypeScript's void-return rule lets
+    // a value-returning function satisfy `() => void`, so the common
+    // `(m) => arr.push(m)` handler arrives here as a truthy number.
+    const result = fn() as unknown;
+    if (typeof (result as Promise<void>)?.catch === "function") {
+      (result as Promise<void>).catch(onError);
+    }
   } catch (error) {
     onError(error);
   }
@@ -166,6 +171,8 @@ export function createPubSubHub(
 ) {
   const channels = new Map<string, Set<Fan>>();
   const patterns = new Map<string, Set<Fan>>();
+  /** In-flight attaches, keyed by channel/pattern name; see `add`. */
+  const attaching = new Map<string, Promise<Set<Fan>>>();
   let leased: RedisSubscriber | null = null;
   let leasing: Promise<RedisSubscriber> | null = null;
 
@@ -212,16 +219,33 @@ export function createPubSubHub(
     const subscriber = await acquire();
     let set = map.get(name);
     if (!set) {
-      const fresh = new Set<Fan>();
-      map.set(name, fresh);
-      try {
-        await attach(subscriber, fresh);
-      } catch (error) {
-        map.delete(name);
-        await releaseIfIdle();
-        throw error;
+      // Join an attach already in flight instead of treating a published map
+      // entry as proof that SUBSCRIBE was acknowledged. Publishing the set
+      // before awaiting attach let a second concurrent caller resolve against
+      // an unacked subscription: if the first caller's SUBSCRIBE then failed,
+      // it tore the entry and the leased connection down, and the second held
+      // a subscription that looked live, received nothing forever, and whose
+      // unsubscribe() silently no-oped. Mirrors how `leasing` guards acquire().
+      const pending = attaching.get(name);
+      if (pending) {
+        set = await pending;
+      } else {
+        const fresh = new Set<Fan>();
+        const inFlight = (async () => {
+          try {
+            await attach(subscriber, fresh);
+            map.set(name, fresh);
+            return fresh;
+          } catch (error) {
+            await releaseIfIdle();
+            throw error;
+          } finally {
+            attaching.delete(name);
+          }
+        })();
+        attaching.set(name, inFlight);
+        set = await inFlight;
       }
-      set = fresh;
     }
     set.add(fan);
     let active = true;

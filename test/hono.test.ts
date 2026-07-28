@@ -139,7 +139,78 @@ describe("hono cache", () => {
     );
 
     await app.request("/greet", { headers: { "Accept-Language": "de" } });
-    expect(commands[0]?.[1]).toBe("hono-cache:GET:/greet|accept-language=de");
+    // Length-prefixed so a value containing the separator cannot collide.
+    expect(commands[0]?.[1]).toBe("hono-cache:GET:/greet|accept-language=2:de");
+  });
+
+  it("does not let a crafted query string collide with a vary header", async () => {
+    // The vary suffix was appended by plain concatenation, so a query string
+    // carrying "|a=b" produced the same key as a request whose A header
+    // carried it instead: `/g?z=|a=b` with A="" and `/g?z=` with A="b|a="
+    // both built "...GET:/g?z=|a=b|a=". An attacker who can pick either side
+    // can poison the entry a victim's URL reads.
+    const keyFor = async (path: string, a: string) => {
+      const commands: RedisCommand[] = [];
+      const client = fakeClient(commands, [null, "OK"]);
+      const app = new Hono();
+      app.get("/g", cache({ client, ttlMs: 1_000, vary: ["A"] }), (c) =>
+        c.text("hi")
+      );
+      await app.request(path, { headers: { A: a } });
+      return commands[0]?.[1];
+    };
+
+    expect(await keyFor("/g?z=|a=b", "")).not.toBe(
+      await keyFor("/g?z=", "b|a=")
+    );
+  });
+
+  it("does not cache a response the handler derived from the session", async () => {
+    // The set-cookie guard misses the common case entirely: a returning
+    // visitor already has their sid, so session() emits no Set-Cookie, and
+    // with session() as the outer middleware its header would land after
+    // cache() has already stored the body. Either way one user's
+    // authenticated response was cached under a session-independent key and
+    // served to everyone else.
+    const commands: RedisCommand[] = [];
+    // GET session record, GET cache (miss). No SET should follow.
+    const client = fakeClient(commands, [
+      JSON.stringify({ userId: "u1" }),
+      null
+    ]);
+    const app = new Hono();
+    app.use("*", session({ client }));
+    app.get("/me", cache({ client, ttlMs: 30_000 }), (c) =>
+      c.text(getSession(c).get<string>("userId") ?? "anonymous")
+    );
+
+    const res = await app.request("/me", { headers: { Cookie: "sid=abc" } });
+    expect(await res.text()).toBe("u1");
+    expect(commands.some((command) => command[0] === "SET")).toBe(false);
+  });
+
+  it("still caches a response that never touches the session", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [null, null, "OK"]);
+    const app = new Hono();
+    app.use("*", session({ client }));
+    app.get("/public", cache({ client, ttlMs: 30_000 }), (c) => c.text("hi"));
+
+    await app.request("/public", { headers: { Cookie: "sid=abc" } });
+    expect(commands.some((command) => command[0] === "SET")).toBe(true);
+  });
+
+  it("passes an Authorization-bearing request straight through", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, []);
+    const app = new Hono();
+    app.get("/private", cache({ client, ttlMs: 30_000 }), (c) => c.text("ok"));
+
+    const res = await app.request("/private", {
+      headers: { Authorization: "Bearer t" }
+    });
+    expect(await res.text()).toBe("ok");
+    expect(commands).toEqual([]);
   });
 });
 

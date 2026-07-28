@@ -6,6 +6,7 @@ import {
   expiryArgs,
   ttlSeconds
 } from "./helpers.js";
+import type { SlotGuard } from "./slot.js";
 import type {
   Keyspace,
   RedisClient,
@@ -85,7 +86,8 @@ function decodeLcsIdx(reply: RedisReply): LcsIdxResult {
 
 export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
   client: RedisClient,
-  keyspace: Keyspace<string, string, string, TId>
+  keyspace: Keyspace<string, string, string, TId>,
+  assertSameSlot?: SlotGuard
 ) {
   // LCS compares two keys of this same keyspace. The reply shape depends on the
   // option: the subsequence string, its length (LEN), or the match ranges (IDX).
@@ -97,11 +99,14 @@ export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
     b: TId,
     options?: LcsOptions
   ): Promise<string | number | LcsIdxResult> {
-    const command: [string, ...RedisCommandArgument[]] = [
-      "LCS",
-      keyspace.key(a),
-      keyspace.key(b)
-    ];
+    const keyA = keyspace.key(a);
+    const keyB = keyspace.key(b);
+    // LCS is a two-key command, so it needs the same guard every other
+    // multi-key command gets: on a cluster the server would otherwise reject
+    // it with a raw CROSSSLOT, and on a single node it would pass and only
+    // break in production.
+    assertSameSlot?.("LCS", [keyA, keyB], keyspace);
+    const command: [string, ...RedisCommandArgument[]] = ["LCS", keyA, keyB];
     if (options !== undefined && "len" in options) {
       command.push("LEN");
       return expectNumber(await client.send(command), "LCS");

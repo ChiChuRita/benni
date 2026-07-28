@@ -8,7 +8,28 @@ import {
 import type { Codec } from "./types.js";
 
 function encodeJson(input: unknown): string {
-  const encoded = JSON.stringify(input);
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(input, (_key, value) => {
+      // JSON.stringify writes NaN/Infinity as the literal `null`, which reads
+      // back indistinguishable from "the key does not exist" — the sentinel
+      // kv.get() and friends return for a missing key. Fail at the write, the
+      // way the number() codec already does, rather than poisoning a read.
+      if (typeof value === "number" && !Number.isFinite(value)) {
+        throw new ValidationError(
+          `JSON codec cannot encode the non-finite number ${value}; it would be stored as null and read back as a missing value`
+        );
+      }
+      return value;
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    // A BigInt or a circular structure otherwise escapes as a raw TypeError,
+    // where every other pre-send failure in the library is a ValidationError.
+    throw new ValidationError(
+      `JSON codec could not encode value: ${(error as Error).message}`
+    );
+  }
   if (encoded === undefined) {
     throw new ValidationError("JSON codec could not encode value");
   }

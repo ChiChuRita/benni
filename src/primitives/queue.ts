@@ -329,6 +329,15 @@ if idem ~= "" then
   redis.call("SET", idemKey, id, "PX", n(tonumber(ARGV[9])))
 end
 
+-- Re-enqueuing an id that already reached a terminal state has to start from
+-- a clean record: HSET only overwrites the fields it names, so without this
+-- the fresh job inherits the dead one's cancelRequested flag (a worker aborts
+-- brand-new work on the first heartbeat), its result/finishedAt (get() reports
+-- a "waiting" job as finished), and its resultTtlMs expiry (the record dies
+-- while the id is still queued, and reserve pops an id with no payload).
+redis.call("HDEL", jobKey(id),
+  "cancelRequested", "result", "error", "finishedAt", "startedAt", "token")
+redis.call("PERSIST", jobKey(id))
 redis.call("HSET", jobKey(id),
   "id", id,
   "payload", ARGV[3],
@@ -1180,7 +1189,45 @@ export function queue<TPayload, TResult = unknown>(
       );
     }
 
+    /**
+     * Encode a handler's return value for storage.
+     *
+     * Two cases the plain codec call got wrong. A `queue<P, void>` handler
+     * returns `undefined`, which the default JSON codec refuses — that is a
+     * *successful* job, so it is stored as JSON null and reads back as
+     * `result: null`. And a genuinely unencodable result is terminal: the
+     * handler already ran, so retrying it would repeat the side effect
+     * `maxAttempts` times and still dead-letter.
+     */
+    function encodeResult(id: string, result: TResult): string {
+      if (result === undefined) return "null";
+      try {
+        return resultCodec.encode(result);
+      } catch (cause) {
+        throw new TerminalJobError(
+          `Job "${id}" succeeded but its result could not be encoded, so it ` +
+            "cannot be recorded. The handler already ran; it will not be retried.",
+          { cause }
+        );
+      }
+    }
+
     async function run(reserved: ReservedRow): Promise<void> {
+      // Decode before the heartbeat starts. A throw here used to escape past
+      // the try/finally below with the interval already running, leaving a
+      // zombie timer renewing the lease forever — the job stayed `active` and
+      // was never reclaimed, retried, or dead-lettered.
+      let payload: TPayload;
+      try {
+        payload = codec.decode(reserved.payload);
+      } catch (error) {
+        // No attempt can make this payload decodable, so retrying would only
+        // hold the lease through every one of them.
+        await settle(reserved, "failed", errorMessage(error));
+        onError(error);
+        return;
+      }
+
       const controller = new AbortController();
       let cancelled = false;
       let leaseLost = false;
@@ -1210,7 +1257,7 @@ export function queue<TPayload, TResult = unknown>(
 
       const context: JobContext<TPayload> = {
         id: reserved.id,
-        payload: codec.decode(reserved.payload),
+        payload,
         attempt: reserved.attempt,
         maxAttempts: reserved.maxAttempts,
         priority: reserved.priority,
@@ -1260,7 +1307,7 @@ export function queue<TPayload, TResult = unknown>(
           await settle(reserved, "cancelled", "");
           return;
         }
-        await settle(reserved, "completed", resultCodec.encode(result));
+        await settle(reserved, "completed", encodeResult(reserved.id, result));
       } catch (error) {
         if (leaseLost) return; // Another worker owns it; touching it would race.
         if (cancelled) {

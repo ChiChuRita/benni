@@ -3,13 +3,15 @@ import {
   codecs,
   createHashStore,
   createSortedSetStore,
+  createStreamStore,
   createStringStore,
   defineHash,
   defineKeyspace,
   defineSortedSet,
+  defineStream,
   ValidationError
 } from "../src/core/index.js";
-import { slotOf } from "../src/core/slot.js";
+import { assertSameSlot, CrossSlotError, slotOf } from "../src/core/slot.js";
 import type { RedisCommand } from "../src/core/types.js";
 import { node } from "../src/node/index.js";
 import { cache, lock } from "../src/primitives/index.js";
@@ -102,6 +104,122 @@ describe("lock.run release failures (review #7)", () => {
     // empty queue and rejects — run() must still resolve with fn's result.
     const locks = lock(fakeClient([], ["OK"]));
     await expect(locks.run("r", async () => 7)).resolves.toBe(7);
+  });
+});
+
+describe("field names that collide with Object.prototype (review #6)", () => {
+  // Field names arrive from Redis, so `schema.fields[field]` walked the
+  // prototype chain: an undeclared field called "toString" resolved to
+  // Object.prototype.toString, passed the truthiness check, and threw
+  // "codec.decode is not a function". One such field made the whole record —
+  // or the whole stream — unreadable through the typed API.
+  const user = defineHash("user", {
+    name: codecs.string(),
+    score: codecs.number()
+  });
+
+  it("hgetall ignores an undeclared prototype-named field", async () => {
+    const store = createHashStore(
+      fakeClient(
+        [],
+        [["name", "Ada", "score", "10", "toString", "x", "__proto__", "y"]]
+      ),
+      user
+    );
+    await expect(store.hgetall("1")).resolves.toEqual({
+      name: "Ada",
+      score: 10
+    });
+  });
+
+  it("hgetall does not pollute the prototype through a __proto__ field", async () => {
+    const store = createHashStore(
+      fakeClient([], [["name", "Ada", "score", "1", "__proto__", '{"bad":1}']]),
+      user
+    );
+    await store.hgetall("1");
+    expect(({} as Record<string, unknown>).bad).toBeUndefined();
+  });
+
+  it("rejects a prototype-named field as unknown rather than crashing", async () => {
+    const store = createHashStore(fakeClient([], []), user);
+    await expect(store.hget("1", "toString" as "name")).rejects.toBeInstanceOf(
+      ValidationError
+    );
+  });
+
+  it("xrange skips an undeclared prototype-named stream field", async () => {
+    const events = defineStream("events", { action: codecs.string() });
+    const store = createStreamStore(
+      fakeClient([], [[["1-0", ["action", "login", "constructor", "x"]]]]),
+      events
+    );
+    await expect(store.xrange("42")).resolves.toEqual([
+      { id: "1-0", value: { action: "login" } }
+    ]);
+  });
+});
+
+describe("LCS is a multi-key command (review #8)", () => {
+  it("runs the cross-slot guard on its two keys", async () => {
+    // createStringStore never received the guard, so LCS — the one two-key
+    // command in the string store — was sent unchecked even with the cluster
+    // guard installed. On a single node it just works; on a real cluster the
+    // server rejects it with a raw CROSSSLOT.
+    const store = createStringStore(
+      fakeClient([], ["mytext"]),
+      defineKeyspace("doc", codecs.string()),
+      assertSameSlot
+    );
+    await expect(store.lcs("a", "b")).rejects.toBeInstanceOf(CrossSlotError);
+  });
+
+  it("allows LCS when a hash tag co-locates the two keys", async () => {
+    const commands: RedisCommand[] = [];
+    const store = createStringStore(
+      fakeClient(commands, ["mytext"]),
+      defineKeyspace("doc", codecs.string(), { hashTag: "prefix" }),
+      assertSameSlot
+    );
+    await expect(store.lcs("a", "b")).resolves.toBe("mytext");
+    expect(slotOf(commands[0][1] as string)).toBe(
+      slotOf(commands[0][2] as string)
+    );
+  });
+});
+
+describe("json codec and non-finite numbers (review #9)", () => {
+  it("rejects NaN/Infinity instead of silently storing null", async () => {
+    // JSON.stringify writes them as the literal `null`, which reads back
+    // indistinguishable from "the key does not exist" — the sentinel kv.get()
+    // returns for a missing key. The number() codec already refused them.
+    const codec = codecs.json<number>();
+    expect(() => codec.encode(Number.NaN)).toThrow(ValidationError);
+    expect(() => codec.encode(Number.POSITIVE_INFINITY)).toThrow(
+      ValidationError
+    );
+    expect(() => codec.encode(Number.NEGATIVE_INFINITY)).toThrow(
+      ValidationError
+    );
+  });
+
+  it("rejects a non-finite number nested in an object", async () => {
+    const codec = codecs.json<{ score: number }>();
+    expect(() => codec.encode({ score: Number.NaN })).toThrow(ValidationError);
+  });
+
+  it("still encodes ordinary values", () => {
+    const codec = codecs.json<unknown>();
+    expect(codec.encode({ a: 1, b: [null, "x"] })).toBe(
+      '{"a":1,"b":[null,"x"]}'
+    );
+    expect(codec.encode(null)).toBe("null");
+    expect(codec.encode(0)).toBe("0");
+  });
+
+  it("reports a BigInt as a ValidationError, not a raw TypeError", () => {
+    const codec = codecs.json<unknown>();
+    expect(() => codec.encode({ n: 1n })).toThrow(ValidationError);
   });
 });
 

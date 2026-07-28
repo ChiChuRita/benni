@@ -449,4 +449,99 @@ describeRedis("queue (live)", () => {
     await expect(jobs.wait("missing")).rejects.toBeInstanceOf(JobNotFoundError);
     await expect(jobs.cancel("missing")).resolves.toBe(false);
   });
+
+  it("re-enqueuing a finished id starts from a clean record", async () => {
+    // enqueue's HSET only overwrote the fields it names, so a re-used id
+    // inherited the dead job's cancelRequested flag and its result TTL: a
+    // worker aborted brand-new work on its first heartbeat and threw the
+    // result away, and the record could expire while the id was still queued.
+    const prefix = nextPrefix();
+    const jobs = queue<string, string>(client, { prefix, resultTtlMs: 1_000 });
+
+    const first = await jobs.enqueue("one", { id: "job-1" });
+    expect(await jobs.cancel(first.id)).toBe(true);
+
+    await jobs.enqueue("two", { id: "job-1" });
+    const fresh = await jobs.get("job-1");
+    expect(fresh?.status).toBe("waiting");
+    expect(fresh?.cancelRequested).toBe(false);
+    expect(fresh?.result).toBeNull();
+    expect(fresh?.finishedAt).toBeNull();
+
+    // No inherited expiry: the record outlives the queue entry.
+    const ttl = await client.send(["PTTL", `{${prefix}}:job:job-1`]);
+    expect(ttl).toBe(-1);
+
+    // And it actually runs to completion rather than being cancelled.
+    const worker = jobs.worker(async (job) => `ran:${job.payload}`);
+    await expect(jobs.wait("job-1")).resolves.toBe("ran:two");
+    await worker.stop();
+  });
+
+  it("completes a void handler once instead of retrying it to the dead letter", async () => {
+    // A fire-and-forget handler returns undefined, which the default JSON
+    // codec refuses to encode. The encode used to sit on the success path, so
+    // the throw was classified as a job failure: the side effect ran
+    // maxAttempts times and the job still dead-lettered.
+    const prefix = nextPrefix();
+    const jobs = queue<{ to: string }, void>(client, { prefix });
+    let sends = 0;
+    const worker = jobs.worker(async () => {
+      sends += 1;
+    });
+
+    const { id } = await jobs.enqueue({ to: "ada@example.com" });
+    await jobs.wait(id);
+
+    const record = await jobs.get(id);
+    expect(record?.status).toBe("completed");
+    expect(record?.attempt).toBe(1);
+    expect(record?.result).toBeNull();
+    expect(sends).toBe(1);
+    await expect(jobs.stats()).resolves.toMatchObject({ dead: 0 });
+
+    await worker.stop();
+  });
+
+  it("settles an undecodable payload instead of leaking a lease-renewing timer", async () => {
+    // The payload decode used to run while building the job context, outside
+    // the try/finally that clears the heartbeat. A throw escaped with the
+    // interval already started, so a zombie timer renewed the lease forever:
+    // the job stayed active and was never reclaimed, retried, or dead-lettered.
+    const prefix = nextPrefix();
+    const jobs = queue<{ n: number }, string>(client, { prefix });
+    const { id } = await jobs.enqueue({ n: 1 });
+
+    // Corrupt the stored payload the way an older producer or a codec change
+    // would, then let a worker pick it up.
+    await client.send(["HSET", `{${prefix}}:job:${id}`, "payload", "not-json"]);
+
+    const errors: unknown[] = [];
+    let handlerRuns = 0;
+    const worker = jobs.worker(
+      async () => {
+        handlerRuns += 1;
+        return "never";
+      },
+      { heartbeatMs: 100, leaseMs: 1000, onError: (e) => errors.push(e) }
+    );
+
+    await sleep(400);
+    await worker.stop();
+
+    // Read the record raw: get() decodes the payload too, so it cannot report
+    // on a job whose payload is the thing that is broken.
+    const status = await client.send([
+      "HGET",
+      `{${prefix}}:job:${id}`,
+      "status"
+    ]);
+    expect(status).toBe("failed");
+    expect(handlerRuns).toBe(0);
+    expect(errors).not.toHaveLength(0);
+
+    // The lease is gone, so nothing is still renewing it.
+    const leaseScore = await client.send(["ZSCORE", `{${prefix}}:leases`, id]);
+    expect(leaseScore).toBeNull();
+  });
 });
