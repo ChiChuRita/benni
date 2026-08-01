@@ -54,7 +54,9 @@ next-cache:entry:/blog          -> { value, lastModified, tags }
 next-cache:tag:posts            -> SMEMBERS { "/blog", "/blog/post-1" }
 ```
 
-`revalidateTag("posts")` is then one `SMEMBERS` per tag plus a single `DEL` of the matching entries and the tag sets, with no scans. Only the tags Next.js passes on `set()` (`ctx.tags`) feed the index.
+A tag set is expired alongside the entries it names: every write extends the set to the entry's TTL, never shortens it, and an entry that never expires makes the set permanent. So a tag set is reclaimed once its last member has gone, instead of growing for the life of the deployment.
+
+`revalidateTag("posts")` is then one `SMEMBERS` per tag plus a chunked `DEL` of the matching entries, followed by an `SREM` of exactly the members it saw, with no scans. Only the tags Next.js passes on `set()` (`ctx.tags`) feed the index.
 
 ## Rate limiting
 
@@ -72,7 +74,9 @@ const limiter = rateLimit({
       token: process.env.UPSTASH_REDIS_REST_TOKEN as string
     }),
   limit: 20,
-  windowMs: 10_000
+  windowMs: 10_000,
+  identify: (request) =>
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
 });
 
 export async function middleware(request: Request) {
@@ -83,7 +87,9 @@ export async function middleware(request: Request) {
 export const config = { matcher: "/api/:path*" };
 ```
 
-The denial response carries `Retry-After` (seconds) plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds). By default requests are identified by the first `x-forwarded-for` hop (falling back to `"anonymous"`); pass `identify` to key on something better, like an API key or session:
+The denial response carries `Retry-After` (seconds) plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds).
+
+`identify` is required on purpose. There is no request property a limiter can trust without knowing the deployment: on a self-hosted Next.js, or behind a proxy that appends rather than replaces, `x-forwarded-for` is attacker-controlled, so a default built on it would let a caller vary one header to bypass the limit and mint a fresh Redis key every time. The snippet above is the right form on a platform whose edge overwrites the header, such as Vercel. Better still is an identity you authenticated yourself:
 
 ```ts
 const limiter = rateLimit({

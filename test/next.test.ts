@@ -16,7 +16,7 @@ describe("cacheHandler", () => {
       { revalidate: 60, tags: ["posts", "layout"] }
     );
 
-    expect(commands).toHaveLength(5);
+    expect(commands).toHaveLength(3);
     const [set, ...rest] = commands;
     expect(set?.slice(0, 2)).toEqual(["SET", "{next-cache}:entry:/blog"]);
     expect(set?.slice(3)).toEqual(["EX", 60]);
@@ -25,12 +25,14 @@ describe("cacheHandler", () => {
     expect(entry.tags).toEqual(["posts", "layout"]);
     expect(typeof entry.lastModified).toBe("number");
     // Each tag set is expired alongside its member, extended but never
-    // shortened. Without a TTL the sets grew for the life of the deployment.
-    expect(rest).toEqual([
-      ["SADD", "{next-cache}:tag:posts", "/blog"],
-      ["EXPIRE", "{next-cache}:tag:posts", 60, "GT"],
-      ["SADD", "{next-cache}:tag:layout", "/blog"],
-      ["EXPIRE", "{next-cache}:tag:layout", 60, "GT"]
+    // shortened. The SADD and the expiry have to be one script: EXPIRE ... GT
+    // refuses to install the first TTL on the TTL-less set the SADD just
+    // created, so only next to the SADD can a fresh set be told from one a
+    // permanent entry deliberately PERSISTed.
+    expect(rest.map((command) => command[0])).toEqual(["EVAL", "EVAL"]);
+    expect(rest.map((command) => command.slice(3))).toEqual([
+      ["{next-cache}:tag:posts", "/blog", 60],
+      ["{next-cache}:tag:layout", "/blog", 60]
     ]);
   });
 
@@ -40,7 +42,7 @@ describe("cacheHandler", () => {
     // entry would expire out from under this one, and the page could never be
     // revalidated by tag again.
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK", 1, 1]);
+    const client = fakeClient(commands, ["OK", 1]);
     const Handler = cacheHandler({ client });
 
     await new Handler().set(
@@ -49,10 +51,10 @@ describe("cacheHandler", () => {
       { revalidate: false, tags: ["static"] }
     );
 
-    expect(commands.slice(1)).toEqual([
-      ["SADD", "{next-cache}:tag:static", "/page"],
-      ["PERSIST", "{next-cache}:tag:static"]
-    ]);
+    // ttl 0 is the script's signal to PERSIST rather than expire the set.
+    const [tagCall] = commands.slice(1);
+    expect(tagCall?.[0]).toBe("EVAL");
+    expect(tagCall?.slice(3)).toEqual(["{next-cache}:tag:static", "/page", 0]);
   });
 
   it("stores without EX when revalidate is false", async () => {
@@ -195,7 +197,14 @@ describe("rateLimit", () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset]
     const client = fakeClient(commands, ["sha1", [1, 9, Date.now() + 60_000]]);
-    const limiter = rateLimit({ client, limit: 10, windowMs: 60_000 });
+    const limiter = rateLimit({
+      client,
+      limit: 10,
+      windowMs: 60_000,
+      identify: (request) =>
+        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+        "anonymous"
+    });
 
     const request = new Request("https://example.com/api", {
       headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" }
@@ -217,7 +226,12 @@ describe("rateLimit", () => {
     // No fake timers needed any more: Retry-After comes from the server's own
     // duration, so the local clock is irrelevant to it.
     const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
-    const limiter = rateLimit({ client, limit: 5, windowMs: 60_000 });
+    const limiter = rateLimit({
+      client,
+      limit: 5,
+      windowMs: 60_000,
+      identify: () => "tester"
+    });
 
     const response = await limiter(new Request("https://example.com/api"));
 
@@ -231,10 +245,19 @@ describe("rateLimit", () => {
     );
   });
 
-  it('falls back to "anonymous" without x-forwarded-for', async () => {
+  it("lets the caller's identify fall back when its header is absent", async () => {
+    // identify is required: there is no header a limiter can trust without
+    // knowing the deployment, so the fallback is the caller's to choose.
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
-    const limiter = rateLimit({ client, limit: 5, windowMs: 1_000 });
+    const limiter = rateLimit({
+      client,
+      limit: 5,
+      windowMs: 1_000,
+      identify: (request) =>
+        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+        "anonymous"
+    });
 
     await limiter(new Request("https://example.com"));
 
@@ -266,7 +289,12 @@ describe("rateLimit", () => {
       "sha1",
       [0, 0, 1_700_000_099_000, 900]
     ]);
-    const limiter = rateLimit({ client, limit: 3, windowMs: 10_000 });
+    const limiter = rateLimit({
+      client,
+      limit: 3,
+      windowMs: 10_000,
+      identify: () => "tester"
+    });
 
     const result = await limiter.check("user:42");
 
@@ -292,7 +320,8 @@ describe("rateLimit", () => {
         return client;
       },
       limit: 2,
-      windowMs: 1_000
+      windowMs: 1_000,
+      identify: () => "tester"
     });
 
     await limiter.check("a");

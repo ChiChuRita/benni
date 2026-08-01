@@ -9,6 +9,34 @@ const DEL_CHUNK = 500;
 const DEFAULT_RATELIMIT_PREFIX = "next-ratelimit";
 
 /**
+ * Adds one key to a tag set and gives the set the expiry it should have, in a
+ * single atomic step. `ARGV[2]` is the entry's TTL in seconds, or 0 when the
+ * entry never expires.
+ *
+ * A tag set has to outlive its longest-lived member, so the expiry may be
+ * extended but never shortened, and an entry that never expires has to leave
+ * the set permanent. `EXPIRE ... GT` alone cannot do that: Redis compares
+ * against a missing expiry as if it were infinite, so GT refuses to install
+ * the first TTL on the set the SADD just created, and the sets grew for the
+ * life of the deployment. Bootstrapping with `NX` instead would put an expiry
+ * back on a set that a permanent entry deliberately PERSISTed. Only next to
+ * the SADD can the two TTL-less cases be told apart, hence the script: a set
+ * this call brings into existence gets the TTL outright, one that was already
+ * there only ever has it extended.
+ */
+const TAG_MEMBER_LUA = `local ttl = tonumber(ARGV[2])
+local fresh = redis.call("EXISTS", KEYS[1]) == 0
+redis.call("SADD", KEYS[1], ARGV[1])
+if ttl <= 0 then
+  redis.call("PERSIST", KEYS[1])
+elseif fresh then
+  redis.call("EXPIRE", KEYS[1], ttl)
+else
+  redis.call("EXPIRE", KEYS[1], ttl, "GT")
+end
+return 1`;
+
+/**
  * A connected {@link RedisClient}, a promise of one, or a lazy factory. A
  * factory is called (and awaited) once on first use and the client is cached —
  * handy in `cache-handler.mjs`, which Next.js loads at build time when no
@@ -81,7 +109,9 @@ export type CacheHandlerOptions = {
  * cache-handler module) closed over the options. Entries live at
  * `<prefix>:entry:<key>` as JSON; each tag keeps a set of its keys at
  * `<prefix>:tag:<tag>`, so `revalidateTag` is a set lookup plus one `DEL`.
- * Entries with a numeric `revalidate` get that TTL via `SET ... EX`.
+ * Entries with a numeric `revalidate` get that TTL via `SET ... EX`, and a tag
+ * set expires with its longest-lived member, or never if one of them never
+ * expires.
  *
  * Only `send`/`pipeline` are used, so it works over every adapter —
  * including [`beni/upstash`](../upstash/index.js). PAGE, ROUTE, and FETCH
@@ -172,19 +202,10 @@ export function cacheHandler(
           : ["SET", entryKey(key), payload, "EX", ttl]
       ];
       for (const tag of tags) {
-        commands.push(["SADD", tagKey(tag), key]);
-        // A tag set has to outlive its longest-lived member, so extend the
-        // expiry but never shorten it (GT, which treats a key with no TTL as
-        // infinite and so leaves a permanent set permanent), and drop it
-        // outright for an entry that never expires. Without this the sets had
-        // no expiry at all: they grew for the life of the deployment, kept
-        // naming entries that had long since expired, and revalidateTag
-        // SMEMBERS'd the whole accumulation on every call.
-        commands.push(
-          ttl === undefined
-            ? ["PERSIST", tagKey(tag)]
-            : ["EXPIRE", tagKey(tag), ttl, "GT"]
-        );
+        // Sent as EVAL rather than run through the script runner so the whole
+        // write stays one pipeline, and so this module still speaks nothing
+        // but send/pipeline. See TAG_MEMBER_LUA for what it decides.
+        commands.push(["EVAL", TAG_MEMBER_LUA, 1, tagKey(tag), key, ttl ?? 0]);
       }
       const client = await getClient();
       await client.pipeline(commands);
@@ -252,10 +273,24 @@ export type NextRateLimitOptions = {
   /** Key namespace; keys are `<prefix>:<identity>`. Default `"next-ratelimit"`. */
   readonly prefix?: string;
   /**
-   * Extract the identity to limit on from the `Request`. Default: the first
-   * hop of `x-forwarded-for`, else `"anonymous"`.
+   * Extract the identity to limit on from the `Request`. Required, and
+   * deliberately so: there is no request property a limiter can trust without
+   * knowing the deployment. `x-forwarded-for` is set by the client on a
+   * self-hosted deploy, and appended to (rather than replaced) by many
+   * proxies, so defaulting to it would let a caller pick its own identity and
+   * nullify the limit by varying one header, minting a fresh Redis key each
+   * time. Pass the value your deployment actually verifies.
+   *
+   * @example
+   * ```ts
+   * // On Vercel, which overwrites the header at the edge:
+   * identify: (request) =>
+   *   request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
+   * // Best: an identity you authenticated yourself.
+   * identify: async (request) => (await auth(request)).userId
+   * ```
    */
-  readonly identify?: (request: Request) => string | Promise<string>;
+  readonly identify: (request: Request) => string | Promise<string>;
 };
 
 /**
@@ -321,7 +356,7 @@ export type NextRateLimitHandler = ((
  */
 export function rateLimit(options: NextRateLimitOptions): NextRateLimitHandler {
   const prefix = options.prefix ?? DEFAULT_RATELIMIT_PREFIX;
-  const identify = options.identify ?? identifyByForwardedFor;
+  const identify = options.identify;
   const getClient = createClientResolver(options.client);
 
   let limiter: Promise<ReturnType<typeof ratelimit>> | undefined;
@@ -364,12 +399,6 @@ export function rateLimit(options: NextRateLimitOptions): NextRateLimitHandler {
   };
 
   return Object.assign(handler, { check });
-}
-
-function identifyByForwardedFor(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  const firstHop = forwarded?.split(",")[0]?.trim();
-  return firstHop || "anonymous";
 }
 
 function createClientResolver(

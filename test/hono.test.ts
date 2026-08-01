@@ -10,7 +10,10 @@ describe("hono ratelimit", () => {
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, resetMs]
     const client = fakeClient(commands, ["sha1", [1, 4, 1_800_000_060_000]]);
     const app = new Hono();
-    app.use("*", ratelimit({ client, limit: 5, windowMs: 60_000 }));
+    app.use(
+      "*",
+      ratelimit({ client, limit: 5, windowMs: 60_000, key: () => "tester" })
+    );
     app.get("/", (c) => c.text("hello"));
 
     const res = await app.request("/");
@@ -27,7 +30,10 @@ describe("hono ratelimit", () => {
     // it directly rather than differencing resetMs against its own clock.
     const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
     const app = new Hono();
-    app.use("*", ratelimit({ client, limit: 5, windowMs: 60_000 }));
+    app.use(
+      "*",
+      ratelimit({ client, limit: 5, windowMs: 60_000, key: () => "tester" })
+    );
     app.get("/", (c) => c.text("hello"));
 
     const res = await app.request("/");
@@ -37,11 +43,23 @@ describe("hono ratelimit", () => {
     expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
   });
 
-  it("keys on the first x-forwarded-for hop by default", async () => {
+  it("keys on whatever the required key function returns", async () => {
+    // There is no default identity: a limiter cannot trust a header without
+    // knowing the deployment, so the caller names the subject. This is the
+    // documented recipe for a proxy that overwrites x-forwarded-for.
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 0, 1_800_000_000_000]]);
     const app = new Hono();
-    app.use("*", ratelimit({ client, limit: 1, windowMs: 1_000 }));
+    app.use(
+      "*",
+      ratelimit({
+        client,
+        limit: 1,
+        windowMs: 1_000,
+        key: (c) =>
+          c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
+      })
+    );
     app.get("/", (c) => c.text("ok"));
 
     await app.request("/", {
@@ -73,7 +91,7 @@ describe("hono cache", () => {
 
     const set = commands.at(-1);
     expect(set?.[0]).toBe("SET");
-    expect(set?.[1]).toBe("hono-cache:GET:/data?x=1");
+    expect(set?.[1]).toBe("hono-cache:GET:http://localhost/data?x=1");
     expect(set?.slice(3)).toEqual(["PX", 30_000]);
     const stored = JSON.parse(set?.[2] as string);
     expect(stored.status).toBe(200);
@@ -140,7 +158,9 @@ describe("hono cache", () => {
 
     await app.request("/greet", { headers: { "Accept-Language": "de" } });
     // Length-prefixed so a value containing the separator cannot collide.
-    expect(commands[0]?.[1]).toBe("hono-cache:GET:/greet|accept-language=2:de");
+    expect(commands[0]?.[1]).toBe(
+      "hono-cache:GET:http://localhost/greet|accept-language=2:de"
+    );
   });
 
   it("does not let a crafted query string collide with a vary header", async () => {

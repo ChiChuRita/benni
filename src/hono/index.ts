@@ -51,20 +51,27 @@ export type RatelimitOptions = {
   /** Key namespace; keys are `<prefix>:<id>`. Default `"ratelimit"`. */
   readonly prefix?: string;
   /**
-   * Derives the rate-limit subject from the request. Default: the first hop
-   * of `x-forwarded-for`, else `cf-connecting-ip`, else `"anonymous"`.
+   * Derives the rate-limit subject from the request. Required, and
+   * deliberately so: there is no request property a limiter can trust without
+   * knowing the deployment. `x-forwarded-for` and `cf-connecting-ip` are set
+   * by the client on a direct deploy, and appended to (rather than replaced)
+   * by many proxies, so defaulting to either would let a caller pick its own
+   * identity and nullify the limit by varying one header. Pass the value your
+   * deployment actually verifies: an authenticated user or API key id where
+   * you have one, or the client address your platform exposes.
+   *
+   * @example
+   * ```ts
+   * // Behind a proxy you control, which overwrites the header:
+   * key: (c) => c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
+   * // On Cloudflare Workers:
+   * key: (c) => c.req.header("cf-connecting-ip") ?? "anonymous"
+   * // Best: something you authenticated yourself.
+   * key: (c) => c.get("userId")
+   * ```
    */
-  readonly key?: (c: Context) => string | Promise<string>;
+  readonly key: (c: Context) => string | Promise<string>;
 };
-
-function defaultRatelimitKey(c: Context): string {
-  const forwarded = c.req.header("x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return c.req.header("cf-connecting-ip") ?? "anonymous";
-}
 
 /**
  * Sliding-window rate limiting as Hono middleware, built on the
@@ -79,7 +86,15 @@ function defaultRatelimitKey(c: Context): string {
  * import { ratelimit } from "beni/hono";
  *
  * const app = new Hono();
- * app.use("*", ratelimit({ client, limit: 100, windowMs: 60_000 }));
+ * app.use(
+ *   "*",
+ *   ratelimit({
+ *     client,
+ *     limit: 100,
+ *     windowMs: 60_000,
+ *     key: (c) => c.get("userId")
+ *   })
+ * );
  * app.get("/", (c) => c.text("hello"));
  * ```
  */
@@ -90,7 +105,7 @@ export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
     windowMs: options.windowMs,
     ...(options.prefix !== undefined && { prefix: options.prefix })
   });
-  const key = options.key ?? defaultRatelimitKey;
+  const key = options.key;
 
   return async (c, next) => {
     const result = await limiter.check(await key(c));
@@ -101,10 +116,15 @@ export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
       c.header("Retry-After", String(retryAfterSeconds));
       return c.json({ error: "rate limit exceeded" }, 429);
     }
+    await next();
+    // After next(), not before: headers set before the handler runs land in
+    // Hono's prepared-header bag, which is dropped whenever a downstream
+    // handler assigns a fresh Response to c.res (beni's own cache() does that
+    // on every hit). Setting them on the finalized response instead makes the
+    // documented headers survive whatever the handler returned.
     c.header("X-RateLimit-Limit", String(result.limit));
     c.header("X-RateLimit-Remaining", String(result.remaining));
     c.header("X-RateLimit-Reset", String(Math.ceil(result.resetMs / 1000)));
-    await next();
   };
 }
 
@@ -135,17 +155,67 @@ type CacheEntry = {
 
 function defaultCacheKey(c: Context): string {
   const url = new URL(c.req.url);
-  return `${c.req.method}:${url.pathname}${url.search}`;
+  // The origin is part of the key: one app bound to several hostnames (a
+  // multi-tenant Worker, a wildcard-domain SaaS) must not share one entry per
+  // path across them, whichever host happens to warm it first.
+  return `${c.req.method}:${url.origin}${url.pathname}${url.search}`;
+}
+
+/**
+ * Response headers carried through into the stored entry. Everything else is
+ * dropped, but a replay has to keep telling downstream caches and clients the
+ * truth about these.
+ */
+const STORED_HEADERS = [
+  "content-type",
+  "cache-control",
+  "vary",
+  "etag",
+  "last-modified"
+];
+
+/** True when the response's own directives forbid a shared cache storing it. */
+function forbidsSharedStorage(res: Response): boolean {
+  const control = res.headers.get("cache-control");
+  if (control === null) return false;
+  for (const directive of control.split(",")) {
+    // `private` and `no-cache` can carry a field list (`private="set-cookie"`),
+    // so compare the directive name only.
+    const name = directive.split("=")[0]?.trim().toLowerCase();
+    if (name === "no-store" || name === "no-cache" || name === "private") {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when the response varies by something the cache key does not fold in. */
+function variesBeyondKey(res: Response, vary: readonly string[]): boolean {
+  const declared = res.headers.get("vary");
+  if (declared === null) return false;
+  const covered = new Set(vary.map((name) => name.toLowerCase()));
+  for (const name of declared.split(",")) {
+    const trimmed = name.trim().toLowerCase();
+    if (trimmed === "") continue;
+    // `Vary: *` means never reusable, whatever the key folds in.
+    if (trimmed === "*" || !covered.has(trimmed)) return true;
+  }
+  return false;
 }
 
 /**
  * Set by `session()` on its bag so `cache()` can tell whether the response it
- * is about to store was derived from session state. A module-local symbol, not
- * part of the public `Session` shape.
+ * is about to store was derived from session state, and so `getSession()` can
+ * mark the bag touched from the outside. Module-local symbols, not part of the
+ * public `Session` shape.
  */
 const SESSION_TOUCHED = Symbol("beni.hono.sessionTouched");
+const SESSION_TOUCH = Symbol("beni.hono.sessionTouch");
 
-type TouchTracked = { readonly [SESSION_TOUCHED]?: () => boolean };
+type TouchTracked = {
+  readonly [SESSION_TOUCHED]?: () => boolean;
+  readonly [SESSION_TOUCH]?: () => void;
+};
 
 /** True when the handler actually read or wrote the session on this request. */
 function sessionWasTouched(c: Context): boolean {
@@ -157,9 +227,11 @@ function sessionWasTouched(c: Context): boolean {
 /**
  * Read-through response caching as Hono middleware. `GET`/`HEAD` responses
  * are stored in Redis as `{ status, headers, body }` JSON (`SET PX ttlMs`)
- * and replayed on hit with an `X-Beni-Cache: hit` header. Other methods
- * pass straight through, as do error responses and anything carrying
- * `set-cookie`. Every Redis failure fails open — the request always runs.
+ * and replayed on hit with an `X-Beni-Cache: hit` header. Other methods pass
+ * straight through, as do ranged requests, anything but a plain `200`, and
+ * responses carrying `set-cookie`, a `no-store`/`no-cache`/`private`
+ * `Cache-Control`, or a `Vary` naming a header the key does not fold in.
+ * Every Redis failure fails open — the request always runs.
  *
  * The body is stored as text, so this is for text-ish responses (JSON, HTML),
  * not streaming or binary payloads.
@@ -193,6 +265,13 @@ export function cache(options: CacheOptions): MiddlewareHandler {
       await next();
       return;
     }
+    // Range is not part of the key, so a ranged request is uncacheable in
+    // both directions: its partial response must not be stored under the
+    // plain URL key, and a stored whole body is not what it asked for.
+    if (c.req.header("Range") !== undefined) {
+      await next();
+      return;
+    }
 
     let cacheKey = `${prefix}:${key(c)}`;
     for (const name of vary) {
@@ -218,7 +297,10 @@ export function cache(options: CacheOptions): MiddlewareHandler {
     await next();
 
     const res = c.res;
-    if (!res.ok || res.headers.get("set-cookie") !== null) return;
+    // Only a plain 200 is storable. Response.ok spans 200-299, which let a
+    // 206 built for someone else's Range header be stored under the plain URL
+    // key and replayed, Content-Range stripped, to clients that sent none.
+    if (res.status !== 200 || res.headers.get("set-cookie") !== null) return;
     // The set-cookie check alone is not enough to catch a per-user response.
     // A returning visitor already has their sid cookie, so session() sets no
     // Set-Cookie at all, and when session() is the outer middleware (the
@@ -227,11 +309,19 @@ export function cache(options: CacheOptions): MiddlewareHandler {
     // authenticated body gets stored under a key that does not vary by
     // session, then served to everyone else. Ask the session itself instead.
     if (sessionWasTouched(c)) return;
+    // The handler's own directives win over anything inferred here: no-store,
+    // no-cache, or private all say "not yours to share", and a Vary naming a
+    // header the key does not fold in says this body is not reusable as keyed.
+    if (forbidsSharedStorage(res) || variesBeyondKey(res, vary)) return;
     try {
-      const contentType = res.headers.get("content-type");
+      const headers: Record<string, string> = {};
+      for (const name of STORED_HEADERS) {
+        const value = res.headers.get(name);
+        if (value !== null) headers[name] = value;
+      }
       const entry: CacheEntry = {
         status: res.status,
-        headers: contentType ? { "content-type": contentType } : {},
+        headers,
         body: await res.clone().text()
       };
       await client.send([
@@ -262,6 +352,14 @@ export type Session = {
   delete(key: string): void;
   /** Remove every key; the stored record is deleted after the handler. */
   clear(): void;
+  /**
+   * Mint a fresh session id, keeping the current data. The record under the
+   * old id is deleted after the handler and a new `Set-Cookie` is issued.
+   * Call this on login and on any privilege change: it is what stops a
+   * session id an attacker planted in the browser from becoming the id the
+   * authenticated data lives under.
+   */
+  regenerate(): void;
   /** The session id (the cookie value). */
   readonly id: string;
   /** True when no existing session record backed this request. */
@@ -318,7 +416,8 @@ function readCookie(
  * the handler and persisted after it — but only when the handler actually
  * wrote something (`SET ... EX ttlSeconds`, so the TTL rolls on every write).
  * New sessions get a `crypto.randomUUID()` id and a `Set-Cookie` header;
- * `clear()` deletes the stored record.
+ * `clear()` deletes the stored record; `regenerate()` rotates the id (call it
+ * on login and on any privilege change).
  *
  * Values are `unknown` per key (`get<T>` is a convenience assertion) — for
  * typed data, reach for your beni schemas instead.
@@ -331,7 +430,9 @@ function readCookie(
  * const app = new Hono();
  * app.use("*", session({ client }));
  * app.post("/login", (c) => {
- *   getSession(c).set("userId", "u1");
+ *   const bag = getSession(c);
+ *   bag.regenerate();
+ *   bag.set("userId", "u1");
  *   return c.text("welcome");
  * });
  * ```
@@ -367,15 +468,21 @@ export function session(options: SessionOptions): MiddlewareHandler {
       }
     }
 
-    // An unknown sid gets a fresh id (never adopt an unverified cookie
-    // value as a session id — that would invite session fixation).
-    const isNew = id === undefined;
-    if (id === undefined) id = globalThis.crypto.randomUUID();
+    // An unknown sid gets a fresh id: adopting an unverified cookie value
+    // would let anyone pick their own key namespace. It is not on its own a
+    // fixation defence, since an attacker can always mint a real id first and
+    // plant that. `regenerate()` is what closes fixation.
+    const loadedId = id;
+    const isNew = loadedId === undefined;
+    let currentId = loadedId ?? globalThis.crypto.randomUUID();
+    // Ids abandoned by regenerate(), deleted after the handler.
+    const staleIds: string[] = [];
 
     let dirty = false;
     // Reads count too, not just writes: a handler that only *reads* the
     // session still produces a per-user response, which is what cache() has
-    // to know before it stores anything.
+    // to know before it stores anything. The id and isNew are accessors for
+    // the same reason - reading the identity is reading the session.
     let touched = false;
     const bag: Session = {
       get: <T = unknown>(key: string) => {
@@ -397,33 +504,64 @@ export function session(options: SessionOptions): MiddlewareHandler {
         data = {};
         dirty = true;
       },
-      id,
-      isNew
+      regenerate() {
+        touched = true;
+        // Only an id that actually backs a record needs deleting; one this
+        // request minted was never written.
+        if (currentId === loadedId) staleIds.push(currentId);
+        currentId = globalThis.crypto.randomUUID();
+        // The new id has to reach both Redis and the browser even if the
+        // handler writes nothing else.
+        dirty = true;
+      },
+      get id() {
+        touched = true;
+        return currentId;
+      },
+      get isNew() {
+        touched = true;
+        return isNew;
+      }
     };
     Object.defineProperty(bag, SESSION_TOUCHED, {
       value: () => touched,
+      enumerable: false
+    });
+    Object.defineProperty(bag, SESSION_TOUCH, {
+      value: () => {
+        touched = true;
+      },
       enumerable: false
     });
     c.set("session", bag);
 
     await next();
 
+    for (const stale of staleIds) {
+      await client.send(["DEL", `${prefix}:${stale}`]);
+    }
     if (!dirty) return;
-    const recordKey = `${prefix}:${id}`;
+    const recordKey = `${prefix}:${currentId}`;
     if (Object.keys(data).length === 0) {
-      if (!isNew) await client.send(["DEL", recordKey]);
+      if (currentId === loadedId) await client.send(["DEL", recordKey]);
       return;
     }
-    await client.send([
-      "SET",
-      recordKey,
-      JSON.stringify(data),
-      "EX",
-      ttlSeconds
-    ]);
-    if (isNew) {
+    const record = JSON.stringify(data);
+    // Writing back to the record this request loaded is conditional on it
+    // still being there. A concurrent logout may have deleted it while the
+    // handler ran, and an unconditional SET would resurrect the stale
+    // snapshot with a fresh full lifetime, re-authenticating the sid the user
+    // just logged out of. XX makes that write a no-op instead.
+    await client.send(
+      currentId === loadedId
+        ? ["SET", recordKey, record, "EX", ttlSeconds, "XX"]
+        : ["SET", recordKey, record, "EX", ttlSeconds]
+    );
+    // Whenever the browser is not already carrying this id: a brand new
+    // session, or one rotated by regenerate().
+    if (currentId !== sid) {
       const attributes = [
-        `${cookieName}=${id}`,
+        `${cookieName}=${currentId}`,
         `Path=${cookie.path ?? "/"}`,
         `SameSite=${cookie.sameSite ?? "Lax"}`
       ];
@@ -447,11 +585,15 @@ export function session(options: SessionOptions): MiddlewareHandler {
  * ```
  */
 export function getSession(c: Context): Session {
-  const bag = c.get("session") as Session | undefined;
+  const bag = c.get("session") as (Session & TouchTracked) | undefined;
   if (!bag) {
     throw new TypeError(
       "getSession(c) requires the session() middleware to run first"
     );
   }
+  // Reaching for the bag at all counts as a touch, so cache() stays safe
+  // however the handler uses it. Marking only on the members that exist today
+  // leaves the guard one new property away from being defeated again.
+  bag[SESSION_TOUCH]?.();
   return bag;
 }
