@@ -1,5 +1,6 @@
 import {
   describeReply,
+  PartialRecordError,
   ReplyShapeError,
   replyShapeError,
   ValidationError
@@ -203,11 +204,15 @@ export type PartialHashOutput<TFields extends FieldCodecs> = {
   [K in keyof TFields]?: InferHashOutput<TFields>[K];
 };
 
+// Optional, not required: HMGET/HGETEX/HGETDEL fill only the field names the
+// call actually asked for, and a caller can pass a narrowed subset of the union
+// at runtime. Declaring every member of TField as a present key promised data
+// the reply need not contain.
 export type PickedHashOutput<
   TFields extends FieldCodecs,
   TField extends keyof TFields & string
 > = {
-  [K in TField]: InferHashOutput<TFields>[K] | null;
+  [K in TField]?: InferHashOutput<TFields>[K] | null;
 };
 
 function expectNumberArray(reply: RedisReply, command: string): number[] {
@@ -389,7 +394,9 @@ export function createHashStore<
     // sees a record with no expiry, and a connection lost in the same window
     // leaves one that never expires at all. MULTI/EXEC closes both. Every
     // adapter implements transaction(); the fallback is for a custom client
-    // that does not, which is no worse off than before.
+    // that does not, which is no worse off than before. On a session holding
+    // a WATCH the facade degrades this back to a pipeline rather than let an
+    // EXEC clear the caller's watch set (see createBeniSession).
     const replies =
       options.ttlSeconds === undefined
         ? await client.pipeline(commands)
@@ -446,9 +453,14 @@ export function createHashStore<
       (_, index) => typeof reply[index] !== "string"
     );
     if (missing.length > 0) {
-      throw new ReplyShapeError(
+      // Not a shape violation: the reply is well formed and the record is
+      // simply incomplete, which per-field TTLs make an ordinary outcome. A
+      // dedicated class lets a caller tell the two apart, and it still extends
+      // ReplyShapeError so existing handling keeps working.
+      throw new PartialRecordError(
         `Hash ${schema.key(id)} is missing declared field(s): ${missing.join(", ")}`,
-        reply
+        reply,
+        missing
       );
     }
 
@@ -547,7 +559,17 @@ export function createHashStore<
       fields: readonly TField[],
       expiry?: ExpiryOptions
     ): Promise<PickedHashOutput<TFields, TField>> {
-      if (fields.length === 0) return {} as PickedHashOutput<TFields, TField>;
+      if (fields.length === 0) {
+        // HGETEX ... FIELDS 0 is a server error, so an empty read short
+        // circuits. An expiry is a write, though: dropping it silently would
+        // leave a computed-field-list caller believing the TTLs moved.
+        if (expiry !== undefined) {
+          throw new ValidationError(
+            "hgetex was given an expiry but no fields; the expiry would be silently dropped"
+          );
+        }
+        return {} as PickedHashOutput<TFields, TField>;
+      }
       const codecsByField = fields.map(
         (field) => [field, fieldCodec(field)] as const
       );
@@ -626,7 +648,17 @@ export function createHashStore<
       }
       const pairs: RedisCommandArgument[] = [];
       for (const field of fields) {
-        pairs.push(field, fieldCodec(field).encode(values[field]));
+        const value = values[field];
+        // Partial<Input> admits an explicit undefined unless the caller runs
+        // exactOptionalPropertyTypes, and the permissive codecs encode it:
+        // string()/enumOf() write "undefined", boolean() writes "0". Refuse
+        // rather than corrupt the field with `{ active: form.active }`.
+        if (value === undefined) {
+          throw new ValidationError(
+            `hsetex received undefined for field '${field}'; omit the key to leave the field unchanged, or hdel to remove it`
+          );
+        }
+        pairs.push(field, fieldCodec(field).encode(value));
       }
       const reply = await client.send([
         "HSETEX",

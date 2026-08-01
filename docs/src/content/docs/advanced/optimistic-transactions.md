@@ -99,6 +99,8 @@ redis.watch(keys, body, {
 
 `onAbort` fires on every conflict, so you can watch contention with metrics before it becomes an incident. `backoff` is opt-in: there is no hidden default sleep. `session` lets a hot path reuse one connection across many `redis.watch` calls; the helper closes only sessions it opened itself.
 
+`WATCH` belongs to the connection, so two `redis.watch` calls sharing one borrowed session cannot run at the same time: the second waits for the first to reach its `EXEC`. Reuse a session to save connections on a hot path, and open separate sessions when you want the watches to overlap.
+
 ## Abort, Opt-Out, And Exhaustion
 
 Three distinct outcomes, three distinct signals:

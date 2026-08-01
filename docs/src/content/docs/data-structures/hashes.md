@@ -106,6 +106,15 @@ const wrote = await redis.hash(users).hsetex(
 const removed = await redis.hash(users).hgetdel("42", ["name", "score"]);
 ```
 
+`hsetex` writes only the fields you pass, and it rejects a field whose value is `undefined` rather than storing the string `"undefined"`: omit the key to leave that field alone. `hgetex` with an empty field list rejects too when you pass an expiry, because there is no field to apply it to.
+
+A lapsed field TTL leaves the hash partially populated, and so does `hdel` or `hgetdel` on a declared field. The whole-record read `hget("42")` needs every declared field and throws when one has gone; `hgetall` is the tolerant read for records with per-field TTLs:
+
+```ts
+const partial = await redis.hash(users).hgetall("42");
+//    ^? { name?: string; score?: number } | null
+```
+
 ## Delete Fields Or The Hash
 
 `hdel` takes one field or an array and returns the count removed:

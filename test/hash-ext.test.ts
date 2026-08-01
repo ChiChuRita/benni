@@ -603,9 +603,9 @@ type PersistFieldsValue = Awaited<ReturnType<typeof typedStore.hpersist>>;
 type _GetAllValue = Expect<
   Equal<GetAllValue, { name?: string; score?: number } | null>
 >;
-type _GetNameValue = Expect<Equal<GetNameValue, { name: string | null }>>;
+type _GetNameValue = Expect<Equal<GetNameValue, { name?: string | null }>>;
 type _GetBothValue = Expect<
-  Equal<GetBothValue, { name: string | null; score: number | null }>
+  Equal<GetBothValue, { name?: string | null; score?: number | null }>
 >;
 type _FieldNamesValue = Expect<Equal<FieldNamesValue, string[]>>;
 type _SizeValue = Expect<Equal<SizeValue, number>>;
@@ -627,10 +627,10 @@ type SetFieldsExResult = Awaited<ReturnType<typeof typedStore.hsetex>>;
 type SetFieldsExValues = Parameters<typeof typedStore.hsetex>[1];
 
 type _GetFieldsExValue = Expect<
-  Equal<GetFieldsExValue, { name: string | null }>
+  Equal<GetFieldsExValue, { name?: string | null }>
 >;
 type _GetDelFieldsValue = Expect<
-  Equal<GetDelFieldsValue, { name: string | null; score: number | null }>
+  Equal<GetDelFieldsValue, { name?: string | null; score?: number | null }>
 >;
 type _FieldExpireTimeValue = Expect<Equal<FieldExpireTimeValue, number>>;
 type _SetFieldsExResult = Expect<Equal<SetFieldsExResult, boolean>>;

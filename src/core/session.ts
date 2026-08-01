@@ -129,6 +129,10 @@ export function createBeniSession(
 ): BeniSessionKernel {
   let closed = false;
   let tail: Promise<void> = Promise.resolve();
+  // WATCH state is connection-wide, so the facade has to know when one is
+  // armed: EXEC drops every watched key, and a store batching two commands
+  // through transaction() must not do that to the caller's watch.
+  let watchArmed = false;
 
   function run<T>(task: () => Promise<T>): Promise<T> {
     if (closed) return Promise.reject(new SessionClosedError());
@@ -148,27 +152,36 @@ export function createBeniSession(
     await raw.close();
   }
 
+  function pipeline(commands: readonly RedisCommand[]): Promise<RedisReply[]> {
+    return run(async () => {
+      // Fire without awaiting so the batch is written contiguously in
+      // invocation order (the contract's ordered-dispatch clause).
+      const settled = await Promise.allSettled(
+        commands.map((command) => raw.send(command))
+      );
+      return settled.map((entry) => {
+        if (entry.status === "rejected") throw entry.reason;
+        return entry.value;
+      });
+    });
+  }
+
   const client: RedisClient = {
     send(command) {
       return run(() => raw.send(command));
     },
-    pipeline(commands) {
-      return run(async () => {
-        // Fire without awaiting so the batch is written contiguously in
-        // invocation order (the contract's ordered-dispatch clause).
-        const settled = await Promise.allSettled(
-          commands.map((command) => raw.send(command))
-        );
-        return settled.map((entry) => {
-          if (entry.status === "rejected") throw entry.reason;
-          return entry.value;
-        });
-      });
-    },
+    pipeline,
     transaction(commands) {
       // Preserve redis.multi()'s empty short-circuit without ever sending a
       // zero-command watched EXEC (contract: core never does).
       if (commands.length === 0) return Promise.resolve([]);
+      // A session-bound store reaches this for an internal batch it wants
+      // atomic — hset(id, value, { ttlSeconds }) is HSET + EXPIRE. Sending
+      // MULTI/EXEC on a connection that holds a WATCH would clear the watch
+      // set, so the caller's optimistic transaction would commit over a
+      // concurrent write instead of aborting. Losing the batch's atomicity
+      // is the far smaller harm, so degrade to the ordered pipeline.
+      if (watchArmed) return pipeline(commands);
       return run(async () => {
         const replies = await raw.watchedTransaction(commands);
         if (replies === null) {
@@ -189,6 +202,10 @@ export function createBeniSession(
         throw new ValidationError("watch requires at least one key");
       }
       assertSameSlot?.("WATCH", keys);
+      // Arm before dispatch: transaction() reads the flag when it is called,
+      // which can be while an unawaited WATCH is still queued. Staying armed
+      // after a failed WATCH only costs a batch its atomicity.
+      watchArmed = true;
       await run(async () => {
         const reply = await raw.send(["WATCH", ...keys]);
         if (reply !== "OK") {
@@ -202,13 +219,22 @@ export function createBeniSession(
         if (reply !== "OK") {
           throw replyShapeError("UNWATCH", "OK", reply);
         }
+        watchArmed = false;
       });
     },
     multi() {
       return createWatchedTransaction(kernel, assertSameSlot);
     },
     watchedTransaction(commands) {
-      return run(() => raw.watchedTransaction(commands));
+      return run(async () => {
+        try {
+          return await raw.watchedTransaction(commands);
+        } finally {
+          // EXEC drops the watch set whether it committed or aborted, and a
+          // send that failed outright leaves a session no one can trust.
+          watchArmed = false;
+        }
+      });
     },
     raw,
     get closed() {
@@ -230,6 +256,30 @@ export type WatchSession = {
   close(): Promise<void>;
 };
 
+/** Per-session FIFO queue of WATCH windows; see acquireWatchWindow. */
+const watchWindows = new WeakMap<WatchSession, Promise<void>>();
+
+/**
+ * WATCH belongs to the connection, not to the call: two watch windows running
+ * at once on one borrowed session would each see the other's watched keys and
+ * be disarmed by the other's EXEC — a spurious abort for one, a lost update
+ * for the other. So a window owns its session from WATCH to EXEC and the next
+ * one queues behind it. Owned sessions never contend.
+ */
+async function acquireWatchWindow(session: WatchSession): Promise<() => void> {
+  const queued = watchWindows.get(session) ?? Promise.resolve();
+  let release!: () => void;
+  const window = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  watchWindows.set(
+    session,
+    queued.then(() => window)
+  );
+  await queued;
+  return release;
+}
+
 export type RunWatchOptions<TSession extends WatchSession> = {
   /** Total attempts, default 5, >= 1. */
   readonly attempts?: number;
@@ -248,7 +298,8 @@ export type RunWatchOptions<TSession extends WatchSession> = {
  * body is an opt-out — UNWATCH and resolve null. A thrown body UNWATCHes
  * best-effort and rethrows. Exhausted attempts throw
  * WatchRetriesExceededError. Owned sessions close in finally on every
- * path; borrowed sessions are never closed.
+ * path; borrowed sessions are never closed but are held exclusively for the
+ * length of each window, so concurrent watches on one session queue up.
  */
 export async function runWatch<
   TSession extends WatchSession,
@@ -279,36 +330,44 @@ export async function runWatch<
   }
   try {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      await session.watch(keyList);
-      let transaction: WatchedRedisTransaction<TResults> | null;
-      try {
-        transaction = await body(session);
-      } catch (error) {
-        try {
-          await session.unwatch();
-        } catch {
-          // Best-effort: the body's error is the one worth surfacing.
-        }
-        throw error;
-      }
-      if (transaction === null) {
-        await session.unwatch();
-        return null;
-      }
+      // Hold the session for the whole window; the backoff sleep below is
+      // outside it, so a queued window is not blocked by another's retries.
+      const releaseWindow = await acquireWatchWindow(session);
       let results: TResults | null;
       try {
-        results = await transaction.exec();
-      } catch (error) {
-        // A client-side exec() throw (e.g. the empty-transaction guard) never
-        // sent EXEC, so the WATCH stays armed on this — possibly borrowed —
-        // session, and a later multi() would see phantom conflicts. UNWATCH
-        // after a real EXEC is a harmless no-op, so always clean up.
+        await session.watch(keyList);
+        let transaction: WatchedRedisTransaction<TResults> | null;
         try {
-          await session.unwatch();
-        } catch {
-          // Best-effort: the exec error is the one worth surfacing.
+          transaction = await body(session);
+        } catch (error) {
+          try {
+            await session.unwatch();
+          } catch {
+            // Best-effort: the body's error is the one worth surfacing.
+          }
+          throw error;
         }
-        throw error;
+        if (transaction === null) {
+          await session.unwatch();
+          return null;
+        }
+        try {
+          results = await transaction.exec();
+        } catch (error) {
+          // A client-side exec() throw (e.g. the empty-transaction guard)
+          // never sent EXEC, so the WATCH stays armed on this — possibly
+          // borrowed — session, and a later multi() would see phantom
+          // conflicts. UNWATCH after a real EXEC is a harmless no-op, so
+          // always clean up.
+          try {
+            await session.unwatch();
+          } catch {
+            // Best-effort: the exec error is the one worth surfacing.
+          }
+          throw error;
+        }
+      } finally {
+        releaseWindow();
       }
       if (results !== null) return results;
       options.onAbort?.({ attempt });
