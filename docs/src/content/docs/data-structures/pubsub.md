@@ -58,7 +58,7 @@ To tear everything down at once (on shutdown, or between tests), use `close`:
 await redis.pubsub.close();
 ```
 
-That drops every subscription and closes the leased connection. Publishing keeps working afterwards, and a later `subscribe` simply leases a fresh connection.
+That drops every subscription and closes the leased connection. It also ends any `stream()` loop that is still running, including one you started without a signal, so a shutdown path can await its consumers. Publishing keeps working afterwards, and a later `subscribe` simply leases a fresh connection.
 
 ## Patterns
 

@@ -120,24 +120,48 @@ function runHandler(
   }
 }
 
+/**
+ * Pattern support is optional on the subscriber contract, so resolve it
+ * against the connection the attach actually runs on rather than against a
+ * subscriber captured earlier, which a teardown may since have replaced.
+ */
+function patternOps(subscriber: RedisSubscriber) {
+  if (!subscriber.psubscribe || !subscriber.punsubscribe) {
+    throw new TypeError(
+      "Pub/Sub pattern subscribe is not supported by this adapter; subscribe to individual channels instead."
+    );
+  }
+  return {
+    psubscribe: subscriber.psubscribe.bind(subscriber),
+    punsubscribe: subscriber.punsubscribe.bind(subscriber)
+  };
+}
+
 async function* iterate<T>(
   open: (push: (value: T) => void) => Promise<PubSubSubscription>,
+  live: Set<() => void>,
   signal?: AbortSignal
 ): AsyncGenerator<T, void, undefined> {
   if (signal?.aborted) return;
   const queue: T[] = [];
   let wake: (() => void) | null = null;
   let done = false;
+  let subscription: PubSubSubscription | null = null;
   const stop = () => {
     done = true;
     wake?.();
   };
+  // Both registrations happen before the open and are undone by the finally
+  // below: an open that rejects used to escape before the try was entered,
+  // leaving the abort listener — and the whole dead generator closure with
+  // it — attached to a long-lived signal for good.
   signal?.addEventListener("abort", stop, { once: true });
-  const subscription = await open((value) => {
-    queue.push(value);
-    wake?.();
-  });
+  live.add(stop);
   try {
+    subscription = await open((value) => {
+      queue.push(value);
+      wake?.();
+    });
     while (true) {
       if (queue.length > 0) {
         yield queue.shift() as T;
@@ -153,7 +177,8 @@ async function* iterate<T>(
     }
   } finally {
     signal?.removeEventListener("abort", stop);
-    await subscription.unsubscribe();
+    live.delete(stop);
+    await subscription?.unsubscribe();
   }
 }
 
@@ -171,10 +196,27 @@ export function createPubSubHub(
 ) {
   const channels = new Map<string, Set<Fan>>();
   const patterns = new Map<string, Set<Fan>>();
-  /** In-flight attaches, keyed by channel/pattern name; see `add`. */
+  /** In-flight attaches, keyed by kind and name; see `add`. */
   const attaching = new Map<string, Promise<Set<Fan>>>();
+  /** In-flight teardowns, same keys: an attach queues behind one. */
+  const detaching = new Map<string, Promise<void>>();
+  /** Live stream() consumers, so close() can wake them; see `iterate`. */
+  const streaming = new Set<() => void>();
   let leased: RedisSubscriber | null = null;
   let leasing: Promise<RedisSubscriber> | null = null;
+  /** Subscribes that have not published their map entry yet. */
+  let subscribing = 0;
+  /** Bumped by close(); a subscribe from an older epoch has lost its hub. */
+  let epoch = 0;
+
+  /** Throws when close() ran since `era` was captured. */
+  function assertLive(era: number): void {
+    if (era !== epoch) {
+      throw new Error(
+        "The pub/sub hub was closed while this subscription was still being established."
+      );
+    }
+  }
 
   async function acquire(): Promise<RedisSubscriber> {
     if (leased && !leased.closed) return leased;
@@ -199,7 +241,11 @@ export function createPubSubHub(
   }
 
   async function releaseIfIdle(): Promise<void> {
-    if (channels.size > 0 || patterns.size > 0) return;
+    // A subscribe that has not published its map entry yet still owns the
+    // lease. Measuring idleness from the maps alone let any overlapping
+    // unsubscribe close the connection under an in-flight SUBSCRIBE, and the
+    // caller was handed a subscription that received nothing forever.
+    if (subscribing > 0 || channels.size > 0 || patterns.size > 0) return;
     const subscriber = leased;
     leased = null;
     if (subscriber && !subscriber.closed) await subscriber.close();
@@ -210,58 +256,103 @@ export function createPubSubHub(
   }
 
   async function add(
-    map: Map<string, Set<Fan>>,
+    kind: "channel" | "pattern",
     name: string,
     fan: Fan,
     attach: (subscriber: RedisSubscriber, set: Set<Fan>) => Promise<void>,
     detach: (subscriber: RedisSubscriber) => Promise<void>
   ): Promise<PubSubSubscription> {
-    const subscriber = await acquire();
-    let set = map.get(name);
-    if (!set) {
-      // Join an attach already in flight instead of treating a published map
-      // entry as proof that SUBSCRIBE was acknowledged. Publishing the set
-      // before awaiting attach let a second concurrent caller resolve against
-      // an unacked subscription: if the first caller's SUBSCRIBE then failed,
-      // it tore the entry and the leased connection down, and the second held
-      // a subscription that looked live, received nothing forever, and whose
-      // unsubscribe() silently no-oped. Mirrors how `leasing` guards acquire().
-      const pending = attaching.get(name);
-      if (pending) {
-        set = await pending;
-      } else {
-        const fresh = new Set<Fan>();
-        const inFlight = (async () => {
+    const map = kind === "channel" ? channels : patterns;
+    // The kind is part of the key: a channel and a pattern that spell the
+    // same string are different subscriptions, and sharing one in-flight
+    // attach between them wired the pattern handler to literal traffic with
+    // no PSUBSCRIBE ever issued and no way to unsubscribe it again.
+    const key = `${kind}:${name}`;
+    const era = epoch;
+    subscribing += 1;
+    try {
+      const subscriber = await acquire();
+      assertLive(era);
+      let set = map.get(name);
+      if (!set) {
+        // Join an attach already in flight instead of treating a published map
+        // entry as proof that SUBSCRIBE was acknowledged. Publishing the set
+        // before awaiting attach let a second concurrent caller resolve against
+        // an unacked subscription: if the first caller's SUBSCRIBE then failed,
+        // it tore the entry and the leased connection down, and the second held
+        // a subscription that looked live, received nothing forever, and whose
+        // unsubscribe() silently no-oped. Mirrors how `leasing` guards acquire().
+        const pending = attaching.get(key);
+        if (pending) {
+          set = await pending;
+        } else {
+          const fresh = new Set<Fan>();
+          let inFlight: Promise<Set<Fan>> | null = null;
+          inFlight = (async () => {
+            try {
+              // A teardown for this same name may still be on the wire.
+              // Issuing SUBSCRIBE over it lets the server apply the stale
+              // UNSUBSCRIBE last, and some clients coalesce the pair away
+              // entirely: either way the caller ends up attached to nothing.
+              await detaching.get(key)?.catch(() => undefined);
+              await attach(subscriber, fresh);
+              assertLive(era);
+              if (subscriber.closed) {
+                throw new Error(
+                  "The pub/sub connection was lost before SUBSCRIBE was acknowledged."
+                );
+              }
+              map.set(name, fresh);
+              return fresh;
+            } finally {
+              // close() evicts in-flight attaches, so only ever delete the
+              // entry this attach still owns.
+              if (attaching.get(key) === inFlight) attaching.delete(key);
+            }
+          })();
+          attaching.set(key, inFlight);
+          set = await inFlight;
+        }
+      }
+      set.add(fan);
+      let active = true;
+      return {
+        async unsubscribe() {
+          if (!active) return;
+          active = false;
+          const current = map.get(name);
+          if (!current) return;
+          current.delete(fan);
+          if (current.size > 0) return;
+          map.delete(name);
+          // Publish the teardown before awaiting it so a subscribe for the
+          // same name queues behind it instead of racing it on the wire.
+          const teardown = (async () => {
+            try {
+              if (leased && !leased.closed) await detach(leased);
+            } finally {
+              // The lease has to be released even when UNSUBSCRIBE rejects.
+              // On a connection that has already died the detach always
+              // rejects, and letting that skip the release left the dead
+              // subscriber cached as the hub's lease.
+              await releaseIfIdle();
+            }
+          })();
+          detaching.set(key, teardown);
           try {
-            await attach(subscriber, fresh);
-            map.set(name, fresh);
-            return fresh;
-          } catch (error) {
-            await releaseIfIdle();
-            throw error;
+            await teardown;
           } finally {
-            attaching.delete(name);
+            if (detaching.get(key) === teardown) detaching.delete(key);
           }
-        })();
-        attaching.set(name, inFlight);
-        set = await inFlight;
-      }
+        }
+      };
+    } finally {
+      subscribing -= 1;
+      // Whether we attached or threw: an unsubscribe that overlapped us left
+      // the lease alone because we held it, and a failed attach may have been
+      // the only thing keeping it open.
+      await releaseIfIdle();
     }
-    set.add(fan);
-    let active = true;
-    return {
-      async unsubscribe() {
-        if (!active) return;
-        active = false;
-        const current = map.get(name);
-        if (!current) return;
-        current.delete(fan);
-        if (current.size > 0) return;
-        map.delete(name);
-        if (leased && !leased.closed) await detach(leased);
-        await releaseIfIdle();
-      }
-    };
   }
 
   function subscribeChannel<TOutput>(
@@ -271,7 +362,7 @@ export function createPubSubHub(
     const fan: Fan = (message) =>
       runHandler(() => handler(channel.decode(message)), onError);
     return add(
-      channels,
+      "channel",
       channel.name,
       fan,
       (subscriber, set) =>
@@ -282,30 +373,21 @@ export function createPubSubHub(
     );
   }
 
-  async function subscribePattern<TOutput>(
+  function subscribePattern<TOutput>(
     pattern: PubSubPattern<TOutput>,
     handler: PubSubPatternHandler<TOutput>
   ): Promise<PubSubSubscription> {
-    const subscriber = await acquire();
-    if (!subscriber.psubscribe || !subscriber.punsubscribe) {
-      await releaseIfIdle();
-      throw new TypeError(
-        "Pub/Sub pattern subscribe is not supported by this adapter; subscribe to individual channels instead."
-      );
-    }
-    const psubscribe = subscriber.psubscribe.bind(subscriber);
-    const punsubscribe = subscriber.punsubscribe.bind(subscriber);
     const fan: Fan = (message, channel) =>
       runHandler(() => handler(pattern.decode(message), channel), onError);
     return add(
-      patterns,
+      "pattern",
       pattern.pattern,
       fan,
-      (_, set) =>
-        psubscribe(pattern.pattern, (message, channel) =>
+      (subscriber, set) =>
+        patternOps(subscriber).psubscribe(pattern.pattern, (message, channel) =>
           deliver(set, message, channel)
         ),
-      () => punsubscribe(pattern.pattern)
+      (subscriber) => patternOps(subscriber).punsubscribe(pattern.pattern)
     );
   }
 
@@ -318,6 +400,7 @@ export function createPubSubHub(
     ): AsyncGenerator<TOutput, void, undefined> {
       return iterate<TOutput>(
         (push) => subscribeChannel(channel, (message) => push(message)),
+        streaming,
         options.signal
       );
     },
@@ -330,13 +413,25 @@ export function createPubSubHub(
           subscribePattern(pattern, (message, channel) =>
             push({ message, channel })
           ),
+        streaming,
         options.signal
       );
     },
     /** Drop every subscription and close the leased connection. */
     async close(): Promise<void> {
+      epoch += 1;
+      // A parked stream() consumer is woken by its own signal or by us and by
+      // nothing else, so without this its `for await` never returns and the
+      // generator's finally, the only thing that releases its subscription,
+      // never runs.
+      for (const stop of [...streaming]) stop();
       channels.clear();
       patterns.clear();
+      // In-flight attaches are evicted rather than awaited: the epoch check
+      // stops them publishing, and an entry left behind here would wedge
+      // every later subscribe to that name on a promise this hub no longer
+      // owns and may never see settle.
+      attaching.clear();
       // A lease still being established is not in `leased` yet, so
       // releaseIfIdle would find nothing to close and the connection would
       // outlive close() — a leak for anyone who closes while the very first
