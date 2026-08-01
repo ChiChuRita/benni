@@ -173,9 +173,11 @@ describe("cache", () => {
 
   it("on a miss, takes the fill lock, loads once, and writes with PX", async () => {
     const commands: RedisCommand[] = [];
-    // GET miss, lock SET OK, double-check GET miss, SET value, SCRIPT LOAD, EVALSHA release
+    // GET miss, lock SET OK, double-check GET miss, then two scripts: the
+    // fenced publish (which writes the value only while we still hold the
+    // lease) and the release. Each is a SCRIPT LOAD plus an EVALSHA.
     const store = cache<{ n: number }>(
-      fakeClient(commands, [null, "OK", null, "OK", "sha1", 1]),
+      fakeClient(commands, [null, "OK", null, "sha1", 1, "sha2", 1]),
       { ttlMs: 60_000 }
     );
     let loads = 0;
@@ -191,14 +193,18 @@ describe("cache", () => {
       "GET",
       "SET", // fill lock (cache:lock:{a} NX PX)
       "GET", // double-check
-      "SET", // the value
+      "SCRIPT",
+      "EVALSHA", // fenced publish of the value
       "SCRIPT",
       "EVALSHA" // lock release
     ]);
     const lockSet = commands[1];
     expect(lockSet?.[1]).toBe("cache:lock:{a}");
-    const valueSet = commands[3];
-    expect(valueSet).toEqual(["SET", "cache:{a}", '{"n":2}', "PX", 60_000]);
+    // The publish carries both keys and the value, so the script can refuse to
+    // write when the lease has moved on.
+    const publish = commands[4];
+    expect(publish?.slice(2, 5)).toEqual([2, "cache:{a}", "cache:lock:{a}"]);
+    expect(publish?.[6]).toBe('{"n":2}');
   });
 
   it("skips the loader when the double-check hits, and still releases", async () => {
@@ -262,10 +268,13 @@ describe("cache", () => {
     await expect(store.get("a", () => "self-loaded")).resolves.toBe(
       "self-loaded"
     );
+    // A loader that never held the lease publishes with NX, so it can seed an
+    // empty key but can never overwrite a value someone else just filled in.
     expect(commands.at(-1)).toEqual([
       "SET",
       "cache:{a}",
       '"self-loaded"',
+      "NX",
       "PX",
       60_000
     ]);
@@ -273,9 +282,10 @@ describe("cache", () => {
 
   it("peek reads without loading and set/del round-trip", async () => {
     const commands: RedisCommand[] = [];
-    const store = cache<string>(fakeClient(commands, ['"v"', null, "OK", 1]), {
-      ttlMs: 5_000
-    });
+    const store = cache<string>(
+      fakeClient(commands, ['"v"', null, "OK", "sha1", 1]),
+      { ttlMs: 5_000 }
+    );
 
     await expect(store.peek("a")).resolves.toBe("v");
     await expect(store.peek("missing")).resolves.toBeNull();
@@ -283,7 +293,14 @@ describe("cache", () => {
     await expect(store.del("a")).resolves.toBe(1);
 
     expect(commands[2]).toEqual(["SET", "cache:{a}", '"w"', "PX", 5_000]);
-    expect(commands[3]).toEqual(["DEL", "cache:{a}"]);
+    // del is a script: it drops the fill lock alongside the value so an
+    // in-flight loader cannot republish what was just invalidated.
+    expect(commands[4]?.[0]).toBe("EVALSHA");
+    expect(commands[4]?.slice(2, 5)).toEqual([
+      2,
+      "cache:{a}",
+      "cache:lock:{a}"
+    ]);
   });
 
   it("rejects non-positive ttl, lock ttl, and poll intervals", () => {

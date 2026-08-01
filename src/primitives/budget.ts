@@ -4,6 +4,12 @@ import type { RedisClient } from "../core/types.js";
 
 const DEFAULT_PREFIX = "budget";
 const DEFAULT_HOLD_TTL_MS = 120_000;
+const DEFAULT_MAX_HOLDS = 10_000;
+/**
+ * How many times to re-run against the bucket the server named before giving
+ * up. Two is normally plenty; a third covers a process descheduled twice.
+ */
+const BUCKET_ATTEMPTS = 3;
 
 /**
  * Shared Lua preamble: server time, the two window buckets, and the amount
@@ -52,6 +58,27 @@ for i = 1, #holds do
   end
 end
 local used = spent + held
+-- How long until used decays to limit - cost. Only the PREVIOUS bucket
+-- decays, at previous/window per ms; the bucket roll itself frees nothing,
+-- because the two-bucket estimate is continuous across it. Reporting the time
+-- to that roll sent callers back at a moment guaranteed to fail, and on the
+-- other side of the roll it overstated the wait by orders of magnitude.
+local function retryAfter(limit, cost)
+  local deficit = used + cost - limit
+  if deficit <= 0 then return 0 end
+  if previous > 0 and deficit <= previous * (window - elapsed) / window then
+    return math.ceil(deficit * window / previous)
+  end
+  -- Not before the roll, so wait it out and then let the current bucket decay
+  -- in its turn, once it is the previous one.
+  local rest = current + held + cost - limit
+  if current > 0 and rest <= current then
+    return math.ceil(window - elapsed + rest * window / current)
+  end
+  -- Live holds, not spend, are what is in the way. They lapse on their own
+  -- lease, which no amount of window decay can predict, so cap the estimate.
+  return 2 * window - elapsed
+end
 `;
 
 type BudgetReply = {
@@ -88,7 +115,7 @@ const chargeScript = defineScript<
 local limit = tonumber(ARGV[3])
 local cost = tonumber(ARGV[4])
 if used + cost > limit then
-  return {0, bucket, math.max(0, math.floor(limit - used)), window - elapsed}
+  return {0, bucket, math.max(0, math.floor(limit - used)), retryAfter(limit, cost)}
 end
 redis.call("INCRBY", KEYS[1], cost)
 redis.call("PEXPIRE", KEYS[1], window * 2)
@@ -105,7 +132,8 @@ const reserveScript = defineScript<
     limit: string,
     estimate: string,
     token: string,
-    holdTtlMs: string
+    holdTtlMs: string,
+    maxHolds: string
   ],
   BudgetReply
 >({
@@ -114,9 +142,22 @@ const reserveScript = defineScript<
 local limit = tonumber(ARGV[3])
 local estimate = tonumber(ARGV[4])
 if used + estimate > limit then
-  return {0, bucket, math.max(0, math.floor(limit - used)), window - elapsed}
+  return {0, bucket, math.max(0, math.floor(limit - used)), retryAfter(limit, estimate)}
 end
-redis.call("ZADD", KEYS[3], now + tonumber(ARGV[6]), ARGV[5] .. ":" .. estimate)
+if redis.call("ZCARD", KEYS[3]) >= tonumber(ARGV[7]) then
+  -- Shed load rather than grow the set the preamble walks on every call. The
+  -- limit normally bounds how many holds can be live at once, but an estimate
+  -- of 0 consumes no headroom, so nothing else bounds it. These holds free on
+  -- their own leases, so report when the earliest one lapses.
+  local first = redis.call("ZRANGE", KEYS[3], 0, 0, "WITHSCORES")
+  local wait = 0
+  if first[2] then wait = math.max(0, math.ceil(tonumber(first[2]) - now)) end
+  return {0, bucket, math.max(0, math.floor(limit - used)), wait}
+end
+-- ARGV[4] verbatim, never the Lua number: Lua formats with %.14g, so an
+-- estimate of 1e14 or more was stored as "1e+14" while extend() looked for
+-- the digits, and the heartbeat could never find its own hold.
+redis.call("ZADD", KEYS[3], now + tonumber(ARGV[6]), ARGV[5] .. ":" .. ARGV[4])
 -- Expire the set when its LAST hold does. Keying it to the window instead
 -- would silently drop live holds whenever holdTtlMs outlives window * 2, and
 -- the budget would re-admit spend that is still in flight.
@@ -138,23 +179,40 @@ return {1, bucket, math.max(0, math.floor(limit - used - estimate)), 0}
  * - **A settle whose hold already lapsed** must still charge. The money was
  *   spent; a budget that forgets real spend is not a budget.
  *
- * So settling replaces the hold with a `<token>:settled` tombstone that
- * expires when the hold would have. It parses as no amount, so it stops
- * counting against the budget immediately. A second settle inside that window
- * finds the tombstone and skips. A settle after the window charges, which is
- * the lapsed-lease case, and is why `extend()` exists.
+ * So the first settle for a token claims a marker key (KEYS[4], `SET NX PX
+ * holdTtlMs`) and any settle that finds the marker already claimed charges
+ * nothing. A settle after the marker expires charges, which is the
+ * lapsed-lease case, and is why `extend()` exists.
+ *
+ * The marker is a key of its own rather than a tombstone in the reservation
+ * set, so settle-once costs nothing on the scan that every charge and check
+ * pays: the set stays bounded by concurrency, not by call volume.
+ *
+ * Deduplicating on the server rather than on the handle is what makes a lost
+ * reply safe. A settle whose reply never came back is indistinguishable from
+ * one that never ran, so the caller has to be able to retry it, and only
+ * Redis knows whether the first attempt applied.
  */
 const settleScript = defineScript<
-  readonly [windowMs: string, bucket: string, token: string, actual: string],
+  readonly [
+    windowMs: string,
+    bucket: string,
+    token: string,
+    actual: string,
+    holdTtlMs: string
+  ],
   BudgetReply
 >({
-  keyCount: 3,
+  keyCount: 4,
   lua: `
 local t = redis.call("TIME")
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local window = tonumber(ARGV[1])
 local bucket = math.floor(now / window)
 if bucket ~= tonumber(ARGV[2]) then return {-1, bucket, 0, 0} end
+if redis.call("SET", KEYS[4], "1", "PX", ARGV[5], "NX") == false then
+  return {1, bucket, 0, 0}
+end
 local prefix = ARGV[3] .. ":"
 local holds = redis.call("ZRANGE", KEYS[3], 0, -1)
 for i = 1, #holds do
@@ -222,7 +280,9 @@ const checkScript = defineScript<
   keyCount: 3,
   lua: `${PREAMBLE}
 local limit = tonumber(ARGV[3])
-return {1, bucket, math.max(0, math.floor(limit - used)), window - elapsed}
+-- Cost 1: with no headroom left, what the caller wants to know is when the
+-- window frees a single unit.
+return {1, bucket, math.max(0, math.floor(limit - used)), retryAfter(limit, 1)}
 `,
   decode: decodeBudget
 });
@@ -243,6 +303,16 @@ export type BudgetOptions = {
    * {@link BudgetHold.extend} for anything longer.
    */
   readonly holdTtlMs?: number;
+  /**
+   * How many reservations one id may hold at once. Default `10000`.
+   *
+   * Summing live holds walks the whole set, so it has to stay small. The limit
+   * usually does that on its own, but an estimate of `0` consumes no headroom
+   * and so is bounded by nothing; past this many live holds, `reserve` returns
+   * `null` like any other denial. Raise it only if you genuinely run that many
+   * calls in flight for a single id.
+   */
+  readonly maxHolds?: number;
 };
 
 export type BudgetResult = {
@@ -252,9 +322,35 @@ export type BudgetResult = {
   readonly limit: number;
   /** Units left after this call (0 when denied). */
   readonly remaining: number;
-  /** How long until the window frees units, in ms (`0` when allowed). */
+  /**
+   * How long until the window frees enough units for this spend, in ms (`0`
+   * when allowed).
+   *
+   * Derived server-side from how fast the previous bucket decays, so it is
+   * immune to skew between your process and Redis. This is what the
+   * `Retry-After` header wants.
+   */
   readonly retryAfterMs: number;
 };
+
+/**
+ * Thrown when the window rolled over under every attempt, which takes a
+ * process stalled for longer than `windowMs` between building the keys and the
+ * script running. Nothing was applied, so the call is safe to retry, and a
+ * hold whose `settle` throws this is still usable.
+ */
+export class BudgetWindowRolledError extends Error {
+  readonly id: string;
+  constructor(id: string, windowMs: number) {
+    super(
+      `The budget window rolled over on every attempt for "${id}". This ` +
+        `process was stalled for longer than windowMs (${windowMs}) between ` +
+        "building the keys and the script running; nothing was applied."
+    );
+    this.name = "BudgetWindowRolledError";
+    this.id = id;
+  }
+}
 
 /** A held share of the budget. Settle it with the real cost, or release it. */
 export type BudgetHold = {
@@ -266,9 +362,11 @@ export type BudgetHold = {
    * Drop the hold and charge what was actually used. Pass `0` to charge
    * nothing (equivalent to {@link release}).
    *
-   * Calling it twice on this handle charges once, and a later `release` or
-   * `extend` becomes a no-op. Calling it after the hold has already lapsed
-   * still charges, because the spend was real; keep long calls alive with
+   * Settling twice charges once, and a later `release` or `extend` becomes a
+   * no-op. That holds across a lost reply too: a settle that rejects can be
+   * retried, because Redis remembers the token for `holdTtlMs` and will not
+   * charge it again. Calling it after the hold has already lapsed still
+   * charges, because the spend was real; keep long calls alive with
    * {@link extend} so they settle inside their own hold.
    */
   settle(actual: number): Promise<void>;
@@ -322,6 +420,10 @@ export function budget(client: RedisClient, options: BudgetOptions) {
     options.holdTtlMs ?? DEFAULT_HOLD_TTL_MS,
     "holdTtlMs"
   );
+  const maxHolds = positiveInt(
+    options.maxHolds ?? DEFAULT_MAX_HOLDS,
+    "maxHolds"
+  );
   const scripts = createScriptRunner(client);
 
   // Every key for one id shares the `{<id>}` hash tag, so the two buckets and
@@ -345,18 +447,27 @@ export function budget(client: RedisClient, options: BudgetOptions) {
 
   /**
    * Run `send` against the caller's best guess at the current bucket, and
-   * retry once against the server's answer if the window rolled over in
-   * between. One retry is enough: the second attempt starts inside the bucket
-   * the server just named, and windows are far longer than a round trip.
+   * retry against the server's answer if the window rolled over in between.
+   * The retry normally lands: it starts inside the bucket the server just
+   * named, and windows are far longer than a round trip.
+   *
+   * What it must never do is return the stale-bucket sentinel, because every
+   * caller reads that as a real answer: `reserve` as "exhausted", `charge` as
+   * a denial, and `settle` as a charge that in fact never happened. A short
+   * window plus a stall longer than it (a GC pause, a starved container) can
+   * miss twice, so past the last attempt this throws instead.
    */
   async function withBucket(
     id: string,
     send: (keys: string[], bucket: number) => Promise<BudgetReply>
   ): Promise<BudgetReply> {
-    const guess = Math.floor(Date.now() / windowMs);
-    const first = await send(keysFor(id, guess), guess);
-    if (first.status !== -1) return first;
-    return send(keysFor(id, first.bucket), first.bucket);
+    let bucket = Math.floor(Date.now() / windowMs);
+    for (let attempt = 0; attempt < BUCKET_ATTEMPTS; attempt++) {
+      const reply = await send(keysFor(id, bucket), bucket);
+      if (reply.status !== -1) return reply;
+      bucket = reply.bucket;
+    }
+    throw new BudgetWindowRolledError(id, windowMs);
   }
 
   function resultOf(reply: BudgetReply): BudgetResult {
@@ -369,12 +480,15 @@ export function budget(client: RedisClient, options: BudgetOptions) {
   }
 
   function holdFor(id: string, token: string, estimate: number): BudgetHold {
-    // Settle-once, enforced locally. The token never leaves this process, so a
-    // second settle for it is always this same handle: a `finally` that runs
-    // after an explicit call, or retry logic that does not track what it has
-    // already reconciled. Set before the await so two concurrent settles on
-    // one handle cannot both get through.
+    // Settle-once locally, so a second settle costs no round trip at all. The
+    // real guarantee is the marker key the script claims, which is what covers
+    // the case this flag cannot see: a settle whose reply was lost on the way
+    // back, retried by a caller that has no way to know it already applied.
+    // Set before the await so two concurrent settles on one handle cannot both
+    // get through.
     let settled = false;
+    // Its own key, sharing the id's hash tag so it stays on the id's node.
+    const marker = `${prefix}:{${id}}:settled:${token}`;
     return {
       id,
       token,
@@ -385,18 +499,25 @@ export function budget(client: RedisClient, options: BudgetOptions) {
         settled = true;
         try {
           await withBucket(id, (keys, bucket) =>
-            scripts.run(settleScript, keys, [
-              String(windowMs),
-              String(bucket),
-              token,
-              String(charged)
-            ])
+            scripts.run(
+              settleScript,
+              [...keys, marker],
+              [
+                String(windowMs),
+                String(bucket),
+                token,
+                String(charged),
+                String(holdTtlMs)
+              ]
+            )
           );
         } catch (error) {
-          // Nothing was charged, so the handle has to stay usable. Staying
-          // settled would turn the caller's retry — and the `finally` that
-          // calls release() — into silent no-ops, forgetting the spend while
-          // the reservation blocks that headroom until its TTL lapses.
+          // The handle has to stay usable: the error may have arrived before
+          // the script ran at all. Staying settled would turn the caller's
+          // retry — and the `finally` that calls release() — into silent
+          // no-ops, forgetting the spend while the reservation blocks that
+          // headroom until its TTL lapses. If the script did run, the marker
+          // makes the retry charge nothing.
           settled = false;
           throw error;
         }
@@ -406,12 +527,11 @@ export function budget(client: RedisClient, options: BudgetOptions) {
         settled = true;
         try {
           await withBucket(id, (keys, bucket) =>
-            scripts.run(settleScript, keys, [
-              String(windowMs),
-              String(bucket),
-              token,
-              "0"
-            ])
+            scripts.run(
+              settleScript,
+              [...keys, marker],
+              [String(windowMs), String(bucket), token, "0", String(holdTtlMs)]
+            )
           );
         } catch (error) {
           settled = false;
@@ -459,6 +579,9 @@ export function budget(client: RedisClient, options: BudgetOptions) {
      * check and collectively blowing the budget: the estimate counts against
      * everyone else from the moment it is taken, and is replaced by the real
      * cost on {@link BudgetHold.settle}.
+     *
+     * Also `null` once this id already holds `maxHolds` reservations, which
+     * only an estimate of `0` can reach on its own.
      */
     async reserve(id: string, estimate: number): Promise<BudgetHold | null> {
       const amount = wholeAmount(estimate, "estimate");
@@ -470,7 +593,8 @@ export function budget(client: RedisClient, options: BudgetOptions) {
           String(limit),
           String(amount),
           token,
-          String(holdTtlMs)
+          String(holdTtlMs),
+          String(maxHolds)
         ])
       );
       if (reply.status !== 1) return null;
@@ -494,7 +618,7 @@ export function budget(client: RedisClient, options: BudgetOptions) {
       // resultOf zeroes retryAfterMs whenever status is 1, and check's script
       // always returns 1 — it is reporting headroom, not a verdict. So a
       // check that came back with no headroom said "not ok, retry in 0ms".
-      // The script does send the real time to the window roll; use it.
+      // The script does send the real wait for a unit to free; use it.
       return {
         ...resultOf(reply),
         ok,

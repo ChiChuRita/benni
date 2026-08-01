@@ -30,9 +30,22 @@ await store.del(id);         // drop; returns the deleted count; the next get re
 
 Values are encoded with `codecs.json<T>()` by default; pass `codec` to store anything else.
 
+## Invalidation beats an in-flight load
+
+A loader publishes its result **only while it still holds the fill lock**, so the canonical write-through order is safe:
+
+```ts
+await db.updateProfile(userId, patch);
+await profiles.del(userId); // also breaks any fill lock in flight
+```
+
+`del` drops the entry and the fill lock together. A loader that read its value before the `del` finds its lock gone, so it returns that value to its own caller but does not cache it, and the next `get` reloads. The same fence stops a slow loader from overwriting a fresher entry published after its lock expired.
+
 ## Failure behavior (fail open, never deadlock)
 
-If the caller holding the fill lock dies mid-load, its lock expires after `lockTtlMs` and waiting readers **load for themselves**. The worst case under failure is a brief duplicate load, never an error, never a deadlock.
+If the caller holding the fill lock dies mid-load, its lock expires after `lockTtlMs` and waiting readers **load for themselves**. The worst case under failure is a brief duplicate load, never an error, never a deadlock. Waiters watch the lock rather than just the value, so when a lease is handed to a new loader they wait for that loader instead of all giving up at once; the total wait is capped at three lock lifetimes.
+
+The other side of the fence: a load that takes longer than `lockTtlMs` no longer publishes, because by then its result may be older than whatever replaced it. The value still reaches the caller that asked for it, but it is not cached. Set `lockTtlMs` above your slowest load.
 
 ## Options
 
@@ -41,7 +54,7 @@ If the caller holding the fill lock dies mid-load, its lock expires after `lockT
 | `ttlMs` | - | Entry lifetime. |
 | `prefix` | `"cache"` | Key namespace; entries live at `<prefix>:<id>`, fill locks at `<prefix>:lock:<id>`. |
 | `codec` | `codecs.json<T>()` | Value codec. |
-| `lockTtlMs` | `10000` | How long one loader may hold the fill lock before waiters fail open. Set above your slowest load. |
+| `lockTtlMs` | `10000` | How long one loader may hold the fill lock before waiters fail open and it can no longer publish. Set above your slowest load. |
 | `pollMs` | `50` | Poll interval while waiting on another caller's load. |
 
 See [Caching patterns](/beni/patterns/caching/) for the underlying Redis approach if you want to roll your own.
