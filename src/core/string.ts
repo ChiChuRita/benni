@@ -147,7 +147,16 @@ export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
         "APPEND"
       );
     },
-    /** GETRANGE — substring in `[start, end]` (inclusive; negatives count from the end). */
+    /**
+     * GETRANGE — the bytes in `[start, end]`, inclusive (negatives count from
+     * the end), decoded as UTF-8.
+     *
+     * `start` and `end` are BYTE offsets, not string indices: that is Redis's
+     * own indexing, and `strlen` counts bytes too. For anything outside ASCII
+     * the two differ, and a boundary landing inside a multi-byte character
+     * decodes to U+FFFD, so a chunked read must split on byte boundaries (or
+     * read the whole value with `0, -1`) to reassemble what was stored.
+     */
     async getrange(id: TId, start: number, end: number): Promise<string> {
       // Negative indexes are valid (count from the end), but the values must
       // be integers — catch NaN/floats here instead of as a server error.
@@ -167,7 +176,14 @@ export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
       }
       return reply;
     },
-    /** SETRANGE — overwrite the string from `offset`; returns the new length. */
+    /**
+     * SETRANGE — overwrite the string from `offset`; returns the new length in
+     * bytes.
+     *
+     * `offset` is a BYTE offset, like GETRANGE's. Writing at an offset that
+     * falls inside a multi-byte character leaves the stored value as invalid
+     * UTF-8, which later reads decode to U+FFFD.
+     */
     async setrange(id: TId, offset: number, value: string): Promise<number> {
       if (!Number.isSafeInteger(offset) || offset < 0) {
         throw new ValidationError("offset must be a non-negative safe integer");
@@ -177,7 +193,7 @@ export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
         "SETRANGE"
       );
     },
-    /** STRLEN — length of the string (0 if the key is missing). */
+    /** STRLEN — length of the string in bytes (0 if the key is missing). */
     async strlen(id: TId): Promise<number> {
       return expectNumber(
         await client.send(["STRLEN", keyspace.key(id)]),

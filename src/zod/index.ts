@@ -4,6 +4,7 @@
 // from both `zod` and `zod/mini` work.
 import type { $ZodType, output as InferZodOutput } from "zod/v4/core";
 import { $ZodAsyncError, safeDecode, safeEncode } from "zod/v4/core";
+import { encodeJson } from "../core/codecs.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { formatStandardIssues } from "../core/standard-schema.js";
 import type { Codec } from "../core/types.js";
@@ -24,7 +25,11 @@ function runEncode<S extends $ZodType>(
     result = safeEncode(schema, value);
   } catch (error) {
     if (error instanceof $ZodAsyncError) throw syncOnly(label);
-    throw error;
+    // A unidirectional .transform() raises $ZodEncodeError, which is not even
+    // a TypeError. Every pre-send failure in the library is a ValidationError.
+    throw new ValidationError(
+      `${label} could not encode value: ${(error as Error).message}`
+    );
   }
   if (!result.success) {
     throw new ValidationError(
@@ -70,6 +75,8 @@ function runDecode<S extends $ZodType>(
  * Encode failures throw `ValidationError` (caller mistake, nothing is sent);
  * decode failures throw `ReplyShapeError` with the stored string attached.
  * The schema must be synchronous — async refinements throw `ValidationError`.
+ * If such a refinement **rejects**, zod also leaves an unhandled rejection
+ * behind: it discards that promise internally, out of beni's reach.
  *
  * @example
  * ```ts
@@ -86,9 +93,16 @@ export function zodCodec<S extends $ZodType<unknown, string>>(
 ): Codec<InferZodOutput<S>> {
   return {
     encode(input) {
-      // The schema's input side is a string schema, so zod has already
-      // validated that the encoded value is a string.
-      return runEncode("zodCodec(schema)", schema, input) as string;
+      const encoded = runEncode("zodCodec(schema)", schema, input);
+      // The `$ZodType<unknown, string>` bound is what usually makes the
+      // encoded value a string, but `z.any()` satisfies it vacuously. Without
+      // this check the object reaches the wire as "[object Object]".
+      if (typeof encoded !== "string") {
+        throw new ValidationError(
+          `zodCodec(schema) encoded to ${typeof encoded}, not a string; the schema's encoded side must be a string schema`
+        );
+      }
+      return encoded;
     },
     decode(stored) {
       return runDecode("zodCodec(schema)", schema, stored, stored);
@@ -109,6 +123,8 @@ export function zodCodec<S extends $ZodType<unknown, string>>(
  * Encode failures throw `ValidationError` (caller mistake, nothing is sent);
  * decode failures throw `ReplyShapeError` with the stored string attached.
  * The schema must be synchronous — async refinements throw `ValidationError`.
+ * If such a refinement **rejects**, zod also leaves an unhandled rejection
+ * behind: it discards that promise internally, out of beni's reach.
  *
  * @example
  * ```ts
@@ -124,13 +140,12 @@ export function zodJson<S extends $ZodType>(
 ): Codec<InferZodOutput<S>> {
   return {
     encode(input) {
-      const encoded = JSON.stringify(
-        runEncode("zodJson(schema)", schema, input)
+      // Share core's hardened stringify so zodJson refuses non-finite numbers,
+      // BigInts and circular structures exactly as the plain json() codec does.
+      return encodeJson(
+        runEncode("zodJson(schema)", schema, input),
+        "zodJson(schema)"
       );
-      if (encoded === undefined) {
-        throw new ValidationError("zodJson(schema) could not encode value");
-      }
-      return encoded;
     },
     decode(stored) {
       let parsed: unknown;

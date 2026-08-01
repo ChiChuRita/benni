@@ -45,6 +45,8 @@ Both `keys` and `args` are checked at compile time: missing or misspelled names 
 
 The first run loads the script with `SCRIPT LOAD` and caches its SHA per client. Later runs send only the hash via `EVALSHA`. When Redis replies with `NOSCRIPT` (after a server restart or `SCRIPT FLUSH`), Beni reloads the script and retries automatically, so callers never see the error.
 
+A script can also return a `NOSCRIPT`-coded error of its own, and Redis passes it through byte for byte, so the message alone cannot tell the two apart. Before reloading a cached SHA, Beni asks the server with `SCRIPT EXISTS`: if the script is still there, the error came from the script and is raised as-is, rather than re-running side effects the script has already applied.
+
 ## Scalar Returns Only
 
 `returns` decodes scalar replies (strings and numbers) through its codec. A script that returns a table or nil throws `TypeError: Expected Redis script reply to decode from scalar`.

@@ -59,6 +59,8 @@ This is a co-location decision, not a compatibility flag.
 
 Neither is free to adopt later: both change the key format, so turning one on orphans existing data.
 
+A `hashTag: "id"` prefix may not contain `{`. Redis reads the tag from the first `{` in the whole key, so a prefix like `cart{v2}` would take the tag away from the id and quietly undo the co-location the layout exists for. The schema builder rejects it when you declare the schema.
+
 ## Compile-Time Checking
 
 Because the tag is part of the key's template-literal type, Beni can reject cross-slot combinations before you run anything. This covers `script().run()`, `redis.watch()`, and the transaction key declaration:

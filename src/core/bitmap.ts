@@ -1,5 +1,9 @@
 import { replyShapeError, ValidationError } from "./errors.js";
-import { createKeyLifecycleOps, expectNumber } from "./helpers.js";
+import {
+  createKeyLifecycleOps,
+  expectNumber,
+  expectSafeNumber
+} from "./helpers.js";
 import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
 import type { SlotGuard } from "./slot.js";
 import {
@@ -62,6 +66,10 @@ export type BitfieldOverflow = "wrap" | "sat" | "fail";
  * `get` yields a `number`, while `set`/`incrby` yield `number | null` (null
  * when an `overflow("fail")` operation overflows). `overflow` sets the mode
  * for the operations that follow it and does not add a result.
+ *
+ * `exec()` throws a `ReplyShapeError` if a field's value is past
+ * `Number.MAX_SAFE_INTEGER`, which the wide encodings (`i64`, `u63`) can
+ * hold: the same boundary the write side already enforces.
  */
 export interface BitfieldBuilder<T extends readonly (number | null)[]> {
   get(
@@ -174,8 +182,12 @@ function decodeBitfieldReply(reply: RedisReply): (number | null)[] {
   if (!Array.isArray(reply)) {
     throw replyShapeError("BITFIELD", "an array", reply);
   }
+  // Reads refuse what writes refuse. `i64`/`u63` fields hold values a JS
+  // number cannot represent exactly, and bitfieldValue already rejects one on
+  // the way in, so returning a rounded one on the way out would make the
+  // declared `number` a lie for exactly the widths the builder advertises.
   return reply.map((entry) =>
-    entry === null ? null : expectNumber(entry, "BITFIELD")
+    entry === null ? null : expectSafeNumber(entry, "BITFIELD")
   );
 }
 

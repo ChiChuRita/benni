@@ -156,6 +156,7 @@ describe("createScriptRunner", () => {
       rejectingClient(commands, [
         "sha-1",
         new Error("NOSCRIPT No matching script. Please use EVAL."),
+        [0], // SCRIPT EXISTS: the server really has forgotten it
         "sha-2",
         1,
         0
@@ -170,9 +171,12 @@ describe("createScriptRunner", () => {
       false
     );
 
+    // The probe is what separates a real cache miss from a script that
+    // returned its own NOSCRIPT-shaped error, which must not be re-run.
     expect(commands).toEqual([
       ["SCRIPT", "LOAD", rateLimitLua],
       ["EVALSHA", "sha-1", 1, "rate:42", "100", 5],
+      ["SCRIPT", "EXISTS", "sha-1"],
       ["SCRIPT", "LOAD", rateLimitLua],
       ["EVALSHA", "sha-2", 1, "rate:42", "100", 5],
       ["EVALSHA", "sha-2", 1, "rate:43", "100", 7]
@@ -185,6 +189,7 @@ describe("createScriptRunner", () => {
       rejectingClient(commands, [
         "sha-1",
         new Error("NOSCRIPT No matching script. Please use EVAL."),
+        [0], // SCRIPT EXISTS: genuinely missing, so the reload is warranted
         "sha-2",
         new Error("NOSCRIPT No matching script. Please use EVAL.")
       ])
@@ -193,7 +198,7 @@ describe("createScriptRunner", () => {
     await expect(
       runner.run(defineRateLimit(), ["rate:42"], ["100", 5])
     ).rejects.toThrow("NOSCRIPT");
-    expect(commands).toHaveLength(4);
+    expect(commands).toHaveLength(5);
   });
 
   it("propagates non-NOSCRIPT EVALSHA errors without retrying", async () => {
@@ -236,6 +241,7 @@ describe("createScriptRunner", () => {
         [
           "sha-1",
           new Error("NOSCRIPT No matching script. Please use EVAL."),
+          [0], // SCRIPT EXISTS: missing, so we reload
           null
         ]
       )

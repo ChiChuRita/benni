@@ -4,7 +4,11 @@
 // Codecs.
 export { codecs } from "./core/codecs.js";
 // Errors.
-export { ReplyShapeError, ValidationError } from "./core/errors.js";
+export {
+  PartialRecordError,
+  ReplyShapeError,
+  ValidationError
+} from "./core/errors.js";
 export type { HashTagLayout, KeyOptions } from "./core/keys.js";
 // Typed Lua scripts.
 export {

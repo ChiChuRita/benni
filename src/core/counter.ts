@@ -2,7 +2,8 @@ import { ValidationError } from "./errors.js";
 import {
   createKeyLifecycleOps,
   expectNumber,
-  expectNumberLike
+  expectNumberLike,
+  expectSafeNumber
 } from "./helpers.js";
 import type { Keyspace, RedisClient, RedisKeyPart } from "./types.js";
 
@@ -14,10 +15,15 @@ export function createCounterStore<TId extends RedisKeyPart = RedisKeyPart>(
     ...createKeyLifecycleOps(client, (id: TId) => keyspace.key(id)),
     /**
      * INCR — increment by 1 (creating the key at 0); returns the new value.
+     *
+     * Redis counters are 64-bit, so the integer commands throw a
+     * `ReplyShapeError` once the value passes `Number.MAX_SAFE_INTEGER`
+     * rather than resolving a rounded number the caller cannot tell apart
+     * from the real one.
      * @example const hits = await redis.counter(views).incr("42");
      */
     async incr(id: TId): Promise<number> {
-      return expectNumber(
+      return expectSafeNumber(
         await client.send(["INCR", keyspace.key(id)]),
         "INCR"
       );
@@ -27,7 +33,7 @@ export function createCounterStore<TId extends RedisKeyPart = RedisKeyPart>(
       if (!Number.isSafeInteger(amount)) {
         throw new ValidationError("amount must be a safe integer");
       }
-      return expectNumber(
+      return expectSafeNumber(
         await client.send(["INCRBY", keyspace.key(id), amount]),
         "INCRBY"
       );
@@ -44,7 +50,7 @@ export function createCounterStore<TId extends RedisKeyPart = RedisKeyPart>(
     },
     /** DECR — decrement by 1 (creating the key at 0); returns the new value. */
     async decr(id: TId): Promise<number> {
-      return expectNumber(
+      return expectSafeNumber(
         await client.send(["DECR", keyspace.key(id)]),
         "DECR"
       );
@@ -54,7 +60,7 @@ export function createCounterStore<TId extends RedisKeyPart = RedisKeyPart>(
       if (!Number.isSafeInteger(amount)) {
         throw new ValidationError("amount must be a safe integer");
       }
-      return expectNumber(
+      return expectSafeNumber(
         await client.send(["DECRBY", keyspace.key(id), amount]),
         "DECRBY"
       );

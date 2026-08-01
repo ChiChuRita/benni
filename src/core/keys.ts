@@ -13,6 +13,27 @@ function isVoidHashTag(part: string): boolean {
   return part === "" || part.startsWith("}");
 }
 
+/**
+ * True when a `hashTag: "id"` prefix would steal the tag from the id.
+ *
+ * Redis reads the tag from the FIRST `{` in the whole key, so a prefix
+ * containing one decides the slot instead of the id: `a{b` gives `a{b:{u42}`,
+ * tagged `b`, and `a{}b` gives an empty first tag, which hashes the whole key.
+ */
+function stealsHashTag(prefix: string): boolean {
+  return prefix.includes("{");
+}
+
+function stolenHashTagMessage(prefix: string): string {
+  return (
+    `hashTag: "id" needs a prefix without "{", but prefix ` +
+    `${JSON.stringify(prefix)} contains one. Redis reads the tag from the ` +
+    'first "{" in the whole key, so the tag would come from the prefix ' +
+    "rather than the id, and two schemas tagged this way would stop " +
+    "co-locating the same id, which is the only thing the layout is for."
+  );
+}
+
 function voidHashTagMessage(layout: "prefix" | "id", part: string): string {
   return (
     `hashTag: "${layout}" needs a non-empty Redis hash tag, but ${layout} ` +
@@ -75,6 +96,14 @@ export function keyBuilder<
 ): <TId extends RedisKeyPart>(id: TId) => RedisKey<TPrefix, TId, THashTag> {
   if (hashTag === "prefix" && isVoidHashTag(prefix)) {
     throw new ValidationError(voidHashTagMessage("prefix", prefix));
+  }
+  // The prefix is checked here, once, because it is fixed at schema-definition
+  // time. Unlike the id it cannot be validated per call, and a brace in it
+  // voids the co-location guarantee silently: every key still builds, and the
+  // compile-time same-slot checker still passes, so the mistake only shows up
+  // as CROSSSLOT on a real cluster.
+  if (hashTag === "id" && stealsHashTag(prefix)) {
+    throw new ValidationError(stolenHashTagMessage(prefix));
   }
   const build =
     hashTag === "prefix"

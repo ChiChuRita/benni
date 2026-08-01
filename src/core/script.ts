@@ -119,6 +119,22 @@ export function createScriptRunner(
     return reply;
   }
 
+  /**
+   * Whether the server still holds `sha`. A reply we cannot read counts as
+   * "still there", because not retrying is the safe side of the guess: the
+   * caller gets the script's error instead of its side effects twice.
+   */
+  async function serverHasScript(sha: string): Promise<boolean> {
+    let reply: RedisReply;
+    try {
+      reply = await client.send(["SCRIPT", "EXISTS", sha]);
+    } catch {
+      return true;
+    }
+    const found = Array.isArray(reply) ? reply[0] : undefined;
+    return found !== 0 && found !== false;
+  }
+
   return {
     async run<TArgs extends readonly RedisCommandArgument[], TResult>(
       script: RedisScript<TArgs, TResult>,
@@ -134,7 +150,8 @@ export function createScriptRunner(
       // does not error: redis.call inside Lua can only reach the slot the
       // script was routed to.
       assertSameSlot?.("EVALSHA", keys);
-      const sha = shas.get(script) ?? (await load(script));
+      const cached = shas.get(script);
+      const sha = cached ?? (await load(script));
       let reply: RedisReply;
       try {
         reply = await client.send([
@@ -146,6 +163,18 @@ export function createScriptRunner(
         ]);
       } catch (error) {
         if (!isNoScriptError(error)) throw error;
+        // The message alone cannot prove the server forgot the script: a
+        // script's own `redis.error_reply("NOSCRIPT …")` reaches the client
+        // byte for byte, indistinguishable from the server's. So ask, always.
+        // Reloading and re-running a script that already applied its side
+        // effects applies them twice, and the caller sees only the error.
+        // The freshly-loaded sha needs the probe too, since a SCRIPT FLUSH or
+        // a failover between the load and the call is exactly the case where
+        // a retry is the right answer, and a script erroring on its first run
+        // is exactly the case where it is not.
+        if (await serverHasScript(sha)) {
+          throw error;
+        }
         const reloaded = await load(script);
         reply = await client.send([
           "EVALSHA",
@@ -167,6 +196,10 @@ export function createScriptRunner(
  * wraps those as "ERR Error running script ...: @user_script:N: <message>" —
  * and the retry then re-ran a script that had already applied its side
  * effects.
+ *
+ * Anchoring is necessary but not sufficient: a script that returns
+ * `redis.error_reply("NOSCRIPT …")` produces the same bytes the server does,
+ * so a match only means "may be a cache miss". `serverHasScript` decides.
  */
 function isNoScriptError(error: unknown): boolean {
   return error instanceof Error && /^\s*NOSCRIPT\b/.test(error.message);
@@ -282,7 +315,13 @@ export function script<
   TResult
 >(
   name: TName,
-  options: ScriptOptions<TKeys, TArgs, TResult>
+  // `nullable` is pinned to `false | undefined` rather than left to the bare
+  // options type: a computed or forwarded boolean would otherwise select this
+  // overload, and the decoder still returns null for a nil reply, so the
+  // declared result type could not hold what run() resolves.
+  options: ScriptOptions<TKeys, TArgs, TResult> & {
+    readonly nullable?: false | undefined;
+  }
 ): ScriptSchema<TName, TKeys, TArgs, TResult>;
 export function script<
   TName extends string,

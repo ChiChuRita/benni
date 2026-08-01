@@ -28,6 +28,27 @@ export class ReplyShapeError extends TypeError {
   }
 }
 
+/**
+ * Thrown when a whole-record hash read finds some, but not all, of the fields
+ * the schema declares. The reply is well formed, so this is not a protocol or
+ * adapter fault: it means the stored record is incomplete, most often because
+ * individual fields were given their own TTLs with `hexpire` and some have
+ * since lapsed. `missing` names the absent fields.
+ *
+ * Extends {@link ReplyShapeError} so code that already catches that keeps
+ * working; catch `PartialRecordError` specifically to tell an ordinary
+ * incomplete record apart from a genuine shape violation.
+ */
+export class PartialRecordError extends ReplyShapeError {
+  readonly missing: readonly string[];
+
+  constructor(message: string, reply: unknown, missing: readonly string[]) {
+    super(message, reply);
+    this.name = "PartialRecordError";
+    this.missing = missing;
+  }
+}
+
 /** A compact, safe one-line rendering of a reply value for error messages. */
 export function describeReply(reply: unknown): string {
   if (reply === null) return "null";

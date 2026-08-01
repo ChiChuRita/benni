@@ -46,10 +46,12 @@ import type {
   createZsetSessionAccessor
 } from "./core/sorted-set.js";
 import {
+  type BoundSchema,
   createStoreContext,
   PUBSUB_HUB_KEY,
   resolveSessionStore,
   resolveStore,
+  STORE,
   type StoreContext,
   withKey
 } from "./core/store.js";
@@ -270,6 +272,26 @@ export type SchemaKind =
   | "channel"
   | "pattern"
   | "script";
+
+/**
+ * {@link SchemaKind} at runtime. `buildQuery` needs it to tell a beni schema
+ * that lost its store binding (a copy) from a foreign object that merely has a
+ * `kind` property.
+ */
+const SCHEMA_KINDS: ReadonlySet<unknown> = new Set<SchemaKind>([
+  "kv",
+  "hash",
+  "set",
+  "list",
+  "zset",
+  "stream",
+  "bitmap",
+  "geo",
+  "hll",
+  "channel",
+  "pattern",
+  "script"
+]);
 
 /**
  * Maps one declared schema to the typed resource `redis.query.<name>` exposes
@@ -645,14 +667,28 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
     if (schema) {
       for (const name of Object.keys(schema)) {
         const value = (schema as Record<string, unknown>)[name];
-        // Non-schema exports (a re-exported type's runtime shim, a helper)
-        // carry no `kind` and are dropped, exactly as before. Anything that
-        // does look like a schema must resolve, so a copied schema fails here
-        // — at bind time, naming the export — rather than at first call.
+        // The store binding is what makes an export a beni schema, not a
+        // `kind` property: Valibot stamps `kind` on every schema and ArkType
+        // on every type(), and both are ordinary co-exports of a schema module
+        // (that is how `json(validator)` is used), so claiming every
+        // kind-bearing object would kill beni() at bind time on a module that
+        // is perfectly valid.
         if (
-          (value as { readonly kind?: SchemaKind } | null)?.kind === undefined
-        )
+          (value as Partial<BoundSchema> | null | undefined)?.[STORE] ===
+          undefined
+        ) {
+          // A copy of a real schema keeps its kind but drops the
+          // non-enumerable binding. That one must still fail here, at bind
+          // time, naming the export, rather than at first call.
+          if (
+            SCHEMA_KINDS.has(
+              (value as { readonly kind?: unknown } | null)?.kind
+            )
+          ) {
+            resolveStore(value, ctx, `schema.${name}`);
+          }
           continue;
+        }
         registry[name] = resolveStore(value, ctx, `schema.${name}`);
       }
     }

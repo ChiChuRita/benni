@@ -1,5 +1,6 @@
 import { defineBitmap } from "./core/bitmap.js";
 import { codecs } from "./core/codecs.js";
+import { ReplyShapeError } from "./core/errors.js";
 import { defineGeoSet } from "./core/geo.js";
 import { defineHash } from "./core/hash.js";
 import { defineHyperLogLog } from "./core/hyperloglog.js";
@@ -75,15 +76,24 @@ function encodeBase64(input: Uint8Array): string {
   return encoded;
 }
 
+/**
+ * A ReplyShapeError, not a bare TypeError: every other decoder attaches the
+ * offending value, and the documented recovery is
+ * `catch (e) { if (e instanceof ReplyShapeError) quarantine(e.reply) }`.
+ */
+function bytesShapeError(stored: string): ReplyShapeError {
+  return new ReplyShapeError("Expected Redis value to decode to bytes", stored);
+}
+
 function decodeBase64(stored: string): Uint8Array {
   if (stored === "") return new Uint8Array();
   if (stored.length % 4 !== 0) {
-    throw new TypeError("Expected Redis value to decode to bytes");
+    throw bytesShapeError(stored);
   }
   const padding = stored.endsWith("==") ? 2 : stored.endsWith("=") ? 1 : 0;
   const body = stored.slice(0, stored.length - padding);
   if (body.includes("=")) {
-    throw new TypeError("Expected Redis value to decode to bytes");
+    throw bytesShapeError(stored);
   }
   const decoded = new Uint8Array((stored.length / 4) * 3 - padding);
   let decodedIndex = 0;
@@ -92,7 +102,7 @@ function decodeBase64(stored: string): Uint8Array {
   for (const char of body) {
     const value = base64Values.get(char);
     if (value === undefined) {
-      throw new TypeError("Expected Redis value to decode to bytes");
+      throw bytesShapeError(stored);
     }
     buffer = (buffer << 6) | value;
     bufferedBits += 6;

@@ -47,7 +47,7 @@ await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);
 
 Each schema builder stamps a `kind` discriminant, one of `kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`, `channel`, `pattern`, or `script`. `redis.query.<name>` dispatches on that `kind` and resolves each schema to exactly the store `redis.<kind>(schema)` would return: same methods, same inference.
 
-- Entries in the bound module that are not schemas (a re-exported type, a helper function) are dropped from the registry.
+- Entries in the bound module that are not schemas (a re-exported type, a helper function, a Zod or Valibot validator you pass to `json()`) are dropped from the registry. Being a schema means carrying the store binding a builder attaches, not merely having a `kind` property of your own.
 - `redis.query` is `{}` when no `{ schema }` is bound.
 
 ## Kind To Resource

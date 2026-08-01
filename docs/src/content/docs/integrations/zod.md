@@ -99,4 +99,15 @@ The adapter maps into Beni's unified error classes:
   `.reply`, and the message names the failing paths
   (`created: Invalid ISO datetime`).
 - Async schemas (`.refine(async …)`) can't run in a synchronous codec; both
-  directions throw `ValidationError` telling you so.
+  directions throw `ValidationError` telling you so. If such a refinement
+  *rejects* instead of just failing, zod discards that promise internally, so
+  the rejection also surfaces as an unhandled rejection Beni cannot claim.
+  Keep async work out of the schema.
+- `zodJson` refuses values JSON cannot carry faithfully: `NaN`, `Infinity`,
+  `BigInt`, and circular structures all throw `ValidationError` before the
+  write, exactly as the plain `json()` codec does. A non-finite number would
+  otherwise be stored as `null` and read back as if the key were missing.
+- `zodCodec` needs a schema whose encoded side really is a string. `z.any()`
+  satisfies the type constraint without checking anything, so a non-string
+  encode result throws `ValidationError` rather than reaching Redis as
+  `[object Object]`.

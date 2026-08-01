@@ -144,6 +144,29 @@ export function expectNumber(reply: RedisReply, command: string): number {
   return reply;
 }
 
+/**
+ * {@link expectNumber} for the 64-bit integer replies: refuses a value past
+ * `Number.MAX_SAFE_INTEGER` instead of handing back a silently rounded one.
+ *
+ * Redis counters and bitfields are 64-bit, so their replies can exceed what a
+ * JS number holds exactly. The write paths already reject an unsafe integer;
+ * a read that rounds is worse, because nothing downstream can tell that the
+ * number it got is not the number Redis stores.
+ */
+export function expectSafeNumber(reply: RedisReply, command: string): number {
+  const value = expectNumber(reply, command);
+  if (!Number.isSafeInteger(value)) {
+    throw new ReplyShapeError(
+      `Redis ${command} returned ${String(value)}, which is past ` +
+        "Number.MAX_SAFE_INTEGER and cannot be represented exactly as a " +
+        "JavaScript number. Read the value with a raw command and handle it " +
+        "as a string or bigint.",
+      reply
+    );
+  }
+  return value;
+}
+
 export function expectNumberLike(reply: RedisReply, command: string): number {
   if (typeof reply !== "string" && typeof reply !== "number") {
     throw replyShapeError(command, "string or number", reply);

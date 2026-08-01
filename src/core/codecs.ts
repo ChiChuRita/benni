@@ -7,7 +7,9 @@ import {
 } from "./standard-schema.js";
 import type { Codec } from "./types.js";
 
-function encodeJson(input: unknown): string {
+// Shared with the zod bridge's zodJson() so both JSON codecs refuse the same
+// unrepresentable values; `label` names the offending codec in the message.
+export function encodeJson(input: unknown, label = "JSON codec"): string {
   let encoded: string | undefined;
   try {
     encoded = JSON.stringify(input, (_key, value) => {
@@ -17,7 +19,7 @@ function encodeJson(input: unknown): string {
       // way the number() codec already does, rather than poisoning a read.
       if (typeof value === "number" && !Number.isFinite(value)) {
         throw new ValidationError(
-          `JSON codec cannot encode the non-finite number ${value}; it would be stored as null and read back as a missing value`
+          `${label} cannot encode the non-finite number ${value}; it would be stored as null and read back as a missing value`
         );
       }
       return value;
@@ -27,11 +29,11 @@ function encodeJson(input: unknown): string {
     // A BigInt or a circular structure otherwise escapes as a raw TypeError,
     // where every other pre-send failure in the library is a ValidationError.
     throw new ValidationError(
-      `JSON codec could not encode value: ${(error as Error).message}`
+      `${label} could not encode value: ${(error as Error).message}`
     );
   }
   if (encoded === undefined) {
-    throw new ValidationError("JSON codec could not encode value");
+    throw new ValidationError(`${label} could not encode value`);
   }
   return encoded;
 }
@@ -58,12 +60,15 @@ function json<S extends StandardSchemaV1>(
   schema: S
 ): Codec<InferStandardInput<S>, InferStandardOutput<S>>;
 function json(schema?: StandardSchemaV1): Codec<unknown, unknown> {
+  // Wrapped rather than handed over by reference: a caller doing
+  // `values.map(codec.encode)` would otherwise pass the array index as `label`.
+  const encode = (input: unknown) => encodeJson(input);
   if (schema === undefined) {
-    return { encode: encodeJson, decode: decodeJson };
+    return { encode, decode: decodeJson };
   }
   const standard = schema["~standard"];
   return {
-    encode: encodeJson,
+    encode,
     decode(stored) {
       const result = standard.validate(decodeJson(stored));
       if (result instanceof Promise) {
@@ -71,7 +76,10 @@ function json(schema?: StandardSchemaV1): Codec<unknown, unknown> {
         // never produce a value here, so fail with the reason. Claim the
         // promise first: nothing else will await it, and a validator that
         // rejects would otherwise surface as an unhandled rejection, which
-        // is fatal under --unhandled-rejections=strict.
+        // is fatal under --unhandled-rejections=strict. That only covers
+        // vendors whose validate() hands back the promise it made; zod runs a
+        // synchronous pass first and drops a rejecting promise inside it,
+        // where no caller can reach it.
         result.catch(() => undefined);
         throw new ValidationError(
           `json(schema) requires a synchronous validator, but the ${standard.vendor} schema returned a Promise. Use a schema without async refinements.`
@@ -92,7 +100,18 @@ export const codecs = {
   /** Store and read a value as-is. */
   string(): Codec<string> {
     return {
-      encode: String,
+      // Not `String`: that stringifies anything, so a value the types said was
+      // a string but was not (an undefined field, a forwarded optional) landed
+      // in Redis as "undefined" or "[object Object]" instead of failing. The
+      // number codec already refuses input it cannot represent.
+      encode(input) {
+        if (typeof input !== "string") {
+          throw new ValidationError(
+            `string codec cannot encode ${describeReply(input)}`
+          );
+        }
+        return input;
+      },
       decode: String
     };
   },
@@ -136,6 +155,13 @@ export const codecs = {
   boolean(): Codec<boolean> {
     return {
       encode(input) {
+        // A bare truthiness test silently accepted undefined as false, which
+        // wrote a real "0" for a field that was never set.
+        if (typeof input !== "boolean") {
+          throw new ValidationError(
+            `boolean codec cannot encode ${describeReply(input)}`
+          );
+        }
         return input ? "1" : "0";
       },
       decode(stored) {
@@ -178,7 +204,17 @@ export const codecs = {
   ): Codec<T[number]> {
     const allowed = new Set<string>(values);
     return {
-      encode: String,
+      // Refuse on the way in as well as out: an out-of-set value that is
+      // written unchecked only fails later, on read, at a point that gives no
+      // clue which write produced it.
+      encode(input) {
+        if (typeof input !== "string" || !allowed.has(input)) {
+          throw new ValidationError(
+            `enum codec expected one of ${values.join(", ")}, got ${describeReply(input)}`
+          );
+        }
+        return input;
+      },
       decode(stored) {
         if (!allowed.has(stored)) {
           throw new ReplyShapeError(

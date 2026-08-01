@@ -95,6 +95,13 @@ const idx = await redis.string(drafts).lcs("42", "43", {
 //    ^? { matches: { a: [number, number]; b: [number, number]; length?: number }[]; length: number }
 ```
 
+`getrange`, `setrange`, and `strlen` work in **bytes**, not string indices,
+because that is how Redis indexes a string. For ASCII the two are the same. For
+anything else they are not: `"café"` is 5 bytes and 4 characters. A range
+boundary that falls inside a multi-byte character decodes to the replacement
+character, so read the whole value with `getrange(id, 0, -1)`, or split your
+chunks on byte boundaries you computed yourself.
+
 ## `redis.counter(schema)`
 
 Atomic counters for `kv` schemas with a `number()` codec:
@@ -106,6 +113,11 @@ const total = await redis.counter(hits).incr("42");
 await redis.counter(hits).incrby("42", 10);
 await redis.counter(hits).decrby("42", 3);
 ```
+
+Redis counters are 64-bit. Once a counter passes `Number.MAX_SAFE_INTEGER` its
+value can no longer be represented exactly as a JavaScript number, so the
+integer commands throw a `ReplyShapeError` rather than resolve a rounded one.
+The same applies to `BITFIELD` reads of the wide encodings (`i64`, `u63`).
 
 ## `redis.hash(schema)`
 
