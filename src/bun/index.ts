@@ -18,6 +18,19 @@ async function connectBunClient(
     throw new TypeError("bun requires the Bun runtime");
   }
   const { url, ...clientOptions } = options ?? {};
+  // Dial once fail-fast before building the real client. A Bun client with
+  // autoReconnect on cannot be cancelled: if its first connect() rejects, the
+  // background reconnect timer keeps running, close() does not stop it, and
+  // the orphan pins the process forever (verified on 1.3.14). An
+  // autoReconnect: false client rejects immediately and releases everything,
+  // so an unreachable server is reported by the probe and the reconnecting
+  // client is only ever constructed against a server we just reached.
+  const probe = new Bun.RedisClient(url, {
+    ...clientOptions,
+    autoReconnect: false
+  });
+  await probe.connect();
+  probe.close();
   const client = new Bun.RedisClient(url, clientOptions);
   await client.connect();
   return client;
@@ -33,6 +46,10 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
   // the client's lifetime.
   const sessions = new Set<RedisSession>();
   const subscribers = new Set<RedisSubscriber>();
+  // The backstops only drain what they can see. A lease requested after
+  // close(), or one whose connect() is still in flight when close() drains the
+  // Sets, would open a live socket nobody will ever iterate again.
+  let clientClosed = false;
 
   return {
     async send(command: RedisCommand) {
@@ -77,6 +94,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       return reply as RedisReply[];
     },
     async session(): Promise<RedisSession> {
+      if (clientClosed) throw closedError();
       // autoReconnect: false makes the leased connection fail-fast: a drop
       // rejects in-flight and subsequent commands instead of silently
       // reconnecting (which would lose WATCH state and blocked reads).
@@ -88,6 +106,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
         enableOfflineQueue: false
       });
       await duplicate.connect();
+      if (clientClosed) throw discardOnClose(duplicate);
       let closed = false;
       const session: RedisSession = {
         async send(command: RedisCommand) {
@@ -136,8 +155,10 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       return session;
     },
     async subscriber(): Promise<RedisSubscriber> {
+      if (clientClosed) throw closedError();
       // Subscribing takes over a connection, so open a dedicated one.
       const subscriberClient = await connectBunClient(options);
+      if (clientClosed) throw discardOnClose(subscriberClient);
       const listeners = new Map<string, (message: string) => void>();
       let closed = false;
       const subscriber: RedisSubscriber = {
@@ -168,6 +189,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       return subscriber;
     },
     async close() {
+      clientClosed = true;
       for (const session of [...sessions]) {
         await session.close();
       }
@@ -177,6 +199,27 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       client.close();
     }
   };
+}
+
+/**
+ * Refused because the parent client is closed. Leasing past close() would open
+ * a connection the leak backstop has already stopped watching.
+ */
+function closedError(): Error {
+  return new Error("beni/bun client is closed");
+}
+
+/**
+ * A lease whose connect() landed after close() drained the backstop: tear the
+ * fresh connection down rather than hand back a socket nothing will close.
+ */
+function discardOnClose(duplicate: Bun.RedisClient): Error {
+  try {
+    duplicate.close();
+  } catch {
+    // Already gone; the refusal is what matters.
+  }
+  return closedError();
 }
 
 /**

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import IORedis, {
+  type ClusterOptions,
   type Redis as IORedisClient,
   type RedisOptions
 } from "ioredis";
@@ -73,7 +74,7 @@ function isCluster(client: AdoptableClient): boolean {
  */
 function duplicateOf(
   client: AdoptableClient,
-  overrides: RedisOptions
+  overrides: RedisOptions | ClusterOptions
 ): IORedisClient {
   const duplicate = isCluster(client)
     ? (
@@ -82,8 +83,45 @@ function duplicateOf(
           options: RedisOptions
         ) => IORedisClient
       )([], overrides)
-    : (client.duplicate as (options: RedisOptions) => IORedisClient)(overrides);
+    : (client.duplicate as (options: RedisOptions) => IORedisClient)(
+        overrides as RedisOptions
+      );
   return duplicate;
+}
+
+/**
+ * Fail-fast overrides for a session duplicate, per the session contract: a
+ * drop must reject in-flight and subsequent commands rather than silently
+ * reconnecting, which would lose WATCH state and blocked reads.
+ *
+ * The two client shapes take different knobs, and mixing them up fails
+ * silently. `retryStrategy` and `maxRetriesPerRequest` are plain-Redis
+ * options; a Cluster ignores them at the top level and consults its own
+ * `clusterRetryStrategy` when the last connection closes, which by default
+ * reconnects the whole duplicate. So an adopted Cluster's session came back to
+ * life after a drop, still reporting `closed === false`, with its WATCH state
+ * silently gone. Leaving `clusterRetryStrategy` null makes that close terminal
+ * (ioredis then sets status "end" and flushes the queue).
+ *
+ * `lazyConnect` in both shapes keeps the duplicate from dialing before we own
+ * it, so open() is the single place the connection is established.
+ */
+function sessionOverrides(
+  client: AdoptableClient
+): RedisOptions | ClusterOptions {
+  if (isCluster(client)) {
+    return {
+      clusterRetryStrategy: null,
+      enableOfflineQueue: false,
+      lazyConnect: true
+    };
+  }
+  return {
+    retryStrategy: () => null,
+    maxRetriesPerRequest: null,
+    enableOfflineQueue: false,
+    lazyConnect: true
+  };
 }
 
 /**
@@ -146,6 +184,10 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
   // session or subscriber cannot pin a connection past the client's lifetime.
   const sessions = new Set<RedisSession>();
   const subscribers = new Set<RedisSubscriber>();
+  // The backstops only drain what they can see. A lease requested after
+  // close(), or one whose connect() is still in flight when close() drains the
+  // Sets, would open a live socket nobody will ever iterate again.
+  let clientClosed = false;
 
   return {
     async send(command: RedisCommand) {
@@ -168,20 +210,11 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       return unwrap(await transaction.exec(), "transaction");
     },
     async session(): Promise<RedisSession> {
+      if (clientClosed) throw closedError();
       const duplicate = await open(
-        duplicateOf(client, {
-          // Fail-fast, per the session contract: a drop must reject in-flight
-          // and subsequent commands rather than silently reconnecting, which
-          // would lose WATCH state and blocked reads.
-          retryStrategy: () => null,
-          maxRetriesPerRequest: null,
-          enableOfflineQueue: false,
-          // duplicate() inherits the parent's options; forcing lazyConnect
-          // keeps it from dialing before we own it, so open() below is the
-          // single place the connection is established.
-          lazyConnect: true
-        })
+        duplicateOf(client, sessionOverrides(client))
       );
+      if (clientClosed) throw discardOnClose(duplicate);
       let closed = false;
       duplicate.on("error", () => {
         closed = true;
@@ -225,9 +258,11 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       return session;
     },
     async subscriber(): Promise<RedisSubscriber> {
+      if (clientClosed) throw closedError();
       // Subscriber mode monopolizes a connection, so duplicate rather than
       // borrow the shared one.
       const duplicate = await open(duplicateOf(client, { lazyConnect: true }));
+      if (clientClosed) throw discardOnClose(duplicate);
       let closed = false;
 
       // ioredis delivers every subscription through one 'message'/'pmessage'
@@ -284,6 +319,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       return subscriber;
     },
     async close() {
+      clientClosed = true;
       for (const session of [...sessions]) {
         await session.close();
       }
@@ -356,8 +392,37 @@ function isFinished(status: string): boolean {
   return status === "end" || status === "close";
 }
 
+/**
+ * Uppercased on purpose. ioredis keys its reply transformers by *lowercase*
+ * command name, so `send(["hgetall", key])` came back as a plain JS object
+ * while every other adapter returned the RESP2 flat array, and the typed shape
+ * helpers then rejected it on ioredis alone. Command names are case-insensitive
+ * on the wire, and ioredis's own flag and key-index lookups already lowercase
+ * what they are given, so uppercasing only sidesteps the transformer table.
+ */
 function name(command: RedisCommand): string {
-  return String(command[0]);
+  return String(command[0]).toUpperCase();
+}
+
+/**
+ * Refused because the parent client is closed. Leasing past close() would open
+ * a connection the leak backstop has already stopped watching.
+ */
+function closedError(): Error {
+  return new Error("beni/ioredis client is closed");
+}
+
+/**
+ * A lease whose connect() landed after close() drained the backstop: tear the
+ * fresh connection down rather than hand back a socket nothing will close.
+ */
+function discardOnClose(duplicate: IORedisClient): Error {
+  try {
+    duplicate.disconnect();
+  } catch {
+    // Already gone; the refusal is what matters.
+  }
+  return closedError();
 }
 
 function args(command: RedisCommand): Array<string | Buffer> {

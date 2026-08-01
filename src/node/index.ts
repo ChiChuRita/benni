@@ -72,6 +72,11 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
   const sessions = new Set<RedisSession>();
   // Same backstop for the subscriber connection core may lease.
   const subscribers = new Set<RedisSubscriber>();
+  // The backstop only drains what it can see. A lease requested after close(),
+  // or one whose connect() is still in flight when close() drains the Sets,
+  // would open a live socket nobody will ever iterate again — and in Node a
+  // live socket pins the event loop, so a "graceful" shutdown never exits.
+  let clientClosed = false;
 
   return {
     async send(command: RedisCommand) {
@@ -96,6 +101,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       }
     },
     async session(): Promise<RedisSession> {
+      if (clientClosed) throw closedError();
       // reconnectStrategy: false makes the leased connection fail-fast: a
       // drop rejects in-flight and subsequent commands instead of silently
       // reconnecting (which would lose WATCH state and blocked reads).
@@ -106,6 +112,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
         socket: { ...options?.socket, reconnectStrategy: false }
       });
       await duplicate.connect();
+      if (clientClosed) throw discardOnClose(duplicate);
       let closed = false;
       duplicate.on("error", () => {
         closed = true;
@@ -150,11 +157,13 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       return session;
     },
     async subscriber(): Promise<RedisSubscriber> {
+      if (clientClosed) throw closedError();
       // Subscriber mode monopolizes a connection, so duplicate rather than
       // borrow the shared one.
       const duplicate = client.duplicate();
       duplicate.on("error", () => {});
       await duplicate.connect();
+      if (clientClosed) throw discardOnClose(duplicate);
       let closed = false;
       const subscriber: RedisSubscriber = {
         async subscribe(channel, listener) {
@@ -173,8 +182,13 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
         async punsubscribe(pattern) {
           await duplicate.pUnsubscribe(pattern);
         },
+        // isOpen, not isReady: a subscriber connection is allowed to
+        // reconnect, and isOpen stays true across that window while isReady
+        // dips. It goes false only once node-redis has given up, which is the
+        // terminal state core must see so it drops the dead lease instead of
+        // handing the next subscribe a socket that will never come back.
         get closed() {
-          return closed;
+          return closed || !duplicate.isOpen;
         },
         async close() {
           closed = true;
@@ -190,15 +204,51 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       return subscriber;
     },
     async close() {
+      clientClosed = true;
       for (const session of [...sessions]) {
         await session.close();
       }
       for (const subscriber of [...subscribers]) {
         await subscriber.close();
       }
-      await client.close();
+      try {
+        await client.close();
+      } catch {
+        // node-redis throws ClientClosedError on a second close(); every other
+        // adapter treats a repeat close as a no-op, so swallow it.
+      }
+      try {
+        // Backstop, and the reason the catch above is not enough: a graceful
+        // close() issued while node-redis is mid-reconnect resolves but can
+        // leave the socket alive, pinning the Node event loop. destroy()
+        // releases it.
+        client.destroy();
+      } catch {
+        // Already destroyed — nothing left to release.
+      }
     }
   };
+}
+
+/**
+ * Refused because the parent client is closed. Leasing past close() would open
+ * a connection the leak backstop has already stopped watching.
+ */
+function closedError(): Error {
+  return new Error("beni/node client is closed");
+}
+
+/**
+ * A lease whose connect() landed after close() drained the backstop: tear the
+ * fresh connection down rather than hand back a socket nothing will close.
+ */
+function discardOnClose(duplicate: { destroy(): void }): Error {
+  try {
+    duplicate.destroy();
+  } catch {
+    // Already gone; the refusal is what matters.
+  }
+  return closedError();
 }
 
 /**

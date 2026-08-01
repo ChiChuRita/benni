@@ -23,6 +23,8 @@ Close the client when your process or test is done:
 await client.close();
 ```
 
+`close()` is safe to call twice, and it is final: once it has run, `redis.session()` and a fresh Pub/Sub subscribe reject with "client is closed" rather than quietly opening a connection nothing will ever close. The same holds for `beni/ioredis` and `beni/bun`.
+
 The Node adapter defaults to RESP2 replies because the typed stores validate Redis reply shapes such as arrays, maps, numbers, strings, and nulls. You can pass normal `redis` client options to `node`.
 
 The Node adapter supports [sessions](/beni/advanced/sessions/), so `redis.session()` and `redis.watch()` work: each session duplicates the connection with reconnection disabled and closes by destroying the socket, which rejects an in-flight blocking read promptly rather than waiting out its timeout. The parent client tracks live sessions and force-closes any survivors when you close it.
