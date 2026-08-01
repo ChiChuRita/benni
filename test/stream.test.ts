@@ -270,8 +270,9 @@ describe("createStreamStore", () => {
     const commands: RedisCommand[] = [];
     const store = createStreamStore(fakeClient(commands, []), events);
 
-    await expect(store.xtrim("42", { maxLen: { count: 0 } })).rejects.toThrow(
-      "count must be a positive safe integer"
+    // MAXLEN 0 is legal: it empties the stream but keeps its consumer groups.
+    await expect(store.xtrim("42", { maxLen: { count: -1 } })).rejects.toThrow(
+      "count must be a nonnegative safe integer"
     );
     await expect(store.xtrim("42", { maxLen: { count: 1.5 } })).rejects.toThrow(
       TypeError

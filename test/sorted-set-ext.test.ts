@@ -304,9 +304,9 @@ describe("createSortedSetStore extensions", () => {
       count: 2
     } as unknown as SortedSetRangeByScoreOptions;
 
-    await expect(store.zrandmember("game", { count: 0 })).rejects.toThrow(
-      "count must be a nonzero safe integer"
-    );
+    // count: 0 is legal (Redis returns an empty array, and zpopmin already
+    // accepts it), so it short-circuits rather than throwing.
+    await expect(store.zrandmember("game", { count: 0 })).resolves.toEqual([]);
     await expect(store.zrandmember("game", { count: 1.5 })).rejects.toThrow(
       TypeError
     );
@@ -316,16 +316,11 @@ describe("createSortedSetStore extensions", () => {
     await expect(
       store.zrange("game", { start: 0, stop: 1.5, rev: true })
     ).rejects.toThrow("stop must be a safe integer");
-    await expect(
-      store.zrange("game", {
-        byScore: true,
-        min: Number.POSITIVE_INFINITY,
-        max: 1
-      })
-    ).rejects.toThrow("min must be a finite number");
+    // ±Infinity is what zadd stores and zscore hands back, so a range bound
+    // accepts it and encodes Redis's own spelling. Only NaN is rejected.
     await expect(
       store.zrange("game", { byScore: true, min: 0, max: Number.NaN })
-    ).rejects.toThrow("max must be a finite number");
+    ).rejects.toThrow("max must not be NaN");
     await expect(
       store.zrange("game", { byScore: true, ...offsetOnly })
     ).rejects.toThrow("offset and count must be provided together");
@@ -365,9 +360,9 @@ describe("createSortedSetStore extensions", () => {
     await expect(store.zremrangebyrank("game", 0, 1.5)).rejects.toThrow(
       TypeError
     );
-    await expect(
-      store.zremrangebyscore("game", Number.NEGATIVE_INFINITY, 1)
-    ).rejects.toThrow(TypeError);
+    await expect(store.zremrangebyscore("game", Number.NaN, 1)).rejects.toThrow(
+      TypeError
+    );
     await expect(store.zpopmin("game", { count: -1 })).rejects.toThrow(
       "count must be a nonnegative safe integer"
     );

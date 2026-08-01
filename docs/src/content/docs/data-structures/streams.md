@@ -39,7 +39,7 @@ await redis.stream(activity).xadd(
 );
 ```
 
-With `nomkstream: true`, Redis skips missing streams (`NOMKSTREAM`) and `xadd` returns `null` instead of an entry ID; only that form types as `Promise<string | null>`; the plain form is `Promise<string>`. `maxLen` trims while adding, with the same shape as `xtrim`'s `maxLen`. Pass `entryId` to set an explicit ID instead of the default `*`.
+With `nomkstream: true`, Redis skips missing streams (`NOMKSTREAM`) and `xadd` returns `null` instead of an entry ID. Any call that spells the flag out, including a computed `nomkstream: someBoolean`, types as `Promise<string | null>`; a call that leaves it off is `Promise<string>`. Passing an options object typed as `StreamAddOptions`, where the flag is optional, does not compile: the reply shape depends on the flag, so it has to be visible at the call site. `maxLen` trims while adding, with the same shape as `xtrim`'s `maxLen`. Pass `entryId` to set an explicit ID instead of the default `*`.
 
 ## Read Ranges
 
@@ -69,7 +69,7 @@ await redis.stream(activity).xtrim("42", { maxLen: { count: 1000, approximate: t
 await redis.stream(activity).xtrim("42", { minId: { value: "1720094400000-0" } });
 ```
 
-Both return the number of removed entries. `approximate: true` lets Redis trim in whole macro nodes, which is faster.
+Both return the number of removed entries. `approximate: true` lets Redis trim in whole macro nodes, which is faster. `{ maxLen: { count: 0 } }` empties the stream but keeps the key, so its consumer groups and their pending lists survive; `del` deletes the groups along with the stream.
 
 ## Remove, Count, Delete
 

@@ -71,7 +71,11 @@ export type StreamPendingRangeOptions = {
 };
 
 export type StreamPendingReadOptions = {
-  /** Read this consumer's PEL after this entry id; defaults to "0". */
+  /**
+   * Read this consumer's PEL after this entry id. `undefined` is the live
+   * `>` read, matching what the no-`after` overload promises; pass `"0"` for
+   * the whole PEL.
+   */
   readonly after?: string;
   readonly count?: number;
 };
@@ -429,16 +433,15 @@ function createConsumer<
     id: TId,
     options: StreamReadOptions | StreamPendingReadOptions = {}
   ): Promise<Array<StreamEntry<TFields>> | Array<PendingStreamEntry<TFields>>> {
-    // Presence of the `after` key selects the history read, even when its
-    // value is undefined — the overloads promise PendingStreamEntry[] for
-    // `{ after }`, and the documented default id is "0".
-    const hasAfter = "after" in options;
+    // An `after` *value* selects the history read, not the presence of the
+    // key: `{ after: undefined }` matches the `>` overload, which promises
+    // non-nullable values, and a history read can return tombstones.
+    const after = (options as StreamPendingReadOptions).after;
     const args: RedisCommandArgument[] = ["GROUP", group, consumer];
     if (options.count !== undefined) {
       args.push("COUNT", positiveCount(options.count, "count"));
     }
-    if (hasAfter) {
-      const after = (options as StreamPendingReadOptions).after ?? "0";
+    if (after !== undefined) {
       if (typeof after !== "string" || after.length === 0 || after === ">") {
         throw new ValidationError(
           "after must be an entry id; new deliveries come from xreadgroup() without { after }"

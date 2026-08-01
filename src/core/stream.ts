@@ -84,6 +84,13 @@ function positiveCount(value: number, name: string): number {
   return value;
 }
 
+function nonnegativeCount(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ValidationError(`${name} must be a nonnegative safe integer`);
+  }
+  return value;
+}
+
 export function decodeStreamEntry<TFields extends FieldCodecs>(
   entry: RedisReply,
   command: string,
@@ -115,9 +122,16 @@ export function decodeStreamEntry<TFields extends FieldCodecs>(
     if (!Object.hasOwn(fields, field)) continue;
     const codec = fields[field];
     if (!codec) continue;
-    value[field as keyof TFields] = codec.decode(
-      stored
-    ) as InferHashOutput<TFields>[keyof TFields];
+    // defineProperty, not assignment: a declared field named "__proto__" would
+    // otherwise reach Object.prototype's setter, so the value beni just wrote
+    // through xadd would be dropped on read and take the entry's prototype
+    // with it.
+    Object.defineProperty(value, field, {
+      value: codec.decode(stored),
+      writable: true,
+      enumerable: true,
+      configurable: true
+    });
   }
   return { id, value };
 }
@@ -176,20 +190,26 @@ export function createStreamStore<
   >;
 
   /**
-   * `XADD`. Appends an entry; returns its id. Only the `nomkstream` form can
-   * return `null` (missing stream), so the plain form's type has no null.
+   * `XADD`. Appends an entry; returns its id. `nomkstream` is what makes the
+   * reply nullable (missing stream), so only a call that could set it types
+   * as `string | null`; a call that provably leaves it off has no null.
    *
    * @example const entryId = await redis.stream(events).xadd("42", { kind: "click" });
    */
   function xadd(
     id: TId,
     value: Input,
-    options: StreamAddOptions & { nomkstream: true }
+    options: StreamAddOptions & { nomkstream: boolean }
   ): Promise<string | null>;
   function xadd(
     id: TId,
     value: Input,
-    options?: StreamAddOptions
+    // Excludes a nomkstream that could be true: an options *value* typed
+    // StreamAddOptions used to land here and be typed non-null while the flag
+    // it carried made the server reply nil. Such a value now matches neither
+    // overload, because the reply shape is not knowable from its type; spell
+    // the flag out at the call site to pick a side.
+    options?: StreamAddOptions & { readonly nomkstream?: false | undefined }
   ): Promise<string>;
   async function xadd(
     id: TId,
@@ -269,13 +289,15 @@ export function createStreamStore<
      * XTRIM by MAXLEN or MINID. Pass `{ maxLen: { count, approximate? } }`
      * to cap length or `{ minId: { value, approximate? } }` to drop entries
      * older than an id; `approximate` maps to the `~` modifier.
+     * `{ maxLen: { count: 0 } }` empties the stream but keeps the key, so its
+     * consumer groups survive; `del` would take them with it.
      */
     async xtrim(id: TId, options: StreamTrimOptions): Promise<number> {
       const args: RedisCommandArgument[] = [schema.key(id)];
       if (options.maxLen !== undefined) {
         args.push("MAXLEN");
         if (options.maxLen.approximate) args.push("~");
-        args.push(positiveCount(options.maxLen.count, "maxLen.count"));
+        args.push(nonnegativeCount(options.maxLen.count, "maxLen.count"));
       } else if (options.minId !== undefined) {
         args.push("MINID");
         if (options.minId.approximate) args.push("~");

@@ -161,19 +161,20 @@ function rankIndex(value: number, label: string): number {
   return value;
 }
 
-function scoreBound(
-  value: SortedSetScoreBound,
-  label: string
-): SortedSetScoreBound {
-  if (typeof value === "number" && !Number.isFinite(value)) {
-    throw new ValidationError(`${label} must be a finite number`);
+// Bounds go through the same translation as scores: zadd takes ±Infinity and
+// zscore hands it back, so a range API that rejected it would refuse a value
+// the library itself produced. NaN stays illegal, as it is for a score.
+function scoreBound(value: number | string, label: string): number | string {
+  if (typeof value !== "number") return value;
+  if (Number.isNaN(value)) {
+    throw new ValidationError(`${label} must not be NaN`);
   }
-  return value;
+  return scoreArgument(value);
 }
 
 function randomMemberCount(count: number): number {
-  if (!Number.isSafeInteger(count) || count === 0) {
-    throw new ValidationError("count must be a nonzero safe integer");
+  if (!Number.isSafeInteger(count)) {
+    throw new ValidationError("count must be a safe integer");
   }
   return count;
 }
@@ -410,7 +411,12 @@ export function createSortedSetStore<
   ): Promise<Array<SortedSetEntry<TOutput>>>;
   async function zrange(
     id: TId,
-    options: SortedSetRangeOptions<TInput>
+    // Excludes a withScores that is merely `boolean`: the reply shape depends
+    // on the flag, and excess-property checking does not catch a variable (or
+    // even a literal, since withScores is a declared member of the union).
+    options: SortedSetRangeOptions<TInput> & {
+      readonly withScores?: false | undefined;
+    }
   ): Promise<TOutput[]>;
   async function zrange(
     id: TId,
@@ -516,7 +522,10 @@ export function createSortedSetStore<
   function zunion(
     id: TId,
     others: readonly TId[],
-    options?: SortedSetCombineOptions
+    // Excludes a withScores that is merely `boolean`: see zrange.
+    options?: SortedSetCombineOptions & {
+      readonly withScores?: false | undefined;
+    }
   ): Promise<TOutput[]>;
   function zunion(
     id: TId,
@@ -534,7 +543,10 @@ export function createSortedSetStore<
   function zinter(
     id: TId,
     others: readonly TId[],
-    options?: SortedSetCombineOptions
+    // Excludes a withScores that is merely `boolean`: see zrange.
+    options?: SortedSetCombineOptions & {
+      readonly withScores?: false | undefined;
+    }
   ): Promise<TOutput[]>;
   function zinter(
     id: TId,
@@ -552,7 +564,8 @@ export function createSortedSetStore<
   function zdiff(
     id: TId,
     others: readonly TId[],
-    options?: { withScores?: boolean }
+    // Excludes a withScores that is merely `boolean`: see zrange.
+    options?: { readonly withScores?: false | undefined }
   ): Promise<TOutput[]>;
   function zdiff(
     id: TId,
@@ -568,11 +581,20 @@ export function createSortedSetStore<
   ): Promise<Array<SortedSetEntry<TOutput>>>;
   async function zrandmember(
     id: TId,
-    options: SortedSetRandomMemberOptions & { count: number }
+    // Excludes a withScores that is merely `boolean`: see zrange.
+    options: SortedSetRandomMemberOptions & {
+      readonly count: number;
+      readonly withScores?: false | undefined;
+    }
   ): Promise<TOutput[]>;
   async function zrandmember(
     id: TId,
-    options?: SortedSetRandomMemberOptions
+    // Excludes count: the reply shape depends on whether it is present, so a
+    // value typed SortedSetRandomMemberOptions (count optional) cannot be
+    // typed here. It used to land on this overload and be typed as a single
+    // member while the server returned an array. withScores stays allowed
+    // because without a count it never changes the reply, it throws.
+    options?: SortedSetRandomMemberOptions & { readonly count?: undefined }
   ): Promise<TOutput | null>;
   async function zrandmember(
     id: TId,
@@ -592,6 +614,9 @@ export function createSortedSetStore<
       return schema.decode(reply);
     }
     const count = randomMemberCount(options.count);
+    // Redis answers ZRANDMEMBER key 0 with an empty array; zpopmin already
+    // short-circuits the same way rather than making the round trip.
+    if (count === 0) return [];
     if (options.withScores === true) {
       const reply = await client.send([
         "ZRANDMEMBER",
@@ -692,7 +717,12 @@ export function createSortedSetStore<
       max: number | string
     ): Promise<number> {
       return expectNumber(
-        await client.send(["ZCOUNT", schema.key(id), min, max]),
+        await client.send([
+          "ZCOUNT",
+          schema.key(id),
+          scoreBound(min, "min"),
+          scoreBound(max, "max")
+        ]),
         "ZCOUNT"
       );
     },

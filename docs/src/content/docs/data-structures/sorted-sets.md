@@ -41,11 +41,15 @@ const entries = await redis.zset(leaderboards).zrange("global", { start: 0, stop
 //    ^? Array<{ member: string; score: number }>
 ```
 
+`withScores` decides the return type, so it has to be a literal `true` or `false`, never a variable of type `boolean`. The same holds for `zdiff`, `zunion`, `zinter`, and `zrandmember`. If the flag is computed, branch on it and make two calls: the compiler cannot pick a reply shape it does not know yet.
+
 Increment a score:
 
 ```ts
 await redis.zset(leaderboards).zincrby("global", 5, "user:42");
 ```
+
+Scores may be `Infinity` or `-Infinity`, which Redis stores as `+inf` and `-inf`. `zscore` reads them back as the JavaScript infinities, and every score bound (`byScore` ranges, `zcount`, `zremrangebyscore`) accepts the same values, so a score can go straight back in as a bound. Only `NaN` is rejected.
 
 Raw Redis equivalent:
 

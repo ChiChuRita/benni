@@ -26,6 +26,12 @@ import type {
 /** Which end of a list an LMOVE/BLMOVE acts on (lowercase, like `direction`). */
 export type ListEnd = "left" | "right";
 
+/**
+ * The union of both `lpos` option forms, for code that inspects them. It is
+ * not the argument type: `lpos` takes either `{ rank }` (one position) or
+ * `{ count, rank }` (an array), and the two return different things, so a bag
+ * whose `count` is `number | undefined` matches neither overload.
+ */
 export type ListPosOptions = {
   readonly rank?: number;
   readonly count?: number;
@@ -252,10 +258,14 @@ export function createListStore<
     return decodePositionsReply(await client.send(command));
   }
 
+  // `count?: undefined` rather than an absent property: `{ rank?: number }` is
+  // a weak type, so only a fresh object literal carrying `count` is rejected,
+  // and any variable (an options bag typed `ListPosOptions`, say) matched this
+  // overload while the implementation returned the array form.
   function lpos(
     id: TId,
     value: TInput,
-    options?: { rank?: number }
+    options?: { readonly rank?: number; readonly count?: undefined }
   ): Promise<number | null>;
   function lpos(
     id: TId,
