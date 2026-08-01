@@ -153,6 +153,16 @@ export class RetryJobError extends Error {
   ) {
     super(message, options);
     this.name = "RetryJobError";
+    // A `Retry-After` header parsed straight through can be NaN or Infinity.
+    // Redis rejects that as a sorted-set score, and by the time the retry
+    // script reaches its ZADD it has already dropped the lease, so the job
+    // would be stranded outside every lifecycle index. Refuse it here, where
+    // the worker still falls back to the ordinary backoff.
+    if (!Number.isFinite(retryAfterMs)) {
+      throw new ValidationError(
+        `queue retryAfterMs must be a finite number of milliseconds, received ${retryAfterMs}`
+      );
+    }
     this.retryAfterMs = Math.max(0, retryAfterMs);
   }
 }
@@ -185,7 +195,11 @@ export type JobContext<TPayload> = {
 };
 
 export type EnqueueOptions = {
-  /** Explicit job id. Default: a random UUID. */
+  /**
+   * Explicit job id. Default: a random UUID. An id may be reused once its
+   * previous job has finished, which starts a clean generation; reusing one
+   * that is still waiting, scheduled, or active throws.
+   */
   readonly id?: string;
   /** Delay before the job becomes runnable, in milliseconds. */
   readonly delayMs?: number;
@@ -198,7 +212,12 @@ export type EnqueueOptions = {
    * returns that job instead of paying for a second generation.
    */
   readonly idempotencyKey?: string;
-  /** How long an idempotency key is held. Defaults to the queue's `resultTtlMs`. */
+  /**
+   * How long the key is held *after* the job completes, so a late duplicate
+   * still gets the finished answer. The key is bound for the whole run however
+   * long that takes, and is freed outright if the job fails or is cancelled.
+   * Defaults to the queue's `resultTtlMs`, and never outlives the record.
+   */
   readonly idempotencyTtlMs?: number;
 };
 
@@ -310,7 +329,7 @@ const enqueueScript = defineScript<
     idempotencyTtlMs: string,
     signalCap: string
   ],
-  { id: string; deduplicated: boolean }
+  { id: string; deduplicated: boolean; liveStatus: string }
 >({
   keyCount: 4,
   lua: `${LUA_PRELUDE}
@@ -321,24 +340,50 @@ local now = tonumber(ARGV[4])
 local delay = tonumber(ARGV[5])
 local priority = tonumber(ARGV[6])
 local idem = ARGV[8]
+local key = jobKey(id)
 
+local idemKey = ""
 if idem ~= "" then
-  local idemKey = base .. ":idem:" .. idem
+  idemKey = base .. ":idem:" .. idem
   local existing = redis.call("GET", idemKey)
-  if existing then return {existing, 1} end
-  redis.call("SET", idemKey, id, "PX", n(tonumber(ARGV[9])))
+  if existing then return {existing, 1, ""} end
 end
 
--- Re-enqueuing an id that already reached a terminal state has to start from
--- a clean record: HSET only overwrites the fields it names, so without this
--- the fresh job inherits the dead one's cancelRequested flag (a worker aborts
+-- Reusing an id that has not finished yet cannot be made safe: the id would sit
+-- in two lifecycle indexes at once and the supposedly single job would run
+-- twice. Refuse before writing anything, the idempotency mapping included.
+local prior = redis.call("HGET", key, "status")
+if prior == "waiting" or prior == "scheduled" or prior == "active" then
+  return {id, 2, prior}
+end
+
+if idemKey ~= "" then
+  -- No expiry while the job is live. A mapping that lapsed mid-run let a
+  -- duplicate request start a second, paid-for generation; settle starts its
+  -- retention once there is a result to hand out, and frees it outright when
+  -- there is not.
+  redis.call("SET", idemKey, id)
+end
+
+-- Re-enqueuing an id that already reached a terminal state has to start from a
+-- clean slate. HSET only overwrites the fields it names, so without this the
+-- fresh job inherits the dead one's cancelRequested flag (a worker aborts
 -- brand-new work on the first heartbeat), its result/finishedAt (get() reports
 -- a "waiting" job as finished), and its resultTtlMs expiry (the record dies
--- while the id is still queued, and reserve pops an id with no payload).
-redis.call("HDEL", jobKey(id),
-  "cancelRequested", "result", "error", "finishedAt", "startedAt", "token")
-redis.call("PERSIST", jobKey(id))
-redis.call("HSET", jobKey(id),
+-- while the id is still queued, and reserve pops an id with no payload). The
+-- previous generation also leaves an event stream whose terminal entry ends a
+-- watch() on the new job, a dead-letter entry, and its own idempotency mapping.
+local priorIdem = redis.call("HGET", key, "idempotencyKey")
+if priorIdem and priorIdem ~= "" and priorIdem ~= idem then
+  redis.call("DEL", base .. ":idem:" .. priorIdem)
+end
+redis.call("ZREM", ready, id)
+redis.call("ZREM", scheduled, id)
+redis.call("ZREM", base .. ":dead", id)
+redis.call("ZREM", base .. ":leases", id)
+redis.call("DEL", key, eventsKey(id))
+
+redis.call("HSET", key,
   "id", id,
   "payload", ARGV[3],
   "attempt", "0",
@@ -347,26 +392,29 @@ redis.call("HSET", jobKey(id),
   "createdAt", n(now),
   "updatedAt", n(now),
   "progress", "0",
-  "idempotencyKey", idem)
+  "idempotencyKey", idem,
+  "idemTtlMs", ARGV[9])
 
 if delay > 0 then
-  redis.call("HSET", jobKey(id), "status", "scheduled")
+  redis.call("HSET", key, "status", "scheduled")
   redis.call("ZADD", scheduled, n(now + delay), id)
 else
   local seq = redis.call("INCR", seqKey)
-  redis.call("HSET", jobKey(id), "status", "waiting")
+  redis.call("HSET", key, "status", "waiting")
   redis.call("ZADD", ready, n((${MAX_PRIORITY} - priority) * ${PRIORITY_STRIDE} + seq), id)
   -- Doorbell: wake one blocked worker. Trimmed so an idle queue cannot grow it.
   redis.call("LPUSH", signal, "1")
   redis.call("LTRIM", signal, 0, tonumber(ARGV[10]) - 1)
 end
-return {id, 0}
+return {id, 0, ""}
 `,
   decode: (reply) => {
     const row = expectArray(reply, "enqueue");
+    const outcome = toNumber(row[1]);
     return {
       id: expectString(row[0], "enqueue"),
-      deduplicated: toNumber(row[1]) === 1
+      deduplicated: outcome === 1,
+      liveStatus: outcome === 2 ? expectString(row[2], "enqueue") : ""
     };
   }
 });
@@ -486,15 +534,16 @@ local key = jobKey(id)
 local attempt = tonumber(redis.call("HGET", key, "attempt") or "0") + 1
 
 -- A re-attempt regenerates from scratch, so its output starts over too.
--- Leaving the previous attempt's partial chunks in place would make a
--- resuming client concatenate two generations. Dropping the stream and
--- announcing a restart lets watchers clear what they already rendered; new
--- entry ids are still monotonically ahead of any cursor a client holds,
--- because Redis derives them from the clock.
+-- Leaving the previous attempt's partial chunks in place would make a resuming
+-- client concatenate two generations. Announce the restart, then trim
+-- everything before the marker: deleting the stream instead would reset the
+-- last-generated id, and a marker recreated in the same millisecond can land
+-- at or below the cursor a watcher already holds, which drops the restart
+-- boundary and every chunk sharing that millisecond.
 if attempt > 1 then
-  redis.call("DEL", eventsKey(id))
-  redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
+  local marker = redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
     "t", "restarted", "d", n(attempt))
+  redis.call("XTRIM", eventsKey(id), "MINID", marker)
 end
 
 redis.call("HSET", key,
@@ -587,7 +636,10 @@ return {1, cancelled and 1 or 0, eventId}
   }
 });
 
-/** Settle a job: 0 = lease lost, 1 = settled. */
+/**
+ * Settle a job: 0 = lease lost, 1 = settled, 2 = settled `cancelled` because a
+ * cancel had landed while the handler was still running.
+ */
 const settleScript = defineScript<
   readonly [
     base: string,
@@ -611,6 +663,16 @@ local status = ARGV[5]
 local key = jobKey(id)
 
 if redis.call("HGET", key, "token") ~= token then return 0 end
+
+-- Cancellation wins the race with the handler's own outcome. cancel() already
+-- promised the caller no result is coming, but the worker only learns of the
+-- flag on its next heartbeat, which can be a whole interval after the handler
+-- returned. Owning the lease decides who settles, not what they settle as.
+local cancelled = 0
+if status ~= "cancelled" and redis.call("HGET", key, "cancelRequested") == "1" then
+  status = "cancelled"
+  cancelled = 1
+end
 
 redis.call("ZREM", leases, id)
 redis.call("ZREM", ready, id)
@@ -638,7 +700,8 @@ else
     "t", "failed", "d", ARGV[6])
 end
 
-local ttl = n(tonumber(ARGV[7]))
+local ttlMs = tonumber(ARGV[7])
+local ttl = n(ttlMs)
 redis.call("PEXPIRE", key, ttl)
 redis.call("PEXPIRE", eventsKey(id), ttl)
 
@@ -646,16 +709,30 @@ redis.call("PEXPIRE", eventsKey(id), ttl)
 -- duplicate request gets the finished answer instead of paying again. A job
 -- that failed or was cancelled has no answer to hand out — free the key so the
 -- caller can legitimately retry with it.
-if status ~= "completed" then
-  local idem = redis.call("HGET", key, "idempotencyKey")
-  if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+local idem = redis.call("HGET", key, "idempotencyKey")
+if idem and idem ~= "" then
+  if status == "completed" then
+    -- The mapping was held with no expiry for the whole run; its retention
+    -- starts here, now that there is a result behind it. Capped at the
+    -- record's own TTL so a deduplicated id can never point at a record that
+    -- has already expired.
+    local hold = tonumber(redis.call("HGET", key, "idemTtlMs") or "0")
+    if hold <= 0 or hold > ttlMs then hold = ttlMs end
+    redis.call("PEXPIRE", base .. ":idem:" .. idem, n(hold))
+  else
+    redis.call("DEL", base .. ":idem:" .. idem)
+  end
 end
+if cancelled == 1 then return 2 end
 return 1
 `,
   decode: (reply) => toNumber(reply)
 });
 
-/** Reschedule a failed attempt. 0 = lease lost, 1 = retry scheduled. */
+/**
+ * Reschedule a failed attempt. 0 = lease lost, 1 = retry scheduled, 2 = settled
+ * `cancelled` instead because a cancel had landed during the attempt.
+ */
 const retryScript = defineScript<
   readonly [
     base: string,
@@ -663,7 +740,9 @@ const retryScript = defineScript<
     token: string,
     now: string,
     delayMs: string,
-    error: string
+    error: string,
+    ttlMs: string,
+    eventsMaxLen: string
   ],
   number
 >({
@@ -673,17 +752,46 @@ const retryScript = defineScript<
 local leases, scheduled = KEYS[1], KEYS[2]
 local id, token = ARGV[2], ARGV[3]
 local now = tonumber(ARGV[4])
+local delay = tonumber(ARGV[5])
 local key = jobKey(id)
 
 if redis.call("HGET", key, "token") ~= token then return 0 end
 
+-- Validate before the first write. Redis does not roll back what a script
+-- already did, so a delay caught at the ZADD would leave the job marked
+-- scheduled with no lease and no membership in any lifecycle index: nothing
+-- can reserve it and wait() hangs forever.
+if not (delay and delay >= 0 and delay < math.huge) then
+  return redis.error_reply(
+    "beni queue: retry delay must be a finite, non-negative number of milliseconds")
+end
+
 redis.call("ZREM", leases, id)
 redis.call("HDEL", key, "token")
+
+-- Cancellation wins over a retry too, or the queue schedules another paid
+-- generation of work the caller already stopped.
+if redis.call("HGET", key, "cancelRequested") == "1" then
+  redis.call("HSET", key,
+    "status", "cancelled",
+    "updatedAt", n(now),
+    "finishedAt", n(now),
+    "error", ARGV[6])
+  redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
+    "t", "cancelled", "d", "")
+  local ttl = n(tonumber(ARGV[7]))
+  redis.call("PEXPIRE", key, ttl)
+  redis.call("PEXPIRE", eventsKey(id), ttl)
+  local idem = redis.call("HGET", key, "idempotencyKey")
+  if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+  return 2
+end
+
 redis.call("HSET", key,
   "status", "scheduled",
   "updatedAt", n(now),
   "error", ARGV[6])
-redis.call("ZADD", scheduled, n(now + tonumber(ARGV[5])), id)
+redis.call("ZADD", scheduled, n(now + delay), id)
 return 1
 `,
   decode: (reply) => toNumber(reply)
@@ -912,7 +1020,7 @@ export function queue<TPayload, TResult = unknown>(
       enqueueOptions?.idempotencyTtlMs ?? resultTtlMs,
       "idempotencyTtlMs"
     );
-    return scripts.run(
+    const outcome = await scripts.run(
       enqueueScript,
       [readyKey, scheduledKey, seqKey, signalKey],
       [
@@ -928,6 +1036,12 @@ export function queue<TPayload, TResult = unknown>(
         SIGNAL_CAP
       ]
     );
+    if (outcome.liveStatus !== "") {
+      throw new ValidationError(
+        `queue job id ${JSON.stringify(id)} is still live (status "${outcome.liveStatus}"); cancel it or wait for it to finish before reusing the id`
+      );
+    }
+    return { id: outcome.id, deduplicated: outcome.deduplicated };
   }
 
   async function get(id: string): Promise<Job<TPayload, TResult> | null> {
@@ -1398,7 +1512,9 @@ export function queue<TPayload, TResult = unknown>(
             reserved.token,
             String(Date.now()),
             String(delayMs),
-            message
+            message,
+            String(resultTtlMs),
+            String(eventsMaxLen)
           ]
         );
       } catch (scheduleError) {

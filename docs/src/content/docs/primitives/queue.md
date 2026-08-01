@@ -105,11 +105,11 @@ await jobs.cancel(id); // true if the job will not produce a result
 
 A job that hasn't started is removed outright. A running job is flagged, and its worker aborts `job.signal` on the next `emit()`, so a `fetch` or AI SDK call wired to that signal tears down mid-stream and you stop paying for a cancelled answer. Either way the job settles `cancelled`, and watchers get a `cancelled` event instead of hanging forever.
 
-Cancelling can't race the worker into a double-settle: only the worker holding the current lease may write a result.
+Cancelling can't race the worker into a double-settle: only the worker holding the current lease may write a result. Nor can it lose to one. If the handler finishes, or throws a retryable error, after `cancel()` returned `true`, the job still settles `cancelled`: the result is discarded and no further attempt is scheduled, rather than the queue paying for a generation the caller already stopped.
 
 ### A retried generation restarts its stream
 
-If attempt 1 dies halfway through `"The capital of"`, attempt 2 starts over. The partial tokens are dropped and a `restarted` event is written first, so a client resuming from a cursor clears its buffer instead of rendering `"The capital ofThe capital of France is Paris"`.
+If attempt 1 dies halfway through `"The capital of"`, attempt 2 starts over. The partial tokens are dropped and a `restarted` event is written first, so a client resuming from a cursor clears its buffer instead of rendering `"The capital ofThe capital of France is Paris"`. The marker is always written above every entry id the previous attempt used, so a resuming cursor can't skip past it.
 
 That's the one event type worth handling deliberately.
 
@@ -121,7 +121,7 @@ const again = await jobs.enqueue({ prompt }, { idempotencyKey: requestId });
 // again.id === first.id, again.deduplicated === true, no second model call
 ```
 
-The key stays bound to the job while it runs *and after it completes*, so a retry arriving late gets the finished answer rather than starting over. A job that fails or is cancelled releases its key: there's no answer to hand out, so a genuine retry should be allowed.
+The key stays bound to the job for as long as it runs *and after it completes*, so a retry arriving late gets the finished answer rather than starting over. `idempotencyTtlMs` is the retention after completion, not a countdown from enqueue: a job that sits in a backlog for an hour and then streams for ten minutes still holds its key throughout. A job that fails or is cancelled releases its key: there's no answer to hand out, so a genuine retry should be allowed.
 
 ## Retries that match how providers actually fail
 
@@ -201,6 +201,8 @@ Jobs can also be delayed and prioritised, which is how interactive work stays ah
 await jobs.enqueue(payload, { priority: 9 }); // a user is waiting
 await jobs.enqueue(payload, { priority: 0, delayMs: 60_000 }); // nightly backfill
 ```
+
+Passing your own `id` reuses it: once that job has finished, re-enqueuing the id starts a clean generation, dropping the old record, its dead-letter entry, and its output stream so a watcher can't stop on last time's terminal event. Reusing an id that hasn't finished throws instead, because there is no honest way to have one id be two live jobs.
 
 ## When you don't need this
 
