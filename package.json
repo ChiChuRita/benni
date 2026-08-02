@@ -1,6 +1,6 @@
 {
   "name": "beni",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge.",
   "author": "ChiChuRita",
   "license": "MIT",
