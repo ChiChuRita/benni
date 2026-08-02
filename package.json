@@ -17,7 +17,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "provenance": false
+    "provenance": true
   },
   "type": "module",
   "main": "./dist/index.mjs",
