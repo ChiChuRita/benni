@@ -3,12 +3,12 @@ title: "Transactions"
 description: "Use redis.multi() to run commands atomically with MULTI/EXEC and decode replies into a typed tuple."
 ---
 
-Use `redis.multi()` to run several commands atomically with `MULTI`/`EXEC` and decode the replies into a typed tuple. It is the same builder a [session](/beni/advanced/sessions/) exposes as `s.multi()`.
+Use `redis.multi()` to run several commands atomically with `MULTI`/`EXEC` and decode the replies into a typed tuple. It is the same builder a [session](/benni/advanced/sessions/) exposes as `s.multi()`.
 
 ## Build And Execute
 
 ```ts
-import { numberReply, okReply, stringOrNullReply } from "beni";
+import { numberReply, okReply, stringOrNullReply } from "benni";
 
 const [, hits, draft] = await redis
   .multi()
@@ -48,7 +48,7 @@ An empty transaction resolves to `[]` without contacting Redis.
 
 ## Declaring Keys
 
-`.add()` queues raw command tuples, so Beni cannot tell which keys they touch. On Redis Cluster that matters, because every key in one transaction must hash to the same slot. Declare them with `.keys()`:
+`.add()` queues raw command tuples, so Benni cannot tell which keys they touch. On Redis Cluster that matters, because every key in one transaction must hash to the same slot. Declare them with `.keys()`:
 
 ```ts
 await redis
@@ -59,10 +59,10 @@ await redis
   .exec();
 ```
 
-Keys accumulate across calls, and the declared set is checked at compile time and, under `beni(client, { cluster: true })`, again before `EXEC` is sent. This is a declaration rather than a derivation: a key you queue but never declare is not checked. On a single-node Redis you can skip it entirely. See [Redis Cluster](/beni/advanced/cluster/).
+Keys accumulate across calls, and the declared set is checked at compile time and, under `benni(client, { cluster: true })`, again before `EXEC` is sent. This is a declaration rather than a derivation: a key you queue but never declare is not checked. On a single-node Redis you can skip it entirely. See [Redis Cluster](/benni/advanced/cluster/).
 
 ## Requirements And Limits
 
 The bound client must implement the optional `transaction` method of the `RedisClient` interface (the Node and Bun adapters do). Otherwise `exec()` throws `TypeError: Redis client does not support transactions`.
 
-For check-and-set logic that reads before it writes, use [optimistic transactions](/beni/advanced/optimistic-transactions/): `redis.watch()` runs a `WATCH`/`MULTI`/`EXEC` loop that retries on conflict. Very hot keys are still better served by a [Lua script](/beni/advanced/scripts/), which runs atomically on the server without a retry loop.
+For check-and-set logic that reads before it writes, use [optimistic transactions](/benni/advanced/optimistic-transactions/): `redis.watch()` runs a `WATCH`/`MULTI`/`EXEC` loop that retries on conflict. Very hot keys are still better served by a [Lua script](/benni/advanced/scripts/), which runs atomically on the server without a retry loop.

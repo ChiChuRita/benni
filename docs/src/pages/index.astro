@@ -3,12 +3,12 @@ import { Code } from "astro:components";
 import "starlight-theme-next/fonts/geist-sans/index.css";
 import "starlight-theme-next/fonts/geist-mono/index.css";
 
-// Astro's BASE_URL carries the configured `base` ("/beni") with a trailing
+// Astro's BASE_URL carries the configured `base` ("/benni") with a trailing
 // slash. Strip it so the helper below never emits a doubled separator.
 const root = import.meta.env.BASE_URL.replace(/\/$/, "");
 const p = (slug: string) => `${root}/${slug}`;
 
-const title = "Beni, the end-to-end typed Redis client for TypeScript";
+const title = "Benni, the end-to-end typed Redis client for TypeScript";
 const description =
   "The end-to-end typed Redis client for TypeScript: one API across Node, Bun, Deno, and the edge. Your declared types travel from write to read.";
 
@@ -16,7 +16,7 @@ const files = [
   {
     name: "schema.ts",
     note: "Plain TypeScript values. They create no keys and run no migrations.",
-    code: `import { hash, json, kv, number, string } from "beni/schema";
+    code: `import { hash, json, kv, number, string } from "benni/schema";
 
 type UserProfile = {
   name: string;
@@ -33,15 +33,15 @@ export const profiles = kv("profile", json<UserProfile>());`
   {
     name: "redis.ts",
     note: "Bind once, export the handle. Swap this one import to change runtime.",
-    code: `import { beni } from "beni";
-import { node } from "beni/node";
+    code: `import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node({
   url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
 });
 
-export const redis = beni(client, { schema });`
+export const redis = benni(client, { schema });`
   },
   {
     name: "app.ts",
@@ -100,11 +100,11 @@ const principles = [
 ];
 
 const runtimes = [
-  ["Node.js", "beni/node", "node-redis, an optional peer dependency"],
-  ["Node.js", "beni/ioredis", "Adopts an ioredis client you already have"],
-  ["Bun", "beni/bun", "Bun's built-in Redis client, no extra package"],
-  ["Deno", "beni/node", "npm:redis through Deno's npm compatibility"],
-  ["Edge", "beni/upstash", "Zero-dependency HTTP adapter, nothing but fetch"]
+  ["Node.js", "benni/node", "node-redis, an optional peer dependency"],
+  ["Node.js", "benni/ioredis", "Adopts an ioredis client you already have"],
+  ["Bun", "benni/bun", "Bun's built-in Redis client, no extra package"],
+  ["Deno", "benni/node", "npm:redis through Deno's npm compatibility"],
+  ["Edge", "benni/upstash", "Zero-dependency HTTP adapter, nothing but fetch"]
 ];
 
 const primitives = [
@@ -151,7 +151,7 @@ const primitives = [
         <a
           class="brand"
           href={p("")}
-          title="A beni-choko, the small dish beni pigment was sold in"
+          title="A benni-choko, the small dish benni pigment was sold in"
         >
           {/* currentColor on purpose: this copy of the mark sits inside the page,
               so it can follow the brand token instead of repeating the hex. */}
@@ -164,7 +164,7 @@ const primitives = [
               stroke-linecap="round"></path>
             <circle cx="32" cy="17" r="6" fill="currentColor"></circle>
           </svg>
-          beni
+          benni
         </a>
         <nav class="nav-links">
           <a class="hide-sm" href="#why">Why</a>
@@ -174,8 +174,8 @@ const primitives = [
           <a class="docs-link" href={p("getting-started/introduction/")}>Docs</a>
           <a
             class="gh"
-            href="https://github.com/ChiChuRita/beni"
-            aria-label="Beni on GitHub"
+            href="https://github.com/ChiChuRita/benni"
+            aria-label="Benni on GitHub"
           >
             <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true">
               <path
@@ -203,10 +203,10 @@ const primitives = [
           </p>
           <div class="actions">
             <a class="btn" href={p("getting-started/quick-start/")}>Quick start</a>
-            <a class="btn sec" href={p("getting-started/why-beni/")}>Why Beni?</a>
+            <a class="btn sec" href={p("getting-started/why-benni/")}>Why Benni?</a>
             <span class="cmd">
-              <span><span class="p">$</span> npm install beni redis</span>
-              <button class="icb" type="button" data-copy="npm install beni redis"
+              <span><span class="p">$</span> npm install benni redis</span>
+              <button class="icb" type="button" data-copy="npm install benni redis"
                 >Copy</button
               >
             </span>
@@ -251,7 +251,7 @@ const primitives = [
 
         <section id="why">
           <p class="eyebrow">Why</p>
-          <h2>They type the commands. Beni types your data.</h2>
+          <h2>They type the commands. Benni types your data.</h2>
           <p class="sub">
             <code>node-redis</code> and <code>ioredis</code> are already typed, but
             only at the command surface. A reply arrives as Redis's generic wire
@@ -267,7 +267,7 @@ const primitives = [
             </div>
             <div class="panel">
               <div class="pcap">
-                <span>Beni</span><span>Type carried through</span>
+                <span>Benni</span><span>Type carried through</span>
               </div>
               <Code code={after} lang="ts" theme="github-dark" />
             </div>
@@ -299,7 +299,7 @@ const primitives = [
           <p class="sub">
             Redis in TypeScript is fragmented by runtime rather than by dialect.
             The adapter contract is four methods wide, which is what makes one
-            portable API real. Already running ioredis? Hand Beni the instance you
+            portable API real. Already running ioredis? Hand Benni the instance you
             have. It shares that connection and closes only what it leased.
           </p>
           <div class="tw">
@@ -333,7 +333,7 @@ const primitives = [
         </section>
 
         <section id="primitives">
-          <p class="eyebrow">beni/primitives</p>
+          <p class="eyebrow">benni/primitives</p>
           <h2>Batteries only for what is easy to get wrong.</h2>
           <p class="sub">
             Built on any adapter, edge included. Not a search engine, not an index
@@ -357,8 +357,8 @@ const primitives = [
           <h2>Your types should survive the round trip.</h2>
           <div class="actions">
             <span class="cmd">
-              <span><span class="p">$</span> npm install beni redis</span>
-              <button class="icb" type="button" data-copy="npm install beni redis"
+              <span><span class="p">$</span> npm install benni redis</span>
+              <button class="icb" type="button" data-copy="npm install benni redis"
                 >Copy</button
               >
             </span>
@@ -369,14 +369,14 @@ const primitives = [
         </section>
 
         <p class="gloss">
-          <span class="hd"><b>紅</b> &nbsp;<strong>beni</strong> <em>(n.)</em></span
+          <span class="hd"><b>紅</b> &nbsp;<strong>benni</strong> <em>(n.)</em></span
           > the deep crimson pigment pressed from safflower. Which makes this the
           red Redis client. We named it twice, in two languages, and noticed far too
           late.
         </p>
 
         <footer>
-          <span>Beni, the end-to-end typed Redis client for TypeScript</span>
+          <span>Benni, the end-to-end typed Redis client for TypeScript</span>
           <span>MIT licensed</span>
         </footer>
       </div>

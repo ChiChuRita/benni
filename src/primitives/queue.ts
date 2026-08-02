@@ -763,7 +763,7 @@ if redis.call("HGET", key, "token") ~= token then return 0 end
 -- can reserve it and wait() hangs forever.
 if not (delay and delay >= 0 and delay < math.huge) then
   return redis.error_reply(
-    "beni queue: retry delay must be a finite, non-negative number of milliseconds")
+    "benni queue: retry delay must be a finite, non-negative number of milliseconds")
 end
 
 redis.call("ZREM", leases, id)
@@ -946,7 +946,7 @@ return 1
  *
  * Every key is hash-tagged into one Cluster slot, so the queue is slot-safe.
  * `enqueue`, `cancel`, `get`, and `watch` need only `EVALSHA` plus stream reads
- * and run over `beni/upstash` on the edge; `worker()` needs a long-lived
+ * and run over `benni/upstash` on the edge; `worker()` needs a long-lived
  * connection and blocks on a doorbell list when the adapter provides
  * `session()`, falling back to polling when it does not.
  */
@@ -1294,7 +1294,7 @@ export function queue<TPayload, TResult = unknown>(
     const onError =
       workerOptions?.onError ??
       ((error: unknown) => {
-        console.error("[beni queue] worker error", error);
+        console.error("[benni queue] worker error", error);
       });
 
     let running = true;

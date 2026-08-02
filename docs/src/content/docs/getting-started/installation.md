@@ -1,47 +1,47 @@
 ---
 title: "Installation"
-description: "Install Beni, pick the peer dependency your runtime needs, and check which Redis servers are supported."
+description: "Install Benni, pick the peer dependency your runtime needs, and check which Redis servers are supported."
 ---
 
-Install Beni and the Redis client used by the Node.js adapter:
+Install Benni and the Redis client used by the Node.js adapter:
 
 ```sh
-pnpm add beni redis
+pnpm add benni redis
 ```
 
-Beni is an ESM package. The primary imports are:
+Benni is an ESM package. The primary imports are:
 
 ```ts
-import { beni } from "beni";
-import { node } from "beni/node";
-import { hash, json, kv, number, string } from "beni/schema";
+import { benni } from "benni";
+import { node } from "benni/node";
+import { hash, json, kv, number, string } from "benni/schema";
 ```
 
-The Node.js adapter uses the [`redis`](https://www.npmjs.com/package/redis) package (node-redis, the officially recommended Node client). Beni declares it as an **optional peer dependency**, so you install it alongside Beni only when you use `beni/node`. That keeps the install tiny for other runtimes. Bun is supported through Bun's built-in Redis client and needs no extra package:
+The Node.js adapter uses the [`redis`](https://www.npmjs.com/package/redis) package (node-redis, the officially recommended Node client). Benni declares it as an **optional peer dependency**, so you install it alongside Benni only when you use `benni/node`. That keeps the install tiny for other runtimes. Bun is supported through Bun's built-in Redis client and needs no extra package:
 
 ```sh
-bun add beni
+bun add benni
 ```
 
-Beni has four optional peer dependencies, all opt-in; install one only when
+Benni has four optional peer dependencies, all opt-in; install one only when
 you import the subpath that needs it:
 
 | Peer | Needed by | Version |
 | --- | --- | --- |
-| [`redis`](https://www.npmjs.com/package/redis) | `beni/node` | `^6.1.0` |
-| [`ioredis`](https://www.npmjs.com/package/ioredis) | `beni/ioredis` | `^5.0.0` |
-| [`hono`](https://hono.dev) | `beni/hono` | `>=4.0.0` |
-| [`zod`](https://zod.dev) | `beni/zod` | `^4.1.0` |
+| [`redis`](https://www.npmjs.com/package/redis) | `benni/node` | `^6.1.0` |
+| [`ioredis`](https://www.npmjs.com/package/ioredis) | `benni/ioredis` | `^5.0.0` |
+| [`hono`](https://hono.dev) | `benni/hono` | `>=4.0.0` |
+| [`zod`](https://zod.dev) | `benni/zod` | `^4.1.0` |
 
-Already running ioredis? [`beni/ioredis`](/beni/runtime/ioredis/) gives the same
-typed API and can adopt the client you already have, so adopting Beni is not a
+Already running ioredis? [`benni/ioredis`](/benni/runtime/ioredis/) gives the same
+typed API and can adopt the client you already have, so adopting Benni is not a
 client migration:
 
 ```sh
-pnpm add beni ioredis
+pnpm add benni ioredis
 ```
 
-Deno needs no separate adapter: it runs node-redis directly through npm compatibility, so Deno users import the Node adapter (`npm:beni/node`) and `npm:redis`. There is no `beni/deno` entrypoint: Beni ships one runtime-agnostic core plus thin client adapters, not per-runtime builds.
+Deno needs no separate adapter: it runs node-redis directly through npm compatibility, so Deno users import the Node adapter (`npm:benni/node`) and `npm:redis`. There is no `benni/deno` entrypoint: Benni ships one runtime-agnostic core plus thin client adapters, not per-runtime builds.
 
 ## Server Compatibility
 
@@ -58,7 +58,7 @@ endpoint. The other rows are verified manually against the same suite:
 
 Everything else (streams, sorted sets, `lmpop`, `sintercard`, geo, bitfields) works from Redis 7.2 up.
 
-Upstash and other serverless endpoints are covered through the [HTTP adapter](/beni/runtime/edge/).
+Upstash and other serverless endpoints are covered through the [HTTP adapter](/benni/runtime/edge/).
 
 For local development, run Redis with Docker:
 
@@ -67,7 +67,7 @@ pnpm redis:build
 pnpm redis:run
 ```
 
-Then point Beni at Redis:
+Then point Benni at Redis:
 
 ```ts
 const client = await node({

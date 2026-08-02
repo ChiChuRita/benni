@@ -1,5 +1,5 @@
 // Every `create*Resource` below is imported TYPE-ONLY. QueryResource and
-// BeniSession name them through `ReturnType<typeof …>` to keep the public
+// BenniSession name them through `ReturnType<typeof …>` to keep the public
 // types byte-identical, while the runtime dispatch goes through the store
 // binding each schema carries — so a bundler only ever pulls in the store
 // modules whose schemas the app actually declares. Turning any of these into
@@ -35,7 +35,7 @@ import {
 } from "./core/scan.js";
 import type { createScriptResource, ScriptSchema } from "./core/script.js";
 import {
-  createBeniSession,
+  createBenniSession,
   type RunWatchOptions,
   runWatch
 } from "./core/session.js";
@@ -77,9 +77,9 @@ import type {
   SortedSetSchema
 } from "./core/types.js";
 
-export type BeniSchema = Record<string, unknown>;
+export type BenniSchema = Record<string, unknown>;
 
-export type BeniOptions<TSchema extends BeniSchema = BeniSchema> = {
+export type BenniOptions<TSchema extends BenniSchema = BenniSchema> = {
   readonly schema?: TSchema;
   /**
    * Called when a Pub/Sub handler throws or rejects. Delivery to the other
@@ -93,16 +93,16 @@ export type BeniOptions<TSchema extends BeniSchema = BeniSchema> = {
    * it does not.
    *
    * ```ts
-   * import { assertSameSlot } from "beni/cluster";
-   * const redis = beni(client, { cluster: assertSameSlot });
+   * import { assertSameSlot } from "benni/cluster";
+   * const redis = benni(client, { cluster: assertSameSlot });
    * ```
    *
    * You pass the checker rather than `true` so the CRC16 table and the error's
-   * fix-hint prose live in `beni/cluster` instead of the root entry. `beni()`
+   * fix-hint prose live in `benni/cluster` instead of the root entry. `benni()`
    * has to reference the guard to install it, so a boolean would pull all of
    * it into every bundle, including the ones that never turn the check on.
    *
-   * **This validates your keys; it does not route them.** Beni models slot
+   * **This validates your keys; it does not route them.** Benni models slot
    * co-location, not cluster topology: routing comes from the cluster-aware
    * client underneath.
    *
@@ -114,12 +114,12 @@ export type BeniOptions<TSchema extends BeniSchema = BeniSchema> = {
 };
 
 /**
- * The data-store accessors shared by `beni()` and every session — each bound
- * to the connection passed in. `beni()` binds them to the shared client; a
+ * The data-store accessors shared by `benni()` and every session — each bound
+ * to the connection passed in. `benni()` binds them to the shared client; a
  * session rebinds the identical set to its private connection so
  * `session.kv(x)` and `redis.kv(x)` behave the same. The list/zset/stream
  * accessors returned here are the base (non-blocking) shape; sessions swap in
- * the blocking supersets (see createBeniSessionFacade).
+ * the blocking supersets (see createBenniSessionFacade).
  *
  * Each accessor resolves the schema's own store binding rather than naming a
  * store factory, so this module pulls in no store code. The casts restore the
@@ -274,7 +274,7 @@ export type SchemaKind =
   | "script";
 
 /**
- * {@link SchemaKind} at runtime. `buildQuery` needs it to tell a beni schema
+ * {@link SchemaKind} at runtime. `buildQuery` needs it to tell a benni schema
  * that lost its store binding (a copy) from a foreign object that merely has a
  * `kind` property.
  */
@@ -454,14 +454,14 @@ export type QueryResource<T> = T extends { readonly kind: "hash" }
  * keyed by its export name, resolved to its typed resource. Entries that are
  * not schemas (a re-exported type, a helper) are dropped.
  */
-export type QueryRegistry<TSchema extends BeniSchema> = {
+export type QueryRegistry<TSchema extends BenniSchema> = {
   [K in keyof TSchema as TSchema[K] extends { readonly kind: SchemaKind }
     ? K
     : never]: QueryResource<TSchema[K]>;
 };
 
 /**
- * A dedicated connection leased from the Beni handle, shaped like the same
+ * A dedicated connection leased from the Benni handle, shaped like the same
  * store surface. Exposes the same data-store accessors bound to its private
  * connection — where the
  * list/zset/stream accessors are supersets that also expose the blocking
@@ -472,7 +472,7 @@ export type QueryRegistry<TSchema extends BeniSchema> = {
  * semantics, and the smaller surface keeps the session's purpose legible —
  * block, or watch-then-commit.
  */
-export type BeniSession = Omit<StoreAccessors, "list" | "zset" | "stream"> & {
+export type BenniSession = Omit<StoreAccessors, "list" | "zset" | "stream"> & {
   list<
     TInput,
     TOutput,
@@ -525,12 +525,15 @@ export type BeniSession = Omit<StoreAccessors, "list" | "zset" | "stream"> & {
 
 /**
  * The redis.watch policy layer options: the retry loop lives in core
- * (runWatch); the borrow-a-session escape hatch is typed here in the Beni
- * handle's BeniSession.
+ * (runWatch); the borrow-a-session escape hatch is typed here in the Benni
+ * handle's BenniSession.
  */
-export type BeniWatchOptions = Omit<RunWatchOptions<BeniSession>, "session"> & {
+export type BenniWatchOptions = Omit<
+  RunWatchOptions<BenniSession>,
+  "session"
+> & {
   /** Borrow a long-lived session (hot paths); never closed by the helper. */
-  readonly session?: BeniSession;
+  readonly session?: BenniSession;
 };
 
 /**
@@ -538,16 +541,16 @@ export type BeniWatchOptions = Omit<RunWatchOptions<BeniSession>, "session"> & {
  * zset, and stream resolve the schema's *session* binding — the blocking
  * superset — over the session's private connection.
  */
-function createBeniSessionFacade(
+function createBenniSessionFacade(
   raw: RedisSession,
   parent: StoreContext
-): BeniSession {
-  const kernel = createBeniSession(raw, parent.assertSameSlot);
+): BenniSession {
+  const kernel = createBenniSession(raw, parent.assertSameSlot);
   // A session shares the parent's singletons (hub, script runner) but binds
   // every store to its own connection.
   const ctx: StoreContext = { ...parent, client: kernel.client };
   const base = createStoreAccessors(ctx);
-  const accessors: BeniSession = {
+  const accessors: BenniSession = {
     kv: base.kv,
     hash: base.hash,
     set: base.set,
@@ -623,14 +626,14 @@ function createBeniSessionFacade(
  * @example
  * ```ts
  * import * as schema from "./schema";
- * const redis = beni(client, { schema });
+ * const redis = benni(client, { schema });
  * await redis.query.users.set("42", { name: "Ada", score: 10 });
  * await redis.hash(schema.users).hset("42", "score", 11);
  * ```
  */
-export function beni<TSchema extends BeniSchema = BeniSchema>(
+export function benni<TSchema extends BenniSchema = BenniSchema>(
   client: RedisClient,
-  options: BeniOptions<TSchema> = {}
+  options: BenniOptions<TSchema> = {}
 ) {
   const ctx = createStoreContext(
     client,
@@ -639,18 +642,18 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
   );
   const accessors = createStoreAccessors(ctx);
 
-  async function openSession(): Promise<BeniSession> {
+  async function openSession(): Promise<BenniSession> {
     if (client.session === undefined) {
       throw new TypeError("Redis client does not support sessions");
     }
-    return createBeniSessionFacade(await client.session(), ctx);
+    return createBenniSessionFacade(await client.session(), ctx);
   }
 
-  function session(): Promise<BeniSession>;
-  function session<T>(fn: (s: BeniSession) => Promise<T>): Promise<T>;
+  function session(): Promise<BenniSession>;
+  function session<T>(fn: (s: BenniSession) => Promise<T>): Promise<T>;
   function session<T>(
-    fn?: (s: BeniSession) => Promise<T>
-  ): Promise<BeniSession | T> {
+    fn?: (s: BenniSession) => Promise<T>
+  ): Promise<BenniSession | T> {
     if (fn === undefined) return openSession();
     return openSession().then(async (leased) => {
       try {
@@ -667,11 +670,11 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
     if (schema) {
       for (const name of Object.keys(schema)) {
         const value = (schema as Record<string, unknown>)[name];
-        // The store binding is what makes an export a beni schema, not a
+        // The store binding is what makes an export a benni schema, not a
         // `kind` property: Valibot stamps `kind` on every schema and ArkType
         // on every type(), and both are ordinary co-exports of a schema module
         // (that is how `json(validator)` is used), so claiming every
-        // kind-bearing object would kill beni() at bind time on a module that
+        // kind-bearing object would kill benni() at bind time on a module that
         // is perfectly valid.
         if (
           (value as Partial<BoundSchema> | null | undefined)?.[STORE] ===
@@ -788,9 +791,9 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
       // conditional, so without it the check silently never fires.
       keys: TKeys & SameSlotArg<TKeys>,
       body: (
-        s: BeniSession
+        s: BenniSession
       ) => Promise<WatchedRedisTransaction<TResults> | null>,
-      watchOptions: BeniWatchOptions = {}
+      watchOptions: BenniWatchOptions = {}
     ): Promise<TResults | null> {
       return runWatch(openSession, keys, body, watchOptions);
     },
@@ -815,14 +818,14 @@ export function beni<TSchema extends BeniSchema = BeniSchema>(
 }
 
 /**
- * The type of the bound handle `beni()` returns — name it in your own
+ * The type of the bound handle `benni()` returns — name it in your own
  * signatures the way you would Drizzle's `NodePgDatabase`.
  * @example
  * ```ts
  * import * as schema from "./schema";
- * export function makeHandlers(redis: Beni<typeof schema>) { ... }
+ * export function makeHandlers(redis: Benni<typeof schema>) { ... }
  * ```
  */
-export type Beni<TSchema extends BeniSchema = BeniSchema> = ReturnType<
-  typeof beni<TSchema>
+export type Benni<TSchema extends BenniSchema = BenniSchema> = ReturnType<
+  typeof benni<TSchema>
 >;

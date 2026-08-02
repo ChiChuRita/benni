@@ -62,7 +62,7 @@ export type LockHandle = {
  * A distributed lock over Redis: `SET key token NX PX ttl` to acquire, and an
  * atomic check-and-delete Lua to release, so a caller can never release a lock
  * that expired and was re-acquired elsewhere. Works over any adapter, including
- * `beni/upstash` on the edge.
+ * `benni/upstash` on the edge.
  *
  * ```ts
  * const locks = lock(client, { ttlMs: 10_000 });

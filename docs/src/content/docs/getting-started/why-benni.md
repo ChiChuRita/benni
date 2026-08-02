@@ -1,5 +1,5 @@
 ---
-title: "Why Beni?"
+title: "Why Benni?"
 description: "Why add a typed schema layer when node-redis and ioredis are already typed? Because they type the commands, not your data."
 ---
 
@@ -27,7 +27,7 @@ const loadedUser = {
 - Refactoring is risky.
 - Raw Redis commands are powerful but easy to misuse.
 
-Beni keeps Redis explicit, but adds a typed schema layer:
+Benni keeps Redis explicit, but adds a typed schema layer:
 
 ```ts
 export const users = hash("user", {
@@ -45,11 +45,11 @@ const user = await redis.hash(users).hget(id);
 
 You still use Redis. You still understand what happens. You just stop scattering strings and parsers across your app.
 
-## Beni And Redis Clients
+## Benni And Redis Clients
 
-Beni is not a replacement for Redis. It is a typed layer on top of a Redis client: the client types the commands, Beni types your data.
+Benni is not a replacement for Redis. It is a typed layer on top of a Redis client: the client types the commands, Benni types your data.
 
-| Feature | node-redis / ioredis | Beni |
+| Feature | node-redis / ioredis | Benni |
 | --- | --- | --- |
 | Raw Redis commands | Yes | Yes |
 | Command-level types | Yes (wire shape) | Yes |
@@ -59,4 +59,4 @@ Beni is not a replacement for Redis. It is a typed layer on top of a Redis clien
 | Runtime reach | Node only | Node, Bun, Deno, edge/serverless |
 | Escape hatch | Native | `redis.raw` |
 
-Use a raw client when you want direct command access everywhere. Use Beni when your application has repeated Redis data patterns and you want your declared types to survive the round-trip, safer keys, and better refactoring, across every runtime.
+Use a raw client when you want direct command access everywhere. Use Benni when your application has repeated Redis data patterns and you want your declared types to survive the round-trip, safer keys, and better refactoring, across every runtime.

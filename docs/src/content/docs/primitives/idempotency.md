@@ -6,7 +6,7 @@ description: "Exactly-once side effects keyed by a client-supplied Idempotency-K
 A retried POST must not charge the card twice, and it must return the *first* response rather than a fresh one. That is the [Stripe `Idempotency-Key`](https://docs.stripe.com/api/idempotent_requests) contract, and clients retry far more often than you would like: double-clicks, mobile reconnects, proxy timeouts, and every SDK with automatic retries.
 
 ```ts
-import { idempotency } from "beni/primitives";
+import { idempotency } from "benni/primitives";
 
 const once = idempotency<Receipt>(client);
 
@@ -25,7 +25,7 @@ The first caller runs the handler and stores its result. Every later caller with
 
 The two look alike and behave differently in the way that matters. A cache may recompute a pure read whenever it likes; a miss costs latency. Here a "miss" costs a second charge on someone's card, so the effect must run exactly once and the *stored* outcome must be replayed even if recomputing would be cheap.
 
-Which is why [`cache`](/beni/primitives/cache/) is keyed by what you are reading, and this is keyed by the request the client made.
+Which is why [`cache`](/benni/primitives/cache/) is keyed by what you are reading, and this is keyed by the request the client made.
 
 ## Concurrent Duplicates
 
@@ -122,11 +122,11 @@ Size `runningTtlMs` to your slowest handler. Too short and a second caller assum
 ## When You Don't Need This
 
 - **The operation is naturally idempotent.** A `PUT` that sets a value needs no key.
-- **You are caching a read.** Use [`cache`](/beni/primitives/cache/); it has stampede protection and no exactly-once bookkeeping to pay for.
-- **The work is long-running.** Hand it to the [queue](/beni/primitives/queue/), which takes an `idempotencyKey` of its own and gives you a job to poll.
+- **You are caching a read.** Use [`cache`](/benni/primitives/cache/); it has stampede protection and no exactly-once bookkeeping to pay for.
+- **The work is long-running.** Hand it to the [queue](/benni/primitives/queue/), which takes an `idempotencyKey` of its own and gives you a job to poll.
 
 ## See Also
 
-- [Cache](/beni/primitives/cache/)
-- [AI Job Queue](/beni/primitives/queue/), which has idempotency built in
-- [Next.js integration](/beni/integrations/nextjs/)
+- [Cache](/benni/primitives/cache/)
+- [AI Job Queue](/benni/primitives/queue/), which has idempotency built in
+- [Next.js integration](/benni/integrations/nextjs/)

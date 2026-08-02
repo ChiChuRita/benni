@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
 import type { HashTag, ProvableTag } from "../src/core/keys.js";
 import { numberReply } from "../src/core/transaction.js";
-import { beni } from "../src/database.js";
+import { benni } from "../src/database.js";
 import { kv, number as schemaNumber, script, zset } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
@@ -50,7 +50,7 @@ const move = script("move", {
   lua: "return 1"
 });
 
-const redis = beni(fakeClient([], []));
+const redis = benni(fakeClient([], []));
 declare const body: (session: never) => Promise<null>;
 
 /**

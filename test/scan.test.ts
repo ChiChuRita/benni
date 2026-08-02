@@ -243,13 +243,13 @@ describe("scanHash", () => {
   it("emits HSCAN, decodes declared fields, and skips undeclared ones", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [
-      ["0", ["name", "beni", "legacy", "x", "score", "42"]]
+      ["0", ["name", "benni", "legacy", "x", "score", "42"]]
     ]);
 
     await expect(
       collect(scanHash(client, profiles, "7", { match: "*", count: 10 }))
     ).resolves.toEqual([
-      { field: "name", value: "beni" },
+      { field: "name", value: "benni" },
       { field: "score", value: 42 }
     ]);
 

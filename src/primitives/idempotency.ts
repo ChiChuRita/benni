@@ -148,7 +148,7 @@ export type IdempotentResult<T> = {
  *
  * A losing caller waits for the winner's result by default, so a double-click
  * gets the same receipt rather than a 409. Works over any adapter, including
- * `beni/upstash` on the edge.
+ * `benni/upstash` on the edge.
  *
  * **If the handler throws, the key is released** so the operation can be
  * retried. That is right for the failures you actually see (a timeout, a 503),

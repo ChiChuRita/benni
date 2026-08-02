@@ -10,7 +10,7 @@ Sets and lists model collections under Redis keys while preserving member types.
 Use sets for unique membership.
 
 ```ts
-import { set, string } from "beni/schema";
+import { set, string } from "benni/schema";
 
 export const teamMembers = set("team-members", string());
 
@@ -32,7 +32,7 @@ const members = await nodeRedis.sMembers("team-members:engineering");
 Use lists for ordered queues, recent items, and bounded histories.
 
 ```ts
-import { json, list } from "beni/schema";
+import { json, list } from "benni/schema";
 
 type Event = {
   type: string;

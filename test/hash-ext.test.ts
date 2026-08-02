@@ -28,11 +28,11 @@ describe("createHashStore getAll", () => {
   it("decodes flat-array replies and ignores undeclared fields", async () => {
     const commands: RedisCommand[] = [];
     const store = userStore(commands, [
-      ["name", "beni", "score", "7", "legacy", "ignored"]
+      ["name", "benni", "score", "7", "legacy", "ignored"]
     ]);
 
     await expect(store.hgetall("42")).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: 7
     });
 
@@ -44,7 +44,7 @@ describe("createHashStore getAll", () => {
       [],
       [
         new Map<RedisReply, RedisReply>([
-          ["name", "beni"],
+          ["name", "benni"],
           ["score", "7"],
           ["legacy", "ignored"]
         ])
@@ -52,7 +52,7 @@ describe("createHashStore getAll", () => {
     );
 
     await expect(store.hgetall("42")).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: 7
     });
   });
@@ -104,10 +104,10 @@ describe("createHashStore getAll", () => {
 describe("createHashStore getFields", () => {
   it("emits HMGET and decodes present fields, nulls for missing", async () => {
     const commands: RedisCommand[] = [];
-    const store = userStore(commands, [["beni", null]]);
+    const store = userStore(commands, [["benni", null]]);
 
     await expect(store.hmget("42", ["name", "score"])).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: null
     });
 
@@ -140,7 +140,7 @@ describe("createHashStore getFields", () => {
   });
 
   it("rejects replies with fewer items than requested fields", async () => {
-    const store = userStore([], [["beni"]]);
+    const store = userStore([], [["benni"]]);
 
     await expect(store.hmget("42", ["name", "score"])).rejects.toThrow(
       "Expected Redis HMGET item to return string or null"
@@ -252,11 +252,11 @@ describe("createHashStore setFieldIfAbsent and fieldLength", () => {
     const store = userStore(commands, [1, 0]);
 
     await expect(store.hsetnx("42", "score", 7)).resolves.toBe(true);
-    await expect(store.hsetnx("42", "name", "beni")).resolves.toBe(false);
+    await expect(store.hsetnx("42", "name", "benni")).resolves.toBe(false);
 
     expect(commands).toEqual([
       ["HSETNX", "user:42", "score", "7"],
-      ["HSETNX", "user:42", "name", "beni"]
+      ["HSETNX", "user:42", "name", "benni"]
     ]);
   });
 
@@ -453,10 +453,10 @@ describe("createHashStore field expiration modes", () => {
 describe("createHashStore getFieldsEx", () => {
   it("emits HGETEX without an expiry and decodes positionally", async () => {
     const commands: RedisCommand[] = [];
-    const store = userStore(commands, [["beni", null]]);
+    const store = userStore(commands, [["benni", null]]);
 
     await expect(store.hgetex("42", ["name", "score"])).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: null
     });
 
@@ -467,7 +467,7 @@ describe("createHashStore getFieldsEx", () => {
 
   it("inserts the expiry tokens before FIELDS", async () => {
     const commands: RedisCommand[] = [];
-    const store = userStore(commands, [["beni"], ["beni"], ["beni"]]);
+    const store = userStore(commands, [["benni"], ["benni"], ["benni"]]);
 
     await store.hgetex("42", ["name"], { ttlSeconds: 60 });
     await store.hgetex("42", ["name"], {
@@ -494,10 +494,10 @@ describe("createHashStore getFieldsEx", () => {
 describe("createHashStore getDelFields", () => {
   it("emits HGETDEL and decodes positionally with nulls for missing", async () => {
     const commands: RedisCommand[] = [];
-    const store = userStore(commands, [["beni", null]]);
+    const store = userStore(commands, [["benni", null]]);
 
     await expect(store.hgetdel("42", ["name", "score"])).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: null
     });
 
@@ -518,13 +518,13 @@ describe("createHashStore setFieldsEx", () => {
     const commands: RedisCommand[] = [];
     const store = userStore(commands, [1, 0]);
 
-    await expect(store.hsetex("42", { name: "beni", score: 7 })).resolves.toBe(
+    await expect(store.hsetex("42", { name: "benni", score: 7 })).resolves.toBe(
       true
     );
     await expect(store.hsetex("42", { score: 9 })).resolves.toBe(false);
 
     expect(commands).toEqual([
-      ["HSETEX", "user:42", "FIELDS", 2, "name", "beni", "score", "7"],
+      ["HSETEX", "user:42", "FIELDS", 2, "name", "benni", "score", "7"],
       ["HSETEX", "user:42", "FIELDS", 1, "score", "9"]
     ]);
   });

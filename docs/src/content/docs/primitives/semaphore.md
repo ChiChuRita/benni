@@ -8,7 +8,7 @@ A lock lets one caller through. A semaphore lets `N` through. That number is usu
 Rate and concurrency are different constraints, and model providers impose both: a rate limit protects their billing, a concurrency limit protects their capacity, and exceeding either gets you 429s. `p-limit` solves this inside one process; the moment you run two instances, the limit is per-instance and the provider sees the sum.
 
 ```ts
-import { semaphore } from "beni/primitives";
+import { semaphore } from "benni/primitives";
 
 const slots = semaphore(client, { limit: 20, leaseMs: 60_000 });
 
@@ -44,7 +44,7 @@ By default acquisition fails immediately. To queue instead:
 await slots.run("openai", work, { retries: 100, retryDelayMs: 50 });
 ```
 
-Retries are a bounded spin, not a fair queue: callers do not get slots in arrival order, and a heavily contended semaphore can starve an unlucky one. If strict ordering matters, that is a job for the [queue](/beni/primitives/queue/), which is built for it.
+Retries are a bounded spin, not a fair queue: callers do not get slots in arrival order, and a heavily contended semaphore can starve an unlucky one. If strict ordering matters, that is a job for the [queue](/benni/primitives/queue/), which is built for it.
 
 ## Dead Holders
 
@@ -66,7 +66,7 @@ await slots.count("openai");   // live holders, ignoring lapsed leases
 
 ## Relationship To `lock`
 
-This is [`lock`](/beni/primitives/lock/) with a number: same handle shape, same `run`, same retry options. Reach for `lock` when the answer is one and for this when it is a budget. Everything you know about one transfers.
+This is [`lock`](/benni/primitives/lock/) with a number: same handle shape, same `run`, same retry options. Reach for `lock` when the answer is one and for this when it is a budget. Everything you know about one transfers.
 
 ## Options
 
@@ -80,13 +80,13 @@ This is [`lock`](/beni/primitives/lock/) with a number: same handle shape, same 
 
 ## When You Don't Need This
 
-- **One caller at a time.** That is [`lock`](/beni/primitives/lock/).
-- **Limiting request rate.** That is [`ratelimit`](/beni/primitives/ratelimit/). Concurrency and rate are independent; you often want both.
+- **One caller at a time.** That is [`lock`](/benni/primitives/lock/).
+- **Limiting request rate.** That is [`ratelimit`](/benni/primitives/ratelimit/). Concurrency and rate are independent; you often want both.
 - **Concurrency inside one process.** `p-limit` is in-memory and free. This costs a round trip per acquire, which only buys you something when the limit spans processes.
-- **Work that should be queued, not rejected.** If callers must eventually all run, in order, use the [queue](/beni/primitives/queue/) and set its worker concurrency.
+- **Work that should be queued, not rejected.** If callers must eventually all run, in order, use the [queue](/benni/primitives/queue/) and set its worker concurrency.
 
 ## See Also
 
-- [Distributed Lock](/beni/primitives/lock/)
-- [Rate Limiting](/beni/primitives/ratelimit/)
-- [Budget](/beni/primitives/budget/) for spend limits
+- [Distributed Lock](/benni/primitives/lock/)
+- [Rate Limiting](/benni/primitives/ratelimit/)
+- [Budget](/benni/primitives/budget/) for spend limits

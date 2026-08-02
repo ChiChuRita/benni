@@ -6,7 +6,7 @@ description: "A correct distributed lock over Redis: acquire with SET NX PX, rel
 `lock` is a distributed lock built the correct way: acquire with `SET key token NX PX ttl`, and release with an atomic check-and-delete Lua so a caller can **never** delete a lock that already expired and was re-acquired by someone else, the classic footgun of a naive `DEL`.
 
 ```ts
-import { lock } from "beni/primitives";
+import { lock } from "benni/primitives";
 
 const locks = lock(client, { ttlMs: 10_000 });
 
@@ -15,10 +15,10 @@ await locks.run("order:42", async () => {
 });
 ```
 
-When the lock cannot be acquired, `run()` throws a typed `LockNotAcquiredError` (exported from `beni/primitives`), which carries the contested `.key`:
+When the lock cannot be acquired, `run()` throws a typed `LockNotAcquiredError` (exported from `benni/primitives`), which carries the contested `.key`:
 
 ```ts
-import { LockNotAcquiredError } from "beni/primitives";
+import { LockNotAcquiredError } from "benni/primitives";
 
 try {
   await locks.run("order:42", processOrder);
@@ -31,7 +31,7 @@ try {
 }
 ```
 
-`lock` takes any `RedisClient`, so it works over every adapter, including [`beni/upstash`](/beni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
+`lock` takes any `RedisClient`, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
 
 ## Acquire and release manually
 

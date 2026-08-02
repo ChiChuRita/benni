@@ -5,7 +5,7 @@ import type { RedisClient } from "../src/core/index.js";
 import { ioredis } from "../src/ioredis/index.js";
 import { node } from "../src/node/index.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 const url = () => redisUrl as string;
@@ -61,7 +61,7 @@ describeRedis("adapter leak backstop", () => {
   }
 });
 
-describeRedis("beni/node close()", () => {
+describeRedis("benni/node close()", () => {
   it("is idempotent, like every other adapter", async () => {
     const client = await node({ url: url() });
     await client.close();
@@ -72,9 +72,9 @@ describeRedis("beni/node close()", () => {
   });
 });
 
-describeRedis("beni/node subscriber", () => {
+describeRedis("benni/node subscriber", () => {
   it("reports closed once its socket is terminally gone", async () => {
-    const name = `beni-hunt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const name = `benni-hunt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // reconnectStrategy: false makes a dropped socket terminal rather than a
     // reconnect window, which is the state the getter has to surface.
     const client = await node({
@@ -86,7 +86,7 @@ describeRedis("beni/node subscriber", () => {
     if (!subscriber) throw new Error("subscriber() is required");
     const admin = await createClient({ url: url() }).connect();
     try {
-      await subscriber.subscribe(`beni:hunt:f58:${name}`, () => {});
+      await subscriber.subscribe(`benni:hunt:f58:${name}`, () => {});
       const id = await pubsubClientId(admin, name);
       await admin.sendCommand(["CLIENT", "KILL", "ID", id]);
       await expect.poll(() => subscriber.closed, { timeout: 2000 }).toBe(true);
@@ -97,10 +97,10 @@ describeRedis("beni/node subscriber", () => {
   });
 });
 
-describeRedis("beni/ioredis send()", () => {
+describeRedis("benni/ioredis send()", () => {
   it("returns the same reply shape whatever case the command is written in", async () => {
     const client = await ioredis(url());
-    const key = `beni:hunt:f79:${Date.now()}`;
+    const key = `benni:hunt:f79:${Date.now()}`;
     try {
       await client.send(["HSET", key, "a", "1", "b", "2"]);
       const upper = await client.send(["HGETALL", key]);
@@ -117,10 +117,10 @@ describeRedis("beni/ioredis send()", () => {
   });
 });
 
-const clusterUrl = process.env.BENI_REDIS_CLUSTER_URL;
+const clusterUrl = process.env.BENNI_REDIS_CLUSTER_URL;
 const describeCluster = clusterUrl ? describe : describe.skip;
 
-describeCluster("beni/ioredis session on an adopted Cluster", () => {
+describeCluster("benni/ioredis session on an adopted Cluster", () => {
   it("stays closed after its connection drops instead of reconnecting", async () => {
     const parsed = new URL(clusterUrl as string);
     const host = parsed.hostname;

@@ -3,7 +3,7 @@ title: "Consumer Groups"
 description: "Use stream consumer groups for at-least-once delivery across many workers, with pending tracking and crash recovery."
 ---
 
-Consumer groups let several workers share a [stream](/beni/data-structures/streams/) with at-least-once delivery. Redis tracks which entries each consumer has received but not yet acknowledged (the pending entries list, or PEL), so a crashed worker's in-flight entries can be recovered by another.
+Consumer groups let several workers share a [stream](/benni/data-structures/streams/) with at-least-once delivery. Redis tracks which entries each consumer has received but not yet acknowledged (the pending entries list, or PEL), so a crashed worker's in-flight entries can be recovered by another.
 
 Groups hang off the stream **store**, not the schema: group topology changes at deploy time, while the schema stays about data shape. You bind a group by name, then a consumer by name, and the stream id (the schema key id) stays the first argument of every call:
 
@@ -12,7 +12,7 @@ const group = redis.stream(auditEvents).group("processors");
 const me = group.consumer(`c-${process.pid}`);
 ```
 
-Everything except the blocking group read is non-blocking and runs on the shared client. The blocking read requires a [session](/beni/advanced/sessions/).
+Everything except the blocking group read is non-blocking and runs on the shared client. The blocking read requires a [session](/benni/advanced/sessions/).
 
 ## Create A Group
 
@@ -104,13 +104,13 @@ for (const row of stuck) {
 }
 ```
 
-`count` is required on the `xpending` extended form because Redis requires it. Idle thresholds are milliseconds and carry a `...Ms` suffix (`minIdleMs`, `idleMs`): the PEL speaks milliseconds, while [blocking timeouts](/beni/advanced/blocking-operations/) speak seconds (`timeoutSeconds`), and the suffixes keep the units unambiguous at call sites.
+`count` is required on the `xpending` extended form because Redis requires it. Idle thresholds are milliseconds and carry a `...Ms` suffix (`minIdleMs`, `idleMs`): the PEL speaks milliseconds, while [blocking timeouts](/benni/advanced/blocking-operations/) speak seconds (`timeoutSeconds`), and the suffixes keep the units unambiguous at call sites.
 
 `deleteConsumer` removes a consumer and destroys its PEL entries; `destroy` removes the whole group.
 
 ## Blocking Group Read (Session Only)
 
-A live worker that wants to wait for new deliveries uses `xreadgroup` with a `timeoutSeconds`, which is only reachable through a session, since it parks the connection like any other [blocking operation](/beni/advanced/blocking-operations/):
+A live worker that wants to wait for new deliveries uses `xreadgroup` with a `timeoutSeconds`, which is only reachable through a session, since it parks the connection like any other [blocking operation](/benni/advanced/blocking-operations/):
 
 ```ts
 await redis.session(async (s) => {
@@ -167,4 +167,4 @@ await redis.session(async (s) => {
 });
 ```
 
-`XINFO`, `XGROUP SETID`/`CREATECONSUMER`, `NOACK`, and multi-stream group reads are not wrapped yet; use [`redis.raw`](/beni/core-concepts/raw-redis-access/) for those.
+`XINFO`, `XGROUP SETID`/`CREATECONSUMER`, `NOACK`, and multi-stream group reads are not wrapped yet; use [`redis.raw`](/benni/core-concepts/raw-redis-access/) for those.

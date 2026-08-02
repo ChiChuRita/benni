@@ -35,14 +35,14 @@ import {
   stringReply
 } from "../src/core/transaction.js";
 import type { RedisClient } from "../src/core/types.js";
-import { type BeniSession, beni } from "../src/database.js";
+import { type BenniSession, benni } from "../src/database.js";
 import { WatchRetriesExceededError } from "../src/index.js";
 import { node } from "../src/node/index.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
-const runPrefix = `beni:feat:${Date.now()}:${Math.random()
+const runPrefix = `benni:feat:${Date.now()}:${Math.random()
   .toString(36)
   .slice(2)}`;
 
@@ -79,12 +79,12 @@ async function deleteMatching(
 
 describeRedis("node feature modules against real Redis", () => {
   let client: RedisClient;
-  let db: ReturnType<typeof beni>;
+  let db: ReturnType<typeof benni>;
 
   beforeAll(async () => {
     expect(redisUrl).toBeDefined();
     client = await node({ url: redisUrl });
-    db = beni(client);
+    db = benni(client);
   });
 
   afterAll(async () => {
@@ -116,16 +116,16 @@ describeRedis("node feature modules against real Redis", () => {
 
       await expect(userStore.hgetall("main")).resolves.toBeNull();
 
-      await userStore.hset("main", { name: "beni", score: 5 });
+      await userStore.hset("main", { name: "benni", score: 5 });
       await client.send(["HSET", users.key("main"), "undeclared", "ignored"]);
 
       await expect(userStore.hgetall("main")).resolves.toEqual({
-        name: "beni",
+        name: "benni",
         score: 5
       });
       await expect(userStore.hmget("main", ["name", "score"])).resolves.toEqual(
         {
-          name: "beni",
+          name: "benni",
           score: 5
         }
       );
@@ -149,7 +149,7 @@ describeRedis("node feature modules against real Redis", () => {
       await expect(userStore.hsetnx("main", "name", "other")).resolves.toBe(
         false
       );
-      await expect(userStore.hget("main", "name")).resolves.toBe("beni");
+      await expect(userStore.hget("main", "name")).resolves.toBe("benni");
 
       await expect(userStore.hstrlen("main", "name")).resolves.toBe(4);
 
@@ -190,7 +190,7 @@ describeRedis("node feature modules against real Redis", () => {
 
       await userStore.hset(
         "lifecycle",
-        { name: "beni", score: 1 },
+        { name: "benni", score: 1 },
         { ttlSeconds: 120 }
       );
 
@@ -860,7 +860,7 @@ describeRedis("node feature modules against real Redis", () => {
 
     it("scans hash entries and skips undeclared fields", async () => {
       const hashStore = createHashStore(client, meta);
-      await hashStore.hset("main", { name: "beni", score: 7 });
+      await hashStore.hset("main", { name: "benni", score: 7 });
       await client.send(["HSET", meta.key("main"), "undeclared", "ignored"]);
 
       const entries = await collect(
@@ -870,7 +870,7 @@ describeRedis("node feature modules against real Redis", () => {
       const byField = new Map(
         entries.map((entry) => [entry.field, entry.value] as const)
       );
-      expect(byField.get("name")).toBe("beni");
+      expect(byField.get("name")).toBe("benni");
       expect(byField.get("score")).toBe(7);
     });
 
@@ -1873,7 +1873,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("await using disposes a session and rejects a forever-block fast", async () => {
-      let disposed: BeniSession;
+      let disposed: BenniSession;
       const started = Date.now();
       const rejection = await (async () => {
         // eslint-disable-next-line no-lone-blocks
@@ -1905,7 +1905,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("scoped db.session(fn) closes the session after the body resolves", async () => {
-      let leased: BeniSession | undefined;
+      let leased: BenniSession | undefined;
       const value = await db.session(async (s) => {
         leased = s;
         expect(s.closed).toBe(false);

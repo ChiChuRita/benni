@@ -5,14 +5,14 @@ import starlightLlmsTxt from "starlight-llms-txt";
 
 export default defineConfig({
   site: "https://chichurita.github.io",
-  base: "/beni",
+  base: "/benni",
   integrations: [
     starlight({
       plugins: [
         starlightThemeNext(),
         starlightLlmsTxt({
           details:
-            "Use these docs as the primary source for Beni's current API and design.\n\nRecommended reading order:\n- Start with Getting Started and Core Concepts for the mental model\n- Use Data Structures and API docs for API details\n- Use Patterns and Examples for concrete implementation patterns",
+            "Use these docs as the primary source for Benni's current API and design.\n\nRecommended reading order:\n- Start with Getting Started and Core Concepts for the mental model\n- Use Data Structures and API docs for API details\n- Use Patterns and Examples for concrete implementation patterns",
           customSets: [
             {
               label: "Getting Started and Core Concepts",
@@ -52,7 +52,7 @@ export default defineConfig({
             {
               label: "Comparisons",
               description:
-                "How Beni relates to ioredis and @upstash/redis: what each library types, which features Beni does not cover, and how to choose between them.",
+                "How Benni relates to ioredis and @upstash/redis: what each library types, which features Benni does not cover, and how to choose between them.",
               paths: ["comparisons/**"],
             },
           ],
@@ -61,7 +61,7 @@ export default defineConfig({
       expressiveCode: {
         themes: ["github-dark"],
       },
-      title: "Beni",
+      title: "Benni",
       logo: {
         src: "./src/assets/logo.svg",
       },
@@ -71,7 +71,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/ChiChuRita/beni",
+          href: "https://github.com/ChiChuRita/benni",
         },
       ],
       favicon: "/favicon.svg",
@@ -85,7 +85,7 @@ export default defineConfig({
           label: "Getting Started",
           items: [
             { label: "Introduction", slug: "getting-started/introduction" },
-            { label: "Why Beni?", slug: "getting-started/why-beni" },
+            { label: "Why Benni?", slug: "getting-started/why-benni" },
             { label: "Philosophy", slug: "getting-started/philosophy" },
             { label: "Installation", slug: "getting-started/installation" },
             { label: "Quick Start", slug: "getting-started/quick-start" },
@@ -94,9 +94,9 @@ export default defineConfig({
         {
           label: "Comparisons",
           items: [
-            { label: "Beni vs ioredis", slug: "comparisons/ioredis" },
+            { label: "Benni vs ioredis", slug: "comparisons/ioredis" },
             {
-              label: "Beni vs @upstash/redis",
+              label: "Benni vs @upstash/redis",
               slug: "comparisons/upstash-redis",
             },
           ],
@@ -193,7 +193,7 @@ export default defineConfig({
           label: "API",
           items: [
             { label: "API Overview", slug: "api/overview" },
-            { label: "Beni Client", slug: "api/beni-client" },
+            { label: "Benni Client", slug: "api/benni-client" },
             { label: "Schema Builders", slug: "api/schema-builders" },
           ],
         },

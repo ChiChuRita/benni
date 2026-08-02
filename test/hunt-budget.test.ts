@@ -3,7 +3,7 @@ import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
 import { BudgetWindowRolledError, budget } from "../src/primitives/index.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("budget (hunt regressions)", () => {

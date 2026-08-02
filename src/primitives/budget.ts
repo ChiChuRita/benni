@@ -405,7 +405,7 @@ export type BudgetHold = {
  *
  * Holds are leases, not locks: a caller that dies mid-flight stops counting
  * once its hold lapses, with no sweeper to run. Works over any adapter,
- * including `beni/upstash` on the edge.
+ * including `benni/upstash` on the edge.
  *
  * The window is a two-bucket sliding estimate, so usage can drift slightly
  * over the limit at a bucket boundary. That is the deliberate trade for O(1)

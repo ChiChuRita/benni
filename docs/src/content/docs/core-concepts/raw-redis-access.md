@@ -1,9 +1,9 @@
 ---
 title: "Raw Redis Access"
-description: "Beni does not try to hide Redis or cover every command with a typed abstraction."
+description: "Benni does not try to hide Redis or cover every command with a typed abstraction."
 ---
 
-Beni does not try to hide Redis or cover every command with a typed abstraction.
+Benni does not try to hide Redis or cover every command with a typed abstraction.
 
 For commands that are not typed yet, advanced Redis usage, debugging, or one-off operations, use the underlying Redis client directly:
 
@@ -27,7 +27,7 @@ Use raw Redis where Redis itself is the clearest API:
 await redis.raw.send(["CLIENT", "INFO"]);
 ```
 
-Typed Beni keys are useful even when you drop down to raw Redis:
+Typed Benni keys are useful even when you drop down to raw Redis:
 
 ```ts
 const key = redis.hash(users).key("42");

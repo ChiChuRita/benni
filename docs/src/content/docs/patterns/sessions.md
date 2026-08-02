@@ -7,13 +7,13 @@ Sessions are a natural fit for JSON key-value entries with TTL.
 
 :::note
 This page is about **user login sessions**, a record you store in Redis. It is
-unrelated to [`redis.session()`](/beni/advanced/sessions/), which leases a
+unrelated to [`redis.session()`](/benni/advanced/sessions/), which leases a
 dedicated Redis *connection* for blocking commands and `WATCH`. Cookie-backed
 login sessions work on every adapter, including the edge.
 :::
 
 ```ts
-import { json, kv } from "beni/schema";
+import { json, kv } from "benni/schema";
 
 type Session = {
   userId: string;
@@ -69,7 +69,7 @@ await nodeRedis.set(`session:${sessionId}`, JSON.stringify(session), {
 When parts of a session expire on different schedules (say a short-lived CSRF token alongside a week-long identity), model it as a `hash` and give each field its own TTL. Redis 8 sets the values and their expiry atomically with `HSETEX`:
 
 ```ts
-import { hash, number, string } from "beni/schema";
+import { hash, number, string } from "benni/schema";
 
 export const sessionData = hash("session", {
   userId: string(),
@@ -99,4 +99,4 @@ const identity = await redis.hash(sessionData).hgetex(
 );
 ```
 
-The CSRF token expires on its own an hour in while the identity fields keep the session alive for a week: no separate keys, and each field carries its own clock. See [Field Expiration](/beni/data-structures/hashes/#field-expiration).
+The CSRF token expires on its own an hour in while the identity fields keep the session alive for a week: no separate keys, and each field carries its own clock. See [Field Expiration](/benni/data-structures/hashes/#field-expiration).

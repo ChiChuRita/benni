@@ -1,9 +1,9 @@
 ---
 title: "Type Safety"
-description: "Beni types come from codecs and schemas."
+description: "Benni types come from codecs and schemas."
 ---
 
-Beni types come from codecs and schemas.
+Benni types come from codecs and schemas.
 
 ```ts
 export const users = hash("user", {
@@ -51,11 +51,11 @@ export const sessions = kv("session", json<Session>());
 
 ## Inferring Types From Schemas
 
-Every schema carries type-only `$inferInput` / `$inferOutput` anchors, plus the `InferInput<T>` / `InferOutput<T>` utility types exported from `beni/schema`. Name a schema's value types anywhere without redeclaring them:
+Every schema carries type-only `$inferInput` / `$inferOutput` anchors, plus the `InferInput<T>` / `InferOutput<T>` utility types exported from `benni/schema`. Name a schema's value types anywhere without redeclaring them:
 
 ```ts
-import { hash, json, kv, number, string } from "beni/schema";
-import type { InferInput, InferOutput } from "beni/schema";
+import { hash, json, kv, number, string } from "benni/schema";
+import type { InferInput, InferOutput } from "benni/schema";
 
 export const users = hash("user", {
   name: string(),
@@ -74,7 +74,7 @@ type StoredProfile = typeof profiles.$inferOutput;
 
 ## Runtime Validation With Standard Schema
 
-`json(validator)` accepts any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …). Reads are validated at runtime and the value type is inferred from the validator, with no explicit type parameter needed. See [schema builders](/beni/api/schema-builders/) for details.
+`json(validator)` accepts any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …). Reads are validated at runtime and the value type is inferred from the validator, with no explicit type parameter needed. See [schema builders](/benni/api/schema-builders/) for details.
 
 ```ts
 import { z } from "zod";
@@ -86,9 +86,9 @@ const profile = await redis.kv(profiles).get("42");
 //    ^? { name: string; score: number } | null (validated at runtime)
 ```
 
-With the plain `json<T>()` form, `T` is trusted, not validated: Beni validates command reply shapes and decodes stored values, but does not check arbitrary JSON against your type. If untrusted code writes to the same Redis keys, pass a validator or validate at your application boundary.
+With the plain `json<T>()` form, `T` is trusted, not validated: Benni validates command reply shapes and decodes stored values, but does not check arbitrary JSON against your type. If untrusted code writes to the same Redis keys, pass a validator or validate at your application boundary.
 
-Standard Schema validates reads only; it has no encode direction. To validate writes too, and to store rich types like `Date` or `bigint` that round-trip, use [Zod codecs via `beni/zod`](/beni/integrations/zod/).
+Standard Schema validates reads only; it has no encode direction. To validate writes too, and to store rich types like `Date` or `bigint` that round-trip, use [Zod codecs via `benni/zod`](/benni/integrations/zod/).
 
 ## Typed Keys
 

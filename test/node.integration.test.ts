@@ -4,11 +4,11 @@ import {
   definePubSubChannel,
   definePubSubPattern
 } from "../src/core/index.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
 import { expectRedisClientContract } from "./redis-contract.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("node", () => {
@@ -20,11 +20,11 @@ describeRedis("node", () => {
 
 describeRedis("node pubsub", () => {
   const unique = (label: string) =>
-    `beni:test:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    `benni:test:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   it("publishes and subscribes typed messages over a leased subscriber", async () => {
     const client = await node({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const channel = definePubSubChannel(
       unique("channel"),
       codecs.json<{ id: string; action: string }>()
@@ -52,7 +52,7 @@ describeRedis("node pubsub", () => {
 
   it("multiplexes many subscriptions onto one connection and releases it", async () => {
     const client = await node({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const channel = definePubSubChannel(
       unique("multiplex"),
       codecs.json<{ n: number }>()
@@ -86,7 +86,7 @@ describeRedis("node pubsub", () => {
 
   it("streams messages as an async iterable and stops on abort", async () => {
     const client = await node({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const channel = definePubSubChannel(
       unique("stream"),
       codecs.json<{ n: number }>()
@@ -116,7 +116,7 @@ describeRedis("node pubsub", () => {
 
   it("subscribes typed patterns and reports the matched channel", async () => {
     const client = await node({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const prefix = unique("pattern");
     const pattern = definePubSubPattern(
       `${prefix}:*`,
@@ -152,7 +152,7 @@ describeRedis("node pubsub", () => {
     // node-redis resolves undefined with `?? 3`. HGETALL then arrives as a
     // plain object outside the RedisReply union and every hash read throws.
     const client = await node({ url: redisUrl, RESP: undefined });
-    const key = `beni:test:resp:${Date.now()}`;
+    const key = `benni:test:resp:${Date.now()}`;
     try {
       await client.send(["HSET", key, "a", "1"]);
       const reply = await client.send(["HGETALL", key]);
@@ -170,11 +170,11 @@ describeRedis("node pubsub", () => {
 
   it("surfaces the failing command's error from a committed MULTI", async () => {
     // node-redis rejects with MultiErrorReply, whose message is only
-    // "N commands failed, see .replies and .errorIndexes". beni/ioredis
+    // "N commands failed, see .replies and .errorIndexes". benni/ioredis
     // throws the underlying error, so the two adapters disagreed on what a
     // per-command failure looks like.
     const client = await node({ url: redisUrl });
-    const key = `beni:test:multi:${Date.now()}`;
+    const key = `benni:test:multi:${Date.now()}`;
     try {
       await expect(
         client.transaction?.([

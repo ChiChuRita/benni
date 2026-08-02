@@ -1,12 +1,12 @@
 ---
 title: "Defining Schemas"
-description: "A Beni schema describes one Redis key family."
+description: "A Benni schema describes one Redis key family."
 ---
 
-A Beni schema describes one Redis key family.
+A Benni schema describes one Redis key family.
 
 ```ts
-import { hash, json, kv, number, string } from "beni/schema";
+import { hash, json, kv, number, string } from "benni/schema";
 
 export const users = hash("user", {
   name: string(),
@@ -43,7 +43,7 @@ Schemas are not database schemas in the migration sense. They are plain TypeScri
 
 ## Builders
 
-Use schema builders from `beni/schema`:
+Use schema builders from `benni/schema`:
 
 ```ts
 import {
@@ -58,13 +58,13 @@ import {
   set,
   zset,
   string
-} from "beni/schema";
+} from "benni/schema";
 ```
 
-When your app has a codec Beni does not ship, pass a plain `Codec` object, anything with `encode`/`decode`:
+When your app has a codec Benni does not ship, pass a plain `Codec` object, anything with `encode`/`decode`:
 
 ```ts
-import type { Codec } from "beni";
+import type { Codec } from "benni";
 
 const dateString: Codec<Date, Date> = {
   encode(value) {

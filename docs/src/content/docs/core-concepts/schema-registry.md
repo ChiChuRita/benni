@@ -7,7 +7,7 @@ Declare schemas once, bind the module, and reach every store by name through `re
 
 ```ts
 // schema.ts
-import { hash, kv, zset, json, number, string } from "beni/schema";
+import { hash, kv, zset, json, number, string } from "benni/schema";
 
 export const users = hash("user", {
   name: string(),
@@ -22,11 +22,11 @@ Bind the module once when you create the client:
 
 ```ts
 // redis.ts
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
-export const redis = beni(await node(), { schema });
+export const redis = benni(await node(), { schema });
 ```
 
 Then reach each store by its export name, with full inference:
@@ -90,7 +90,7 @@ A single schema module can mix every kind. Each export becomes a registry entry:
 import {
   hash, kv, zset, channel, script,
   json, number, string
-} from "beni/schema";
+} from "benni/schema";
 
 export type UserEvent = { id: string; action: string };
 

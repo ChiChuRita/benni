@@ -18,7 +18,7 @@ await redis.kv(sessions).set(
 
 `ttl` is measured in seconds and maps to Redis expiration commands.
 
-For hashes, Beni writes the fields and then applies expiration to the Redis key:
+For hashes, Benni writes the fields and then applies expiration to the Redis key:
 
 ```ts
 await redis.hash(users).hset(
@@ -72,4 +72,4 @@ await redis.kv(sessions).set(sessionId, nextSession, {
 });
 ```
 
-`nx` and `xx` cannot be combined, and neither can `ttlSeconds` with `keepTtl`; both invalid pairs are compile errors, not runtime throws. See [Type Safety](/beni/core-concepts/type-safety/).
+`nx` and `xx` cannot be combined, and neither can `ttlSeconds` with `keepTtl`; both invalid pairs are compile errors, not runtime throws. See [Type Safety](/benni/core-concepts/type-safety/).

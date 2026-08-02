@@ -732,9 +732,9 @@ export function createListResource<
 
 /**
  * Session list accessor: the base store spread with the blocking pops. Its
- * inferred return type drives BeniSession["list"], so leftPopBlocking &
+ * inferred return type drives BenniSession["list"], so leftPopBlocking &
  * friends are structurally present on a session and absent on the shared
- * Beni handle.
+ * Benni handle.
  */
 export function createListSessionAccessor<
   TInput,

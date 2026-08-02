@@ -201,7 +201,7 @@ export type ProvableTag<K extends string> = string extends K
 declare const CROSS_SLOT: unique symbol;
 
 /**
- * The type Beni substitutes for a key that cannot share a slot with the others
+ * The type Benni substitutes for a key that cannot share a slot with the others
  * in the same call. It is deliberately un-constructible: assigning a string to
  * it always fails, and the failure names the offending key and the tag it had
  * to match.

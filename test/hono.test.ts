@@ -86,7 +86,7 @@ describe("hono cache", () => {
     const miss = await app.request("/data?x=1");
     expect(miss.status).toBe(200);
     expect(await miss.json()).toEqual({ n: 1 });
-    expect(miss.headers.get("X-Beni-Cache")).toBeNull();
+    expect(miss.headers.get("X-Benni-Cache")).toBeNull();
     expect(handlerCalls).toBe(1);
 
     const set = commands.at(-1);
@@ -103,7 +103,7 @@ describe("hono cache", () => {
     const hit = await app.request("/data?x=1");
     expect(hit.status).toBe(200);
     expect(await hit.json()).toEqual({ n: 1 });
-    expect(hit.headers.get("X-Beni-Cache")).toBe("hit");
+    expect(hit.headers.get("X-Benni-Cache")).toBe("hit");
     expect(hit.headers.get("content-type")).toContain("application/json");
     expect(handlerCalls).toBe(1); // served from Redis, handler untouched
   });

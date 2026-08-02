@@ -1,13 +1,13 @@
 ---
 title: "Zod"
-description: "Bidirectional Zod codecs as Beni field codecs: writes validated with z.encode, reads validated with z.decode, and rich types (Date, bigint, URL) that genuinely round-trip."
+description: "Bidirectional Zod codecs as Benni field codecs: writes validated with z.encode, reads validated with z.decode, and rich types (Date, bigint, URL) that genuinely round-trip."
 ---
 
-Beni's core already accepts any [Standard Schema](https://standardschema.dev)
-validator via [`json(schema)`](/beni/api/schema-builders/), but Standard
+Benni's core already accepts any [Standard Schema](https://standardschema.dev)
+validator via [`json(schema)`](/benni/api/schema-builders/), but Standard
 Schema only defines *one* direction, so that validates **reads only**, and
 writes are a blind `JSON.stringify`. [Zod codecs](https://zod.dev/codecs)
-(Zod 4.1+) define both directions, and `beni/zod` runs them both:
+(Zod 4.1+) define both directions, and `benni/zod` runs them both:
 
 - **Writes are validated.** A bad value throws `ValidationError` at the
   `set`, before anything is sent, not at some later read in another process.
@@ -17,8 +17,8 @@ writes are a blind `JSON.stringify`. [Zod codecs](https://zod.dev/codecs)
 
 ```ts
 import * as z from "zod";
-import { kv } from "beni/schema";
-import { zodCodec, zodJson } from "beni/zod";
+import { kv } from "benni/schema";
+import { zodCodec, zodJson } from "benni/zod";
 
 const isoDate = z.codec(z.iso.datetime(), z.date(), {
   decode: (iso) => new Date(iso),
@@ -34,19 +34,19 @@ const found = await redis.kv(users).get("u1");
 ```
 
 Zod is an **optional peer dependency** (`zod@^4.1.0`); only the
-`beni/zod` subpath imports it. The adapter is built against `zod/v4/core`,
+`benni/zod` subpath imports it. The adapter is built against `zod/v4/core`,
 so schemas from both `zod` and `zod/mini` work.
 
 ## `zodCodec(schema)`: string-stored fields
 
 Takes any Zod schema or codec whose *encoded* (input) side is a string and
-returns a Beni `Codec`. Use it anywhere a codec is accepted: kv values,
+returns a Benni `Codec`. Use it anywhere a codec is accepted: kv values,
 hash fields, list items, set and sorted-set members, stream fields, pub/sub
 messages.
 
 ```ts
-import { hash, string } from "beni/schema";
-import { zodCodec } from "beni/zod";
+import { hash, string } from "benni/schema";
+import { zodCodec } from "benni/zod";
 
 export const sessions = hash("session", {
   userId: string(),
@@ -60,7 +60,7 @@ side isn't a string (`z.number()`, `z.date()`, …) is a compile error.
 
 ## `zodJson(schema)`: JSON-stored values
 
-A stronger [`json(schema)`](/beni/data-structures/json-values/): writes run
+A stronger [`json(schema)`](/benni/data-structures/json-values/): writes run
 `z.encode` (validated, codec fields converted to their JSON-safe form) then
 `JSON.stringify`; reads run `JSON.parse` then `z.decode` (validated, codec
 fields revived).
@@ -90,10 +90,10 @@ const urlString = z.codec(z.url(), z.instanceof(URL), {
 
 ## Errors
 
-The adapter maps into Beni's unified error classes:
+The adapter maps into Benni's unified error classes:
 
 - Encode failures throw
-  [`ValidationError`](/beni/api/schema-builders/), a caller mistake;
+  [`ValidationError`](/benni/api/schema-builders/), a caller mistake;
   nothing is sent to Redis.
 - Decode failures throw `ReplyShapeError` with the stored string attached as
   `.reply`, and the message names the failing paths
@@ -101,7 +101,7 @@ The adapter maps into Beni's unified error classes:
 - Async schemas (`.refine(async …)`) can't run in a synchronous codec; both
   directions throw `ValidationError` telling you so. If such a refinement
   *rejects* instead of just failing, zod discards that promise internally, so
-  the rejection also surfaces as an unhandled rejection Beni cannot claim.
+  the rejection also surfaces as an unhandled rejection Benni cannot claim.
   Keep async work out of the schema.
 - `zodJson` refuses values JSON cannot carry faithfully: `NaN`, `Infinity`,
   `BigInt`, and circular structures all throw `ValidationError` before the

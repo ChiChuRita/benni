@@ -8,7 +8,7 @@ Use hashes when you want to store object-like data under a Redis key.
 ## Define A Hash
 
 ```ts
-import { hash, number, string } from "beni/schema";
+import { hash, number, string } from "benni/schema";
 
 export const users = hash("user", {
   name: string(),

@@ -8,7 +8,7 @@ Use the `script()` builder to define Lua scripts with named keys, typed argument
 ## Define A Script
 
 ```ts
-import { number, script } from "beni/schema";
+import { number, script } from "benni/schema";
 
 export const rateLimit = script("rate-limit", {
   keys: ["counter"],
@@ -43,9 +43,9 @@ Both `keys` and `args` are checked at compile time: missing or misspelled names 
 
 ## EVALSHA Caching
 
-The first run loads the script with `SCRIPT LOAD` and caches its SHA per client. Later runs send only the hash via `EVALSHA`. When Redis replies with `NOSCRIPT` (after a server restart or `SCRIPT FLUSH`), Beni reloads the script and retries automatically, so callers never see the error.
+The first run loads the script with `SCRIPT LOAD` and caches its SHA per client. Later runs send only the hash via `EVALSHA`. When Redis replies with `NOSCRIPT` (after a server restart or `SCRIPT FLUSH`), Benni reloads the script and retries automatically, so callers never see the error.
 
-A script can also return a `NOSCRIPT`-coded error of its own, and Redis passes it through byte for byte, so the message alone cannot tell the two apart. Before reloading a cached SHA, Beni asks the server with `SCRIPT EXISTS`: if the script is still there, the error came from the script and is raised as-is, rather than re-running side effects the script has already applied.
+A script can also return a `NOSCRIPT`-coded error of its own, and Redis passes it through byte for byte, so the message alone cannot tell the two apart. Before reloading a cached SHA, Benni asks the server with `SCRIPT EXISTS`: if the script is still there, the error came from the script and is raised as-is, rather than re-running side effects the script has already applied.
 
 ## Scalar Returns Only
 
@@ -54,7 +54,7 @@ A script can also return a `NOSCRIPT`-coded error of its own, and Redis passes i
 For structured replies, drop to `defineScript` from the main entrypoint and decode the raw reply yourself:
 
 ```ts
-import { createScriptRunner, defineScript } from "beni";
+import { createScriptRunner, defineScript } from "benni";
 
 const topTwo = defineScript<[], string[]>({
   lua: `return redis.call("ZREVRANGE", KEYS[1], 0, 1)`,

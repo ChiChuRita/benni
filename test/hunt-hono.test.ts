@@ -161,7 +161,7 @@ describe("hono ratelimit headers", () => {
     );
 
     const res = await app.request("/pricing");
-    expect(res.headers.get("X-Beni-Cache")).toBe("hit");
+    expect(res.headers.get("X-Benni-Cache")).toBe("hit");
     expect(await res.text()).toBe("cached");
     expect(res.headers.get("X-RateLimit-Limit")).toBe("5");
   });

@@ -128,13 +128,13 @@ function sessionOverrides(
  * ioredis rewrites key *arguments* with `keyPrefix` but leaves SCAN patterns
  * alone, so a prefixed client stores at `<prefix><key>` while `schema.key()`,
  * every `MATCH` pattern, and any key a Lua script builds from a prefix argument
- * still say `<key>`. Scans then return nothing, silently. Beni's schemas own
+ * still say `<key>`. Scans then return nothing, silently. Benni's schemas own
  * key naming, so refuse the option rather than half-honour it.
  */
 function assertNoKeyPrefix(keyPrefix: unknown, where: string): void {
   if (typeof keyPrefix !== "string" || keyPrefix.length === 0) return;
   throw new TypeError(
-    `beni/ioredis cannot be used with ioredis's keyPrefix (${where} sets "${keyPrefix}"). ` +
+    `benni/ioredis cannot be used with ioredis's keyPrefix (${where} sets "${keyPrefix}"). ` +
       "ioredis prefixes key arguments but not SCAN patterns, so every scan would " +
       "silently return nothing and schema.key() would not match what is stored. " +
       'Drop keyPrefix and build the prefix into the schema name instead, e.g. hash(prefix + "user", …).'
@@ -142,14 +142,14 @@ function assertNoKeyPrefix(keyPrefix: unknown, where: string): void {
 }
 
 /**
- * The ioredis adapter: returns the `RedisClient` handle `beni()` binds to,
+ * The ioredis adapter: returns the `RedisClient` handle `benni()` binds to,
  * backed by [ioredis](https://www.npmjs.com/package/ioredis).
  *
- * Three ways in — the third is the point, because it means adopting Beni does
+ * Three ways in — the third is the point, because it means adopting Benni does
  * not mean swapping out the Redis client you already run in production:
  *
  * ```ts
- * import { ioredis } from "beni/ioredis";
+ * import { ioredis } from "benni/ioredis";
  *
  * const client = await ioredis("redis://localhost:6379");   // URL
  * const client = await ioredis({ host, port, password });   // options
@@ -157,7 +157,7 @@ function assertNoKeyPrefix(keyPrefix: unknown, where: string): void {
  * ```
  *
  * An adopted client is *borrowed*: `close()` shuts down the sessions and
- * subscriber connections Beni leased from it, but leaves the client itself
+ * subscriber connections Benni leased from it, but leaves the client itself
  * open, because whoever created it still owns its lifetime. An adopted client
  * should also carry its own `"error"` listener — this adapter does not attach
  * one, since silently swallowing errors on a client it does not own would hide
@@ -409,7 +409,7 @@ function name(command: RedisCommand): string {
  * a connection the leak backstop has already stopped watching.
  */
 function closedError(): Error {
-  return new Error("beni/ioredis client is closed");
+  return new Error("benni/ioredis client is closed");
 }
 
 /**

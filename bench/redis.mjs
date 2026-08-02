@@ -178,13 +178,13 @@ async function runSuite(name, client) {
 
   await measure("SET", iterations, async () => {
     for (let i = 0; i < iterations; i += 1) {
-      await client.send(["SET", "beni:bench", i]);
+      await client.send(["SET", "benni:bench", i]);
     }
   });
 
   await measure("GET", iterations, async () => {
     for (let i = 0; i < iterations; i += 1)
-      await client.send(["GET", "beni:bench"]);
+      await client.send(["GET", "benni:bench"]);
   });
 
   const batches = Math.ceil(iterations / pipelineSize);
@@ -209,9 +209,9 @@ try {
 }
 
 const { node } = await import("../dist/node/index.mjs");
-const beniClient = await node({ url: redisUrl.href });
+const benniClient = await node({ url: redisUrl.href });
 try {
-  await runSuite("Beni node adapter", beniClient);
+  await runSuite("Benni node adapter", benniClient);
 } finally {
-  await beniClient.close();
+  await benniClient.close();
 }

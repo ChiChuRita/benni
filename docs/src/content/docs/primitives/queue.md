@@ -6,7 +6,7 @@ description: "Run model calls as background jobs that survive refreshes, deploys
 `queue` runs expensive model calls as background jobs, so a generation survives the user refreshing the page, your server deploying, and the request timing out.
 
 ```ts
-import { queue } from "beni/primitives";
+import { queue } from "benni/primitives";
 
 const jobs = queue<{ prompt: string }, string>(client, {
   prefix: "generate"
@@ -29,7 +29,7 @@ Each has a well-known fix. The catch is that they're *five different fixes* (a j
 
 ## The whole loop
 
-**Producer**: one atomic round trip. Runs anywhere, including [the edge](/beni/runtime/edge/):
+**Producer**: one atomic round trip. Runs anywhere, including [the edge](/benni/runtime/edge/):
 
 ```ts
 const { id } = await jobs.enqueue({ prompt }, { idempotencyKey: requestId });
@@ -128,7 +128,7 @@ The key stays bound to the job for as long as it runs *and after it completes*, 
 Everything retries with exponential backoff and full jitter, except what you mark otherwise:
 
 ```ts
-import { RetryJobError, TerminalJobError } from "beni/primitives";
+import { RetryJobError, TerminalJobError } from "benni/primitives";
 
 jobs.worker(async (job) => {
   const response = await fetch(providerUrl, {
@@ -209,7 +209,7 @@ Passing your own `id` reuses it: once that job has finished, re-enqueuing the id
 Be honest about the fit: it's a worker process to run and monitor:
 
 - **The call is fast and the user is watching.** Under a few seconds, stream it from the request and skip all of this.
-- **You've already answered this prompt.** [`cache`](/beni/primitives/cache/) is cheaper than any queue, so check it first and queue only on a miss.
+- **You've already answered this prompt.** [`cache`](/benni/primitives/cache/) is cheaper than any queue, so check it first and queue only on a miss.
 - **You need durable *execution*.** On a retry, your handler re-runs from the top. There is no checkpointing of a half-finished agent loop and no resuming mid-function. If you need "the agent completed 3 of 7 tool calls, resume at 4", model those steps as separate jobs, or use a durable-execution engine.
 - **You have no long-lived process.** `worker()` needs one. Producing and watching work fine at the edge; running doesn't.
 
@@ -236,7 +236,7 @@ Every key shares one hash tag, so a queue occupies a single Redis Cluster slot. 
 | Option | Default | Notes |
 |---|---|---|
 | `prefix` | `"queue"` | Key namespace; also the Cluster hash tag |
-| `codec` / `resultCodec` | `codecs.json()` | Any [codec](/beni/api/schema-builders/#codecs), including [`zodCodec`](/beni/integrations/zod/) for validated payloads |
+| `codec` / `resultCodec` | `codecs.json()` | Any [codec](/benni/api/schema-builders/#codecs), including [`zodCodec`](/benni/integrations/zod/) for validated payloads |
 | `leaseMs` | `60000` | Ownership without a heartbeat, sized for model calls |
 | `maxAttempts` | `3` | Attempts before dead-lettering |
 | `backoffMs` / `maxBackoffMs` | `1000` / `60000` | Exponential curve with full jitter |
@@ -247,7 +247,7 @@ Worker options: `concurrency`, `leaseMs`, `heartbeatMs`, `pollMs`, `isRetryable`
 
 ## Runtime support
 
-`enqueue`, `get`, `cancel`, `wait`, `watch`, `stats`, and `dead` need only `EVALSHA` and stream reads, so they run on every adapter, including [`beni/upstash`](/beni/runtime/edge/) on Cloudflare Workers and Vercel Edge. That's the shape most AI apps want: enqueue from an edge route, run the model on a worker.
+`enqueue`, `get`, `cancel`, `wait`, `watch`, `stats`, and `dead` need only `EVALSHA` and stream reads, so they run on every adapter, including [`benni/upstash`](/benni/runtime/edge/) on Cloudflare Workers and Vercel Edge. That's the shape most AI apps want: enqueue from an edge route, run the model on a worker.
 
 `worker()` needs a persistent process. Where the adapter offers a dedicated connection it blocks on the doorbell list, so a job starts a round trip after it's enqueued; otherwise it polls at `pollMs`. `watch()` degrades the same way: blocking `XREAD` on Node and Bun, polling on the edge.
 
@@ -255,7 +255,7 @@ One cost to size for: each live `watch()` holds a connection while it iterates, 
 
 ## See also
 
-- [AI Apps](/beni/patterns/ai-apps/): chat memory, token budgets, and response caching around this queue
-- [Cache](/beni/primitives/cache/): answer a repeat prompt without queueing anything
-- [Rate Limiting](/beni/primitives/ratelimit/): cap what reaches the queue per user
-- [Streams](/beni/data-structures/streams/): the typed API under the job output stream
+- [AI Apps](/benni/patterns/ai-apps/): chat memory, token budgets, and response caching around this queue
+- [Cache](/benni/primitives/cache/): answer a repeat prompt without queueing anything
+- [Rate Limiting](/benni/primitives/ratelimit/): cap what reaches the queue per user
+- [Streams](/benni/data-structures/streams/): the typed API under the job output stream

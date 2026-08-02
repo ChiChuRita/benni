@@ -83,7 +83,7 @@ export type RatelimitOptions = {
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { ratelimit } from "beni/hono";
+ * import { ratelimit } from "benni/hono";
  *
  * const app = new Hono();
  * app.use(
@@ -119,7 +119,7 @@ export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
     await next();
     // After next(), not before: headers set before the handler runs land in
     // Hono's prepared-header bag, which is dropped whenever a downstream
-    // handler assigns a fresh Response to c.res (beni's own cache() does that
+    // handler assigns a fresh Response to c.res (benni's own cache() does that
     // on every hit). Setting them on the finalized response instead makes the
     // documented headers survive whatever the handler returned.
     c.header("X-RateLimit-Limit", String(result.limit));
@@ -209,8 +209,8 @@ function variesBeyondKey(res: Response, vary: readonly string[]): boolean {
  * mark the bag touched from the outside. Module-local symbols, not part of the
  * public `Session` shape.
  */
-const SESSION_TOUCHED = Symbol("beni.hono.sessionTouched");
-const SESSION_TOUCH = Symbol("beni.hono.sessionTouch");
+const SESSION_TOUCHED = Symbol("benni.hono.sessionTouched");
+const SESSION_TOUCH = Symbol("benni.hono.sessionTouch");
 
 type TouchTracked = {
   readonly [SESSION_TOUCHED]?: () => boolean;
@@ -227,7 +227,7 @@ function sessionWasTouched(c: Context): boolean {
 /**
  * Read-through response caching as Hono middleware. `GET`/`HEAD` responses
  * are stored in Redis as `{ status, headers, body }` JSON (`SET PX ttlMs`)
- * and replayed on hit with an `X-Beni-Cache: hit` header. Other methods pass
+ * and replayed on hit with an `X-Benni-Cache: hit` header. Other methods pass
  * straight through, as do ranged requests, anything but a plain `200`, and
  * responses carrying `set-cookie`, a `no-store`/`no-cache`/`private`
  * `Cache-Control`, or a `Vary` naming a header the key does not fold in.
@@ -239,7 +239,7 @@ function sessionWasTouched(c: Context): boolean {
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { cache } from "beni/hono";
+ * import { cache } from "benni/hono";
  *
  * const app = new Hono();
  * app.get("/report", cache({ client, ttlMs: 30_000 }), (c) =>
@@ -287,7 +287,7 @@ export function cache(options: CacheOptions): MiddlewareHandler {
         const entry = JSON.parse(reply) as CacheEntry;
         return new Response(entry.body, {
           status: entry.status,
-          headers: { ...entry.headers, "X-Beni-Cache": "hit" }
+          headers: { ...entry.headers, "X-Benni-Cache": "hit" }
         });
       }
     } catch {
@@ -341,7 +341,7 @@ export function cache(options: CacheOptions): MiddlewareHandler {
  * The per-request session bag exposed by the [`session`](#session) middleware
  * via `c.get("session")` / [`getSession`](#getsession). Values are `unknown`
  * per key — the session is a convenience bag; codec-level typing belongs to
- * your beni schemas.
+ * your benni schemas.
  */
 export type Session = {
   /** Read a value. `T` is a caller assertion, not a validation. */
@@ -420,12 +420,12 @@ function readCookie(
  * on login and on any privilege change).
  *
  * Values are `unknown` per key (`get<T>` is a convenience assertion) — for
- * typed data, reach for your beni schemas instead.
+ * typed data, reach for your benni schemas instead.
  *
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { getSession, session } from "beni/hono";
+ * import { getSession, session } from "benni/hono";
  *
  * const app = new Hono();
  * app.use("*", session({ client }));

@@ -6,10 +6,10 @@ import {
   definePubSubChannel,
   definePubSubPattern
 } from "../src/core/index.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { expectRedisClientContract } from "./redis-contract.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("bun", () => {
@@ -64,9 +64,9 @@ describeRedis("bun pubsub", () => {
   it("publishes and subscribes typed messages over a leased subscriber", async () => {
     expect(redisUrl).toBeDefined();
     const client = await bun({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const channel = definePubSubChannel(
-      `beni:test:events:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      `benni:test:events:${Date.now()}:${Math.random().toString(36).slice(2)}`,
       codecs.json<{ id: string; action: "created" }>()
     );
     const seen: Array<{ id: string; action: "created" }> = [];
@@ -93,11 +93,11 @@ describeRedis("bun pubsub", () => {
   it("reports pattern subscribe as unsupported instead of hanging", async () => {
     expect(redisUrl).toBeDefined();
     const client = await bun({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     // Must be a real builder-made schema: a bare object literal carries no
     // store binding, so pattern() would throw synchronously before the
     // adapter's missing psubscribe is ever reached.
-    const pattern = definePubSubPattern("beni:test:none:*", codecs.string());
+    const pattern = definePubSubPattern("benni:test:none:*", codecs.string());
 
     try {
       await expect(

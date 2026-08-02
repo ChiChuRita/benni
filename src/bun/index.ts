@@ -206,7 +206,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
  * a connection the leak backstop has already stopped watching.
  */
 function closedError(): Error {
-  return new Error("beni/bun client is closed");
+  return new Error("benni/bun client is closed");
 }
 
 /**

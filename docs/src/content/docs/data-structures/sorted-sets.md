@@ -6,7 +6,7 @@ description: "Use sorted sets for ranked values: leaderboards, priorities, times
 Use sorted sets for ranked values: leaderboards, priorities, timestamps, and scored indexes.
 
 ```ts
-import { zset, string } from "beni/schema";
+import { zset, string } from "benni/schema";
 
 export const leaderboards = zset("leaderboard", string());
 ```
@@ -67,7 +67,7 @@ Sorted sets are a good fit for leaderboards, ranking search candidates, rate-lim
 When every member in a sorted set shares the same score, Redis orders them lexically by member value. That turns a sorted set into a sorted index, handy for autocomplete, prefix search, or any alphabetized listing. Calling `zrange` with `byLex: true` exposes Redis's `BYLEX` family over that ordering.
 
 ```ts
-import { zset, string } from "beni/schema";
+import { zset, string } from "benni/schema";
 
 export const names = zset("name-index", string());
 ```

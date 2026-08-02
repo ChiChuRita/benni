@@ -1,13 +1,13 @@
 ---
 title: "Edge (Upstash / HTTP)"
-description: "Run the same typed Beni API on serverless and edge runtimes over Upstash's REST protocol, with nothing but fetch."
+description: "Run the same typed Benni API on serverless and edge runtimes over Upstash's REST protocol, with nothing but fetch."
 ---
 
-The `beni/upstash` adapter speaks the [Upstash REST protocol](https://upstash.com/docs/redis/features/restapi) over HTTP, so the **same typed Beni API** runs on serverless and edge runtimes (Cloudflare Workers, Vercel Edge, Fastly, Deno Deploy) with nothing but `fetch`. It has **zero dependencies**.
+The `benni/upstash` adapter speaks the [Upstash REST protocol](https://upstash.com/docs/redis/features/restapi) over HTTP, so the **same typed Benni API** runs on serverless and edge runtimes (Cloudflare Workers, Vercel Edge, Fastly, Deno Deploy) with nothing but `fetch`. It has **zero dependencies**.
 
 ```ts
-import { beni } from "beni";
-import { upstash } from "beni/upstash";
+import { benni } from "benni";
+import { upstash } from "benni/upstash";
 import * as schema from "./schema";
 
 const client = upstash({
@@ -15,7 +15,7 @@ const client = upstash({
   token: process.env.UPSTASH_REDIS_REST_TOKEN as string
 });
 
-export const redis = beni(client, { schema });
+export const redis = benni(client, { schema });
 ```
 
 There is no connection to open, so `upstash` is synchronous (no `await`). Command arrays are `POST`ed directly to the REST endpoint; `pipeline` uses `/pipeline` and `redis.multi()` uses `/multi-exec` (atomic `MULTI`/`EXEC`).
@@ -26,13 +26,13 @@ HTTP is stateless: one request, one response, no persistent exclusive connection
 
 | Works over HTTP | Not available over HTTP |
 | --- | --- |
-| All typed data-structure stores (`hash`, `kv`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`) | [Sessions](/beni/advanced/sessions/) via `redis.session()` |
+| All typed data-structure stores (`hash`, `kv`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`) | [Sessions](/benni/advanced/sessions/) via `redis.session()` |
 | `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` (the cursor rides in the command) | Blocking commands (`BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`/`MAX`, `XREAD BLOCK`) |
 | Lua scripts, `BITFIELD`, geo, HyperLogLog | `WATCH`-based optimistic transactions via `redis.watch()` |
-| `redis.multi()` (atomic `/multi-exec`) | [Pub/Sub](/beni/data-structures/pubsub/) **subscribing** (there is no subscriber connection to hold) |
+| `redis.multi()` (atomic `/multi-exec`) | [Pub/Sub](/benni/data-structures/pubsub/) **subscribing** (there is no subscriber connection to hold) |
 | Pub/Sub **publishing** (`PUBLISH` is one stateless command) | |
 
-`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. `redis.pubsub.channel(...).subscribe(...)` throws the same way, because it omits `subscriber` for the same reason. When you need those, use a TCP adapter ([Node](/beni/runtime/node/) or [Bun](/beni/runtime/bun-and-deno/)) on a long-lived server.
+`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. `redis.pubsub.channel(...).subscribe(...)` throws the same way, because it omits `subscriber` for the same reason. When you need those, use a TCP adapter ([Node](/benni/runtime/node/) or [Bun](/benni/runtime/bun-and-deno/)) on a long-lived server.
 
 Publishing is the useful half on the edge, and it needs nothing held open. An edge handler can fan an event out to long-lived workers that subscribe over TCP:
 
@@ -60,4 +60,4 @@ const client = upstash({
 });
 ```
 
-Beni runs the same shared client-contract suite that pins the Node and Bun adapters against SRH over HTTP, so the typed stores behave identically to a TCP connection (minus the session-only features above).
+Benni runs the same shared client-contract suite that pins the Node and Bun adapters against SRH over HTTP, so the typed stores behave identically to a TCP connection (minus the session-only features above).

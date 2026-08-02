@@ -43,10 +43,10 @@ export type RedisTransaction<
   ): RedisTransaction<[...TResults, T], TAnchor>;
   /**
    * Declare the keys this transaction touches. **This is a declaration, not a
-   * derivation:** Beni does not parse key positions out of queued commands, so
+   * derivation:** Benni does not parse key positions out of queued commands, so
    * a key you queue but do not declare here is not checked.
    *
-   * Under `beni(client, { cluster: assertSameSlot })`, `exec()` verifies the declared
+   * Under `benni(client, { cluster: assertSameSlot })`, `exec()` verifies the declared
    * keys share one Cluster slot before sending MULTI. Without that option it
    * queues nothing, sends nothing, and costs nothing.
    *

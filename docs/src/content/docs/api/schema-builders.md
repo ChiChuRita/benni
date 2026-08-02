@@ -1,9 +1,9 @@
 ---
 title: "Schema Builders"
-description: "Schema builders are exported from beni/schema."
+description: "Schema builders are exported from benni/schema."
 ---
 
-Schema builders are exported from `beni/schema`.
+Schema builders are exported from `benni/schema`.
 
 ## Codecs
 
@@ -17,9 +17,9 @@ bytes();
 enumOf(["pending", "active", "done"]);
 ```
 
-A codec controls how Beni writes values to Redis and decodes values returned by Redis. `bytes()` stores `Uint8Array` values as base64-encoded strings in Redis. `enumOf([...])` constrains a field to a fixed set of string literals, stored as the plain string (no JSON overhead) and validated on decode, inferring the union of the values (`"pending" | "active" | "done"`).
+A codec controls how Benni writes values to Redis and decodes values returned by Redis. `bytes()` stores `Uint8Array` values as base64-encoded strings in Redis. `enumOf([...])` constrains a field to a fixed set of string literals, stored as the plain string (no JSON overhead) and validated on decode, inferring the union of the values (`"pending" | "active" | "done"`).
 
-`json` has two forms. `json<T>()` trusts `T`, with no runtime validation. `json(validator)` accepts any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …): every read is validated at runtime, and the value type is inferred from the validator, with no type parameter needed. Beni stays zero-dependency; the Standard Schema interface is inlined.
+`json` has two forms. `json<T>()` trusts `T`, with no runtime validation. `json(validator)` accepts any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …): every read is validated at runtime, and the value type is inferred from the validator, with no type parameter needed. Benni stays zero-dependency; the Standard Schema interface is inlined.
 
 ```ts
 import { z } from "zod";
@@ -31,14 +31,14 @@ const users = kv("user", json(z.object({ name: z.string() })));     // validated
 
 Invalid stored data throws a `ReplyShapeError` naming the validation issues. Async validators (schemas with async refinements) throw a clear error; `json(validator)` requires a synchronous validator.
 
-Standard Schema defines only the read direction, so `json(validator)` cannot validate writes. The optional [`beni/zod`](/beni/integrations/zod/) subpath runs [Zod codecs](https://zod.dev/codecs) in both directions: `zodCodec(schema)` for string-stored fields (rich types like `Date` that round-trip) and `zodJson(schema)` as a write-validating `json(validator)`.
+Standard Schema defines only the read direction, so `json(validator)` cannot validate writes. The optional [`benni/zod`](/benni/integrations/zod/) subpath runs [Zod codecs](https://zod.dev/codecs) in both directions: `zodCodec(schema)` for string-stored fields (rich types like `Date` that round-trip) and `zodJson(schema)` as a write-validating `json(validator)`.
 
 `number()` rejects non-finite input (`NaN`/`Infinity`) at write time, so a bad value fails at the `set` rather than poisoning a later `get`. Decode failures (a malformed stored value, an out-of-set enum, a wrong reply shape) throw a `ReplyShapeError` (which carries the offending `.reply`); invalid caller input throws a `ValidationError`. Both extend `TypeError`, so existing `catch` blocks keep working while you can now discriminate the two.
 
-When your app needs a codec Beni does not ship, pass a plain `Codec` object, anything with `encode`/`decode`:
+When your app needs a codec Benni does not ship, pass a plain `Codec` object, anything with `encode`/`decode`:
 
 ```ts
-import type { Codec } from "beni";
+import type { Codec } from "benni";
 
 const uppercase: Codec<string, string> = {
   encode(value) {

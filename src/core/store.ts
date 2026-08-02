@@ -5,18 +5,18 @@ import type { RedisClient, RedisKeyPart } from "./types.js";
  * The store binding every schema carries, stamped by the `define*` builder in
  * that kind's own module.
  *
- * This is what keeps the root entry tree-shakable. `beni()` used to dispatch
+ * This is what keeps the root entry tree-shakable. `benni()` used to dispatch
  * with a `switch (schema.kind)` naming all twelve store factories, so a
  * bundler had to retain every store even for an app that declares one hash.
  * Dispatching through the schema means the only module that names
  * `createHashStore` is `core/hash.ts` — reachable only when the app actually
  * calls `schema.hash(...)`.
  */
-export const STORE: unique symbol = Symbol.for("beni.store");
+export const STORE: unique symbol = Symbol.for("benni.store");
 
 /**
  * Keys for the per-handle singletons in `StoreContext.shared`. They live here,
- * not in pubsub.ts/script.ts, so `beni()` can peek at a hub that may never
+ * not in pubsub.ts/script.ts, so `benni()` can peek at a hub that may never
  * have been created without importing the module that would create one.
  */
 export const PUBSUB_HUB_KEY = "pubsub";
@@ -24,7 +24,7 @@ export const SCRIPT_RUNNER_KEY = "script";
 
 /**
  * What a store factory is handed. `shared`/`peek` memoize the per-handle
- * singletons (the pub/sub hub, the script runner) so that `beni()` itself
+ * singletons (the pub/sub hub, the script runner) so that `benni()` itself
  * never names their constructors — keeping those modules out of the baseline
  * too.
  */
@@ -32,7 +32,7 @@ export type StoreContext = {
   readonly client: RedisClient;
   readonly onPubSubError?: (error: unknown) => void;
   /**
-   * The cross-slot guard, present only under `beni(client, { cluster: assertSameSlot })`.
+   * The cross-slot guard, present only under `benni(client, { cluster: assertSameSlot })`.
    *
    * Every multi-key call site invokes it as `assertSameSlot?.(…)`, so when it
    * is undefined the optional call short-circuits argument evaluation and the
@@ -94,7 +94,7 @@ function bindingOf(schema: unknown, label: string): StoreBinding {
   const binding = (schema as Partial<BoundSchema> | null | undefined)?.[STORE];
   if (binding === undefined) {
     throw new TypeError(
-      `${label} was not built by a beni schema builder, so it carries no store binding. ` +
+      `${label} was not built by a benni schema builder, so it carries no store binding. ` +
         "Pass the schema object returned by `schema.hash(...)`, `schema.kv(...)`, etc. " +
         "directly — copying one (object spread, structuredClone, JSON round-trip) drops it."
     );

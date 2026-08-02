@@ -177,7 +177,7 @@ export type InferAnchors<TInput, TOutput> = {
 };
 
 /**
- * The write-side value type of any Beni schema or codec.
+ * The write-side value type of any Benni schema or codec.
  * @example
  * ```ts
  * const users = hash("user", { name: string(), score: number() });
@@ -193,7 +193,7 @@ export type InferInput<TSchema> = TSchema extends {
     : never;
 
 /**
- * The read-side value type of any Beni schema or codec.
+ * The read-side value type of any Benni schema or codec.
  * @example
  * ```ts
  * const profiles = kv("profile", json<Profile>());

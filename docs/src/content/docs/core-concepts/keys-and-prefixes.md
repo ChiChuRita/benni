@@ -1,9 +1,9 @@
 ---
 title: "Keys And Prefixes"
-description: "Every Beni schema has a prefix. Beni combines the prefix with an id to produce a Redis key."
+description: "Every Benni schema has a prefix. Benni combines the prefix with an id to produce a Redis key."
 ---
 
-Every Beni schema has a prefix. Beni combines the prefix with an id to produce a Redis key.
+Every Benni schema has a prefix. Benni combines the prefix with an id to produce a Redis key.
 
 ```ts
 export const users = hash("user", {
@@ -55,4 +55,4 @@ kv("profile", string(), { hashTag: "prefix" }); //  "{profile}:42"
 kv("cart", string(), { hashTag: "id" }); //         "cart:{42}"
 ```
 
-A cluster hashes only the text between the first `{` and the first `}`, so `"prefix"` pins a whole keyspace to one slot and `"id"` co-locates the same id across every schema tagged that way. On a single-node Redis it changes nothing but the key text. See [Redis Cluster](/beni/advanced/cluster/) for how to choose, and for the compile-time and runtime checks that come with it.
+A cluster hashes only the text between the first `{` and the first `}`, so `"prefix"` pins a whole keyspace to one slot and `"id"` co-locates the same id across every schema tagged that way. On a single-node Redis it changes nothing but the key text. See [Redis Cluster](/benni/advanced/cluster/) for how to choose, and for the compile-time and runtime checks that come with it.

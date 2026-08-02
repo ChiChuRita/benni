@@ -6,7 +6,7 @@ body:
     id: what-happened
     attributes:
       label: What happened?
-      description: What did you expect, and what did Beni do instead?
+      description: What did you expect, and what did Benni do instead?
     validations:
       required: true
   - type: textarea
@@ -21,7 +21,7 @@ body:
     id: runtime
     attributes:
       label: Runtime and adapter
-      placeholder: "Node 22 + beni/node, Bun 1.3 + beni/bun, Workers + beni/upstash, …"
+      placeholder: "Node 22 + benni/node, Bun 1.3 + benni/bun, Workers + benni/upstash, …"
     validations:
       required: true
   - type: input
@@ -34,7 +34,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Beni version
+      label: Benni version
       placeholder: "0.1.0"
     validations:
       required: true

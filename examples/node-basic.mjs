@@ -1,11 +1,11 @@
 // The schema-first API from the quickstart: declare schemas once, bind a
 // client, and every read comes back as your declared type.
-import { beni } from "beni";
-import { node } from "beni/node";
-import { hash, json, kv, list, number, set, string, zset } from "beni/schema";
+import { benni } from "benni";
+import { node } from "benni/node";
+import { hash, json, kv, list, number, set, string, zset } from "benni/schema";
 
 const redisUrl =
-  process.env.BENI_REDIS_URL ??
+  process.env.BENNI_REDIS_URL ??
   process.env.REDIS_URL ??
   "redis://127.0.0.1:6379";
 
@@ -22,7 +22,7 @@ const schema = {
 };
 
 const client = await node({ url: redisUrl });
-const redis = beni(client, { schema });
+const redis = benni(client, { schema });
 const id = `demo:${Date.now()}`;
 
 try {

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { assertSameSlot, CrossSlotError, slotOf } from "../src/cluster.js";
 import { codecs } from "../src/core/codecs.js";
 import type { RedisCommand } from "../src/core/types.js";
-import { beni } from "../src/database.js";
+import { benni } from "../src/database.js";
 import {
   bitmap,
   geo,
@@ -17,7 +17,7 @@ import {
 } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
-type Beni = ReturnType<typeof beni>;
+type Benni = ReturnType<typeof benni>;
 
 const tags = setSchema("tag", codecs.string());
 const tagsPinned = setSchema("tag", codecs.string(), { hashTag: "prefix" });
@@ -49,16 +49,19 @@ const bitmapTagged = bitmap("b", pin);
 const geoPlain = geo("g", codecs.string());
 const geoTagged = geo("g", codecs.string(), pin);
 
-const kvOf = (r: Beni, t: boolean) => (t ? r.kv(kvTagged) : r.kv(kvPlain));
-const setOf = (r: Beni, t: boolean) => (t ? r.set(setTagged) : r.set(setPlain));
-const zsetOf = (r: Beni, t: boolean) =>
+const kvOf = (r: Benni, t: boolean) => (t ? r.kv(kvTagged) : r.kv(kvPlain));
+const setOf = (r: Benni, t: boolean) =>
+  t ? r.set(setTagged) : r.set(setPlain);
+const zsetOf = (r: Benni, t: boolean) =>
   t ? r.zset(zsetTagged) : r.zset(zsetPlain);
-const listOf = (r: Beni, t: boolean) =>
+const listOf = (r: Benni, t: boolean) =>
   t ? r.list(listTagged) : r.list(listPlain);
-const hllOf = (r: Beni, t: boolean) => (t ? r.hll(hllTagged) : r.hll(hllPlain));
-const bitmapOf = (r: Beni, t: boolean) =>
+const hllOf = (r: Benni, t: boolean) =>
+  t ? r.hll(hllTagged) : r.hll(hllPlain);
+const bitmapOf = (r: Benni, t: boolean) =>
   t ? r.bitmap(bitmapTagged) : r.bitmap(bitmapPlain);
-const geoOf = (r: Beni, t: boolean) => (t ? r.geo(geoTagged) : r.geo(geoPlain));
+const geoOf = (r: Benni, t: boolean) =>
+  t ? r.geo(geoTagged) : r.geo(geoPlain);
 
 /** Two keys with different hash tags that nonetheless land on one slot. */
 function findSlotCollision(): readonly [string, string] {
@@ -77,14 +80,14 @@ describe("cluster guard", () => {
   it("is off by default: cross-slot mget still sends", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [[null, null]]);
-    await beni(client).kv(profiles).mget(["a", "b"]);
+    await benni(client).kv(profiles).mget(["a", "b"]);
     expect(commands).toEqual([["MGET", "profile:a", "profile:b"]]);
   });
 
   it("throws before sending once the guard is installed", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
-    const redis = beni(client, { cluster: assertSameSlot });
+    const redis = benni(client, { cluster: assertSameSlot });
     await expect(redis.kv(profiles).mget(["a", "b"])).rejects.toThrow(
       CrossSlotError
     );
@@ -93,7 +96,7 @@ describe("cluster guard", () => {
 
   it("carries both keys and both slots on the error", async () => {
     const client = fakeClient([], []);
-    const redis = beni(client, { cluster: assertSameSlot });
+    const redis = benni(client, { cluster: assertSameSlot });
     const error = (await redis
       .set(tags)
       .sunion("a1", ["b7"])
@@ -108,7 +111,7 @@ describe("cluster guard", () => {
   it('hashTag: "prefix" makes the same call legal', async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [["x"]]);
-    const redis = beni(client, { cluster: assertSameSlot });
+    const redis = benni(client, { cluster: assertSameSlot });
     await redis.set(tagsPinned).sunion("a1", ["b7"]);
     expect(commands).toEqual([["SUNION", "{tag}:a1", "{tag}:b7"]]);
   });
@@ -120,7 +123,7 @@ describe("cluster guard", () => {
 
   it("multi().keys() declares what exec checks", async () => {
     const client = fakeClient([], []);
-    const redis = beni(client, { cluster: assertSameSlot });
+    const redis = benni(client, { cluster: assertSameSlot });
     // Built at runtime, so the compile-time check cannot see the tags. This is
     // exactly the case the runtime guard exists for.
     const declared: string[] = ["cart:{a}", "cart:{b}"];
@@ -135,7 +138,7 @@ describe("cluster guard", () => {
 
   it("checks script keys, which Lua cannot span either", async () => {
     const client = fakeClient([], []);
-    const redis = beni(client, { cluster: assertSameSlot });
+    const redis = benni(client, { cluster: assertSameSlot });
     const keys: Record<string, string> = { a: "x:{1}", b: "y:{2}" };
     await expect(
       redis.script(twoKeyScript).run({
@@ -199,7 +202,7 @@ describe("cluster guard", () => {
 describe("every multi-key method is guarded", () => {
   const cases: ReadonlyArray<{
     readonly command: string;
-    readonly run: (redis: Beni, tagged: boolean) => Promise<unknown>;
+    readonly run: (redis: Benni, tagged: boolean) => Promise<unknown>;
   }> = [
     { command: "MGET", run: (r, t) => kvOf(r, t).mget(["a", "b"]) },
     {
@@ -291,7 +294,7 @@ describe("every multi-key method is guarded", () => {
 
   it.each(cases)("$command throws and sends nothing", async ({ run }) => {
     const commands: RedisCommand[] = [];
-    const redis = beni(fakeClient(commands, []), { cluster: assertSameSlot });
+    const redis = benni(fakeClient(commands, []), { cluster: assertSameSlot });
     await expect(run(redis, false)).rejects.toThrow(CrossSlotError);
     expect(commands).toEqual([]);
   });
@@ -300,7 +303,7 @@ describe("every multi-key method is guarded", () => {
     const commands: RedisCommand[] = [];
     // Replies are generous and untyped; we only care that nothing threw before
     // the send and that every key carries the tag.
-    const redis = beni(
+    const redis = benni(
       fakeClient(
         commands,
         Array.from({ length: 8 }, () => 0)
@@ -323,13 +326,13 @@ describe("every multi-key method is guarded", () => {
 });
 
 /**
- * The whole point of taking the guard as a value is that `beni()` never names
+ * The whole point of taking the guard as a value is that `benni()` never names
  * it, so `core/slot` stays out of the root entry's module graph. That is a
  * one-line regression away: turning the `import type { SlotGuard }` in
  * database.ts back into a value import would silently re-pin the CRC16 table
  * and the error prose into every bundle. Walk the built graph and prove it.
  */
-describe("beni/cluster stays out of the root baseline", () => {
+describe("benni/cluster stays out of the root baseline", () => {
   const built = existsSync("dist/index.mjs");
   const test = built ? it : it.skip;
 

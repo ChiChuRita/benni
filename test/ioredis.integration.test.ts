@@ -5,13 +5,13 @@ import {
   definePubSubChannel,
   type RedisClient
 } from "../src/core/index.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
 import { queue } from "../src/primitives/index.js";
 import { json, kv } from "../src/schema.js";
 import { expectRedisClientContract } from "./redis-contract.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 /** Open TCP handles, so a client left reconnecting in the background shows up. */
@@ -99,7 +99,7 @@ describeRedis("ioredis", () => {
   });
 });
 
-const clusterUrl = process.env.BENI_REDIS_CLUSTER_URL;
+const clusterUrl = process.env.BENNI_REDIS_CLUSTER_URL;
 const describeCluster = clusterUrl ? describe : describe.skip;
 
 describeCluster("ioredis (adopted Cluster)", () => {
@@ -129,15 +129,15 @@ describeCluster("ioredis (adopted Cluster)", () => {
       const session = await client.session?.();
       if (!session) throw new Error("session() is required on this adapter");
       // Hash-tagged so the watched key and the transaction share a slot.
-      await session.send(["SET", "{beni-t}:k", "v1"]);
-      await session.send(["WATCH", "{beni-t}:k"]);
+      await session.send(["SET", "{benni-t}:k", "v1"]);
+      await session.send(["WATCH", "{benni-t}:k"]);
       await expect(
-        session.watchedTransaction([["GET", "{beni-t}:k"]])
+        session.watchedTransaction([["GET", "{benni-t}:k"]])
       ).resolves.toEqual(["v1"]);
       expect(session.closed).toBe(false);
       await session.close();
       expect(session.closed).toBe(true);
-      await client.send(["DEL", "{beni-t}:k"]);
+      await client.send(["DEL", "{benni-t}:k"]);
     } finally {
       await client.close();
       cluster.disconnect();
@@ -151,10 +151,10 @@ describeCluster("ioredis (adopted Cluster)", () => {
       if (!subscriber)
         throw new Error("subscriber() is required on this adapter");
       const received = new Promise<string>((resolve) => {
-        void subscriber.subscribe("beni-t-chan", resolve);
+        void subscriber.subscribe("benni-t-chan", resolve);
       });
       await new Promise((resolve) => setTimeout(resolve, 200));
-      await client.send(["PUBLISH", "beni-t-chan", "hello"]);
+      await client.send(["PUBLISH", "benni-t-chan", "hello"]);
       await expect(received).resolves.toBe("hello");
       await subscriber.close();
     } finally {
@@ -175,7 +175,7 @@ describeRedis("ioredis (adopted client)", () => {
   it("adopts an existing instance instead of dialing its own", async () => {
     await owned.connect();
     const client = await ioredis(owned);
-    const key = `beni:test:adopt:${Date.now()}`;
+    const key = `benni:test:adopt:${Date.now()}`;
 
     await expect(client.send(["PING"])).resolves.toBe("PONG");
     await client.send(["SET", key, "adopted"]);
@@ -191,7 +191,7 @@ describeRedis("ioredis (adopted client)", () => {
 
     await client.close();
 
-    // Beni's leased session is gone...
+    // Benni's leased session is gone...
     expect(session?.closed).toBe(true);
     // ...but the caller's client is untouched, because they still own it.
     expect(owned.status).toBe("ready");
@@ -201,15 +201,15 @@ describeRedis("ioredis (adopted client)", () => {
 
 describeRedis("ioredis: typed client and primitives", () => {
   const unique = (label: string) =>
-    `beni:test:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    `benni:test:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   it("runs the typed store API end to end", async () => {
     const client = await ioredis({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const id = unique("kv");
     try {
       const profiles = redis.kv(
-        kv("beni:test:profile", json<{ name: string; n: number }>())
+        kv("benni:test:profile", json<{ name: string; n: number }>())
       );
       await profiles.set(id, { name: "Ada", n: 1 });
       await expect(profiles.get(id)).resolves.toEqual({ name: "Ada", n: 1 });
@@ -221,7 +221,7 @@ describeRedis("ioredis: typed client and primitives", () => {
 
   it("delivers typed Pub/Sub over a leased subscriber", async () => {
     const client = await ioredis({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const channel = definePubSubChannel(
       unique("channel"),
       codecs.json<{ id: string; action: string }>()

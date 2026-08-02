@@ -67,7 +67,7 @@ export type CacheOptions<T> = {
  * a load that is already in flight and a stale result can never overwrite a
  * fresher one.
  *
- * Works over any adapter, including `beni/upstash` on the edge (needs only
+ * Works over any adapter, including `benni/upstash` on the edge (needs only
  * `GET`/`SET`/`DEL` and `SET NX`/`EVALSHA` for the fill lease).
  *
  * ```ts

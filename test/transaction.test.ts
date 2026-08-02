@@ -29,19 +29,19 @@ function bareClient(): RedisClient {
 describe("createTransaction", () => {
   it("sends queued commands through client.transaction and decodes the tuple", async () => {
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK", "beni", 2, 1, "gone"]);
+    const client = fakeClient(commands, ["OK", "benni", 2, 1, "gone"]);
 
     const results = await createTransaction(client)
-      .add(["SET", "user:42", "beni"], okReply)
+      .add(["SET", "user:42", "benni"], okReply)
       .add(["GET", "user:42"], stringOrNullReply)
       .add(["INCR", "user:42:hits"], numberReply)
       .add(["EXISTS", "user:42"], booleanNumberReply)
       .add(["GETDEL", "user:42"], stringReply)
       .exec();
 
-    expect(results).toEqual([undefined, "beni", 2, true, "gone"]);
+    expect(results).toEqual([undefined, "benni", 2, true, "gone"]);
     expect(commands).toEqual([
-      ["SET", "user:42", "beni"],
+      ["SET", "user:42", "benni"],
       ["GET", "user:42"],
       ["INCR", "user:42:hits"],
       ["EXISTS", "user:42"],
@@ -130,14 +130,14 @@ describe("transaction reply decoders", () => {
   });
 
   it("stringReply accepts only strings", () => {
-    expect(stringReply("beni")).toBe("beni");
+    expect(stringReply("benni")).toBe("benni");
     expect(() => stringReply(null)).toThrow(
       "Expected Redis transaction reply to return string"
     );
   });
 
   it("stringOrNullReply accepts strings and null", () => {
-    expect(stringOrNullReply("beni")).toBe("beni");
+    expect(stringOrNullReply("benni")).toBe("benni");
     expect(stringOrNullReply(null)).toBeNull();
     expect(() => stringOrNullReply(1)).toThrow(
       "Expected Redis transaction reply to return string or null"
@@ -163,7 +163,7 @@ type Expect<T extends true> = T;
 const typedClient = null as unknown as RedisClient;
 
 const typedTransaction = createTransaction(typedClient)
-  .add(["SET", "user:42", "beni"], okReply)
+  .add(["SET", "user:42", "benni"], okReply)
   .add(["GET", "user:42"], stringOrNullReply)
   .add(["INCR", "hits"], numberReply)
   .add(["EXISTS", "user:42"], booleanNumberReply)
@@ -188,7 +188,7 @@ type _CustomDecodedResults = Expect<Equal<CustomDecodedResults, [boolean]>>;
 
 async function expectTypeErrorsOnly() {
   const [ok, value, hits] = await createTransaction(typedClient)
-    .add(["SET", "user:42", "beni"], okReply)
+    .add(["SET", "user:42", "benni"], okReply)
     .add(["GET", "user:42"], stringOrNullReply)
     .add(["INCR", "hits"], numberReply)
     .exec();

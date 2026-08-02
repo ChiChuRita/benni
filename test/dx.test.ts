@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { LockNotAcquiredError, lock } from "../src/primitives/index.js";
 import type {
   InferInput,
@@ -65,7 +65,7 @@ describe("schema type inference ($infer / Infer*)", () => {
 
 describe("template-literal keys survive the handle", () => {
   it("redis.kv(schema).key and redis.query keep the literal prefix", () => {
-    const redis = beni(fakeClient([], []), { schema: { profiles, users } });
+    const redis = benni(fakeClient([], []), { schema: { profiles, users } });
     const direct = profiles.key("42");
     const viaAccessor = redis.kv(profiles).key("42");
     const viaQuery = redis.query.profiles.key("42");
@@ -141,7 +141,7 @@ describe("json(standardSchema) validated codec", () => {
 
 describe("compile-time exclusive options", () => {
   it("forbids the invalid combinations at the type level", async () => {
-    const redis = beni(fakeClient([], []));
+    const redis = benni(fakeClient([], []));
     const store = redis.kv(profiles);
     const nxXx = () =>
       // @ts-expect-error nx and xx are mutually exclusive
@@ -164,7 +164,7 @@ describe("compile-time exclusive options", () => {
 
   it("zadd accepts a single entry and emits condition tokens", async () => {
     const commands: import("../src/core/index.js").RedisCommand[] = [];
-    const redis = beni(fakeClient(commands, [1, 1]));
+    const redis = benni(fakeClient(commands, [1, 1]));
     await redis.zset(board).zadd("g", { score: 1, member: "ada" });
     await redis
       .zset(board)
