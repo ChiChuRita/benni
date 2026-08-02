@@ -8,29 +8,45 @@ This example defines two Redis key families: one hash for user metadata and one 
 First install Benni and the Node client (see [Installation](/benni/getting-started/installation/) for other runtimes):
 
 ```sh
-pnpm add benni redis
+pnpm add benni redis zod
 ```
+
+[`zod`](https://zod.dev) is here because the JSON store below validates its reads. Any [Standard Schema](https://standardschema.dev) validator works (Zod, Valibot, ArkType) and Benni depends on none of them; the validator you already use is the one it will use.
 
 ## Define Schemas
 
 ```ts
 // schema.ts
 import { hash, json, kv, number, string } from "benni/schema";
-
-type UserProfile = {
-  name: string;
-  score: number;
-};
+import { z } from "zod";
 
 export const users = hash("user", {
   name: string(),
   score: number()
 });
 
-export const profiles = kv("profile", json<UserProfile>());
+// json(validator) infers the value type from the validator and checks every
+// read against it at runtime. This is the form to reach for.
+const profile = z.object({
+  name: z.string(),
+  score: z.number()
+});
+
+export type UserProfile = z.infer<typeof profile>;
+export const profiles = kv("profile", json(profile));
 ```
 
 Schemas are plain TypeScript values. They do not create Redis keys or require migrations.
+
+One thing to know about that JSON store before you build on it. `json(profile)` validates every read: if the stored JSON does not match, the read throws [`ReplyShapeError`](/benni/api/errors/#replyshapeerror) with the offending value attached rather than handing back something that lies about its type. There is a second form, `json<UserProfile>()`, which is the **unchecked escape hatch**:
+
+```ts
+// no validator, no runtime check: JSON.parse plus an assertion of the type
+export type UserProfile = { name: string; score: number };
+export const profiles = kv("profile", json<UserProfile>());
+```
+
+That is a pure cast. A value written by an older deploy, by another service, or by hand in `redis-cli` still types as a complete `UserProfile` even when fields are missing, and nothing throws. Reach for it only when you own every writer and the value has no shape worth checking. Prefer `json(validator)` everywhere else, and especially anywhere the data outlives the code that wrote it, which in Redis is most data. See [JSON values](/benni/data-structures/json-values/) for the full comparison.
 
 ## Create A Client
 

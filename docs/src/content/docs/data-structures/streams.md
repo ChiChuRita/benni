@@ -50,7 +50,34 @@ const entries = await redis.stream(activity).xrange("42", { count: 10 });
 const newest = await redis.stream(activity).xrevrange("42", { count: 10 });
 ```
 
-`start` and `end` default to the full stream (`-` to `+`). Entry values are `Partial` because Redis does not enforce stream entry shapes: older entries may predate fields you added to the schema. Fields not declared in the schema are skipped.
+`start` and `end` default to the full stream (`-` to `+`). Fields not declared in the schema are skipped.
+
+## Entry Values Are Partial
+
+Every read shape that carries a stream entry value (`xrange`, `xrevrange`, `xread`, and the consumer-group reads) types it as `Partial<...>`, so a field declared as `action: string()` reads back as `string | undefined` and needs a fallback:
+
+```ts
+for (const entry of await redis.stream(activity).xrange("42")) {
+  const action = entry.value.action ?? "(unknown)";
+  const points = entry.value.points ?? 0;
+}
+```
+
+This is deliberate, and it is worth knowing that it is the **opposite** policy from hashes, because the two use the same declared-fields concept:
+
+| | Missing declared field |
+| --- | --- |
+| Stream entry (`xrange`, `xread`, group reads) | Reads as `undefined`; you supply the fallback |
+| Hash whole-record read (`hget(id)`) | Throws `PartialRecordError` |
+| Hash tolerant read (`hgetall(id)`) | Reads as `undefined` (also `Partial`) |
+
+The difference follows from who writes the key. A hash under `hash("user", …)` is a record your schema owns, so a declared field that has gone missing is a bug worth a loud `PartialRecordError` from `hget`, with `hgetall` as the explicit tolerant read for records that use per-field TTLs. See [Hashes](/benni/data-structures/hashes/).
+
+A stream is an append-only log, and any producer can append to it: an older service, a `redis-cli XADD`, a version of your code that predates the field you just added to the schema. Entries already written are immutable, so a schema can never be retrofitted onto them. Typing entry values as complete records would be a claim about every past and future writer that Benni cannot check, so it stays a `Partial` and the fallback stays visible at the read.
+
+The write side has no such doubt. `xadd` requires every declared field, so entries your own code appends are always complete.
+
+A [consumer group](/benni/data-structures/consumer-groups/) re-reading its pending list goes one step further: there the whole `value` can be `null`, meaning the entry was deleted upstream and there is nothing left to decode.
 
 ## Read After An Entry ID
 

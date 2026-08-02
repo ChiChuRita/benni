@@ -19,14 +19,16 @@ enumOf(["pending", "active", "done"]);
 
 A codec controls how Benni writes values to Redis and decodes values returned by Redis. `bytes()` stores `Uint8Array` values as base64-encoded strings in Redis. `enumOf([...])` constrains a field to a fixed set of string literals, stored as the plain string (no JSON overhead) and validated on decode, inferring the union of the values (`"pending" | "active" | "done"`).
 
-`json` has two forms. `json<T>()` trusts `T`, with no runtime validation. `json(validator)` accepts any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …): every read is validated at runtime, and the value type is inferred from the validator, with no type parameter needed. Benni stays zero-dependency; the Standard Schema interface is inlined.
+`json` has two forms, and the validating one is the default to reach for. `json(validator)` accepts any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …): every read is validated at runtime, and the value type is inferred from the validator, with no type parameter needed. Benni stays zero-dependency; the Standard Schema interface is inlined.
+
+`json<T>()` is the escape hatch: a pure cast, with no runtime validation at all. `JSON.parse` runs and its result is asserted to be `T`. A stored value missing required fields, or carrying a field of the wrong type, is handed back typed as a complete `T` and nothing throws. Use it only where you own every writer of the key.
 
 ```ts
 import { z } from "zod";
 
-const profiles = kv("profile", json<Profile>());                    // trusted
 const users = kv("user", json(z.object({ name: z.string() })));     // validated
 //    reads infer { name: string } | null from the Zod schema
+const profiles = kv("profile", json<Profile>());                    // cast, unchecked
 ```
 
 Invalid stored data throws a `ReplyShapeError` naming the validation issues. Async validators (schemas with async refinements) throw a clear error; `json(validator)` requires a synchronous validator.

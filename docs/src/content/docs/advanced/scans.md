@@ -29,6 +29,8 @@ for await (const key of redis.scan.kv(profiles)) {
 
 `redis.scan.kv` defaults `match` to the schema prefix (`profile:*`), so you only see keys that belong to that schema. Pass your own `match` to narrow it further.
 
+Scanning lives on `redis.scan`, not on the stores: there is no `redis.kv(profiles).scan()` or `redis.query.profiles.scan()`. A scan yields keys and members rather than records, and it is a cursor loop rather than a single command, so it stays a namespace of its own instead of a method on every store.
+
 ## Scan Collection Members
 
 ```ts

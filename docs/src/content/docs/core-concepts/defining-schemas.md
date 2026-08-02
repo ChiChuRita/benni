@@ -6,6 +6,7 @@ description: "A Benni schema describes one Redis key family."
 A Benni schema describes one Redis key family.
 
 ```ts
+import { z } from "zod";
 import { hash, json, kv, number, string } from "benni/schema";
 
 export const users = hash("user", {
@@ -15,9 +16,11 @@ export const users = hash("user", {
 
 export const profiles = kv(
   "profile",
-  json<{ name: string; score: number }>()
+  json(z.object({ name: z.string(), score: z.number() }))
 );
 ```
+
+`json(validator)` takes any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, …), infers the value type from it, and validates every read. Prefer it. The bare-type form, `json<{ name: string; score: number }>()`, is a cast with no runtime check: a stored value missing a required field still reads back typed as if it were complete. Reach for it only when you own every writer of that key and accept that. See [JSON values](/benni/data-structures/json-values/).
 
 The `users` schema describes keys like:
 

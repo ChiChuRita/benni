@@ -43,6 +43,8 @@ const entries = await redis.zset(leaderboards).zrange("global", { start: 0, stop
 
 `withScores` decides the return type, so it has to be a literal `true` or `false`, never a variable of type `boolean`. The same holds for `zdiff`, `zunion`, `zinter`, and `zrandmember`. If the flag is computed, branch on it and make two calls: the compiler cannot pick a reply shape it does not know yet.
 
+Note the call shape: `zrange` takes an **options object**, not positional bounds, and the range, direction, and score flag all live in it (`{ start, stop, rev, withScores }`). There is no separate `zrangeWithScores` method. One signature is what lets `byScore` and `byLex` (below) reuse the same call instead of multiplying into a method per Redis token.
+
 Increment a score:
 
 ```ts

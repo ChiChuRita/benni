@@ -41,10 +41,34 @@ await redis.hash(users).hincrby("42", "score", 1);
 
 ## Read Fields
 
+One `hget`, two jobs: pass a field name to read that one field, or nothing to read the whole record. There is no `hgetField` or `hgetOne`.
+
 ```ts
 const score = await redis.hash(users).hget("42", "score");
+//    ^? number | null      (one field)
+
+const user = await redis.hash(users).hget("42");
+//    ^? { name: string; score: number } | null   (the whole record)
+
 const fields = await redis.hash(users).hmget("42", ["name", "score"]);
+//    ^? { name?: string | null; score?: number | null }
 ```
+
+The single-field form returns the field's decoded type, so `hget("42", "score")` is a `number | null` and not a string you have to parse.
+
+## Missing Declared Fields Throw
+
+A hash under `hash("user", …)` is a record your schema owns, so the whole-record read insists on it. `hget("42")` needs every declared field and throws a `PartialRecordError` when one is gone (deleted with `hdel`, or expired by a per-field TTL). `hgetall` is the tolerant read for exactly that case, and types its result as `Partial`:
+
+```ts
+const strict = await redis.hash(users).hget("42");
+//    ^? { name: string; score: number } | null   (throws PartialRecordError if incomplete)
+
+const tolerant = await redis.hash(users).hgetall("42");
+//    ^? { name?: string; score?: number } | null
+```
+
+This is the opposite of how [stream](/benni/data-structures/streams/) entry values behave, which are always `Partial` and never throw. The difference is who writes the key: a hash is a record you own, while a stream is an append log any producer can write to. See [Entry Values Are Partial](/benni/data-structures/streams/#entry-values-are-partial).
 
 ## Random Fields
 
@@ -108,12 +132,7 @@ const removed = await redis.hash(users).hgetdel("42", ["name", "score"]);
 
 `hsetex` writes only the fields you pass, and it rejects a field whose value is `undefined` rather than storing the string `"undefined"`: omit the key to leave that field alone. `hgetex` with an empty field list rejects too when you pass an expiry, because there is no field to apply it to.
 
-A lapsed field TTL leaves the hash partially populated, and so does `hdel` or `hgetdel` on a declared field. The whole-record read `hget("42")` needs every declared field and throws when one has gone; `hgetall` is the tolerant read for records with per-field TTLs:
-
-```ts
-const partial = await redis.hash(users).hgetall("42");
-//    ^? { name?: string; score?: number } | null
-```
+A lapsed field TTL leaves the hash partially populated, and so does `hdel` or `hgetdel` on a declared field. That is precisely the case [`hgetall` exists for](#missing-declared-fields-throw): a record with per-field TTLs should be read with `hgetall`, since `hget("42")` throws a `PartialRecordError` the moment one declared field has gone.
 
 ## Delete Fields Or The Hash
 

@@ -20,6 +20,8 @@ await redis.hll(pageViews).pfadd("2026-07-04", [
 ]);
 ```
 
+`pfadd` always takes an array, so a single value is `pfadd(id, [value])`; there is no single-value overload. An empty array is a no-op rather than a command that would create the key.
+
 Count unique values:
 
 ```ts

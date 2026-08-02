@@ -54,7 +54,14 @@ await redis.query.userEvents.publish({ id: "42", action: "created" });
 await redis.query.rateLimit.run({ keys: { counter: "user:42" }, args: { limit: 100 } });
 ```
 
-Counter and string stores are not separate kinds; a `kv` schema maps to the `kv` resource; use `redis.counter(schema)` or `redis.string(schema)` for those operations. Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/benni/core-concepts/schema-registry/).
+Counter and string stores are not separate kinds, so a `kv` schema always maps to the `kv` resource. `redis.query.<name>` on a `kv(prefix, number())` therefore has `get` / `set` / `del` but no `incr`: reach for `redis.counter(schema)` for the counter commands and `redis.string(schema)` for the string ones. Both work on the same keys as the `kv` resource, so mixing them on one schema is fine.
+
+```ts
+await redis.query.clicks.set("home", 0);          // kv resource
+await redis.counter(clicks).incr("home");         // counter view, not on redis.query
+```
+
+Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/benni/core-concepts/schema-registry/).
 
 ## `redis.kv(schema)`
 

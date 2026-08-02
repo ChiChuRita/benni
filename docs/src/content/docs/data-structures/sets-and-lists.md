@@ -54,3 +54,14 @@ Raw Redis equivalent:
 await nodeRedis.rPush("events:user:42", JSON.stringify(event));
 const recent = await nodeRedis.lRange("events:user:42", 0, 9);
 ```
+
+## Members Are Always Passed As An Array
+
+The variadic writers (`sadd`, `srem`, `lpush`, `rpush`, and `pfadd` on a [HyperLogLog](/benni/data-structures/hyperloglog/)) take an array, even for a single member. There is no single-value overload, so `lpush(id, value)` does not compile:
+
+```ts
+await redis.list(events).lpush("user:42", [event]);  // one member
+await redis.list(events).lpush("user:42", [a, b]);   // many
+```
+
+One shape means a loop that pushes one item and a batch that pushes a hundred are the same call, and an empty array is a no-op rather than a command that would create the key. The readers that return a slice are positional, matching Redis: `lrange(id, start, stop)`.

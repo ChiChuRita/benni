@@ -195,6 +195,7 @@ export default defineConfig({
             { label: "API Overview", slug: "api/overview" },
             { label: "Benni Client", slug: "api/benni-client" },
             { label: "Schema Builders", slug: "api/schema-builders" },
+            { label: "Errors", slug: "api/errors" },
           ],
         },
         {

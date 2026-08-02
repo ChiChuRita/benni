@@ -26,6 +26,8 @@ Per attempt the helper opens (or borrows) a session, sends `WATCH keys`, runs yo
 
 Read the watched keys through the session (`s.kv(...)`, `s.hash(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/benni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
 
+Everything [`redis.multi()`](/benni/advanced/transactions/#encode-values-with-the-schemas-codec) says about arguments applies here. Encode each value with the schema's own codec, `schema.encode(value)` for a keyspace and `schema.fields.<name>.encode(value)` for a hash field, rather than `String(...)`: the transaction then writes exactly what the typed store reads back, and a wrong type fails at the encode call instead of at some later read. The [decoder you pair with each command is still unchecked](/benni/advanced/transactions/#the-decoder-is-not-checked-against-the-command) against the command string, so keep the usual pairings in mind (`SET` to `okReply`, `INCR` and `HSET` to `numberReply`, `GET` to `stringOrNullReply`).
+
 ## Check-And-Set Example
 
 Cap a counter at a ceiling, retrying if a concurrent writer moves it:
@@ -43,7 +45,9 @@ const result = await redis.watch(
     if (current >= 1_000_000) return null;                      // opt out -> resolves null
     return s
       .multi()
-      .add(["SET", views.key("home"), String(current + 1)], okReply)
+      // views.encode is the codec the typed store uses, so the value the store
+      // would accept is the value that lands in Redis
+      .add(["SET", views.key("home"), views.encode(current + 1)], okReply)
       .add(["INCR", `${views.key("home")}:writes`], numberReply);
   },
   {
@@ -53,6 +57,8 @@ const result = await redis.watch(
 );
 //    ^? [void, number] | null   (null = the body opted out)
 ```
+
+A committed result here logs as `[undefined, 4]`. The `void` slot is what `okReply` yields for the `SET`, and `undefined` is a success: an `OK` reply carries nothing worth typing. A command that actually failed throws rather than landing `undefined` in the tuple.
 
 ## Balance Transfer
 
@@ -73,8 +79,14 @@ async function transfer(from: string, to: string, amount: number) {
       const toBalance = (await s.kv(balances).get(to)) ?? 0;
       return s
         .multi()
-        .add(["SET", balances.key(from), String(fromBalance - amount)], okReply)
-        .add(["SET", balances.key(to), String(toBalance + amount)], okReply);
+        .add(
+          ["SET", balances.key(from), balances.encode(fromBalance - amount)],
+          okReply
+        )
+        .add(
+          ["SET", balances.key(to), balances.encode(toBalance + amount)],
+          okReply
+        );
     },
     { attempts: 10 }
   );
@@ -134,9 +146,9 @@ await s.watch([views.key("home")]);
 const current = (await s.kv(views).get("home")) ?? 0;
 const outcome = await s
   .multi()
-  .add(["SET", views.key("home"), String(current + 1)], okReply)
+  .add(["SET", views.key("home"), views.encode(current + 1)], okReply)
   .exec();
-//    ^? [void] | null
+//    ^? [void] | null   (the void slot reads as undefined; the SET succeeded)
 if (outcome === null) {
   // a watched key changed, so re-WATCH and retry
 }

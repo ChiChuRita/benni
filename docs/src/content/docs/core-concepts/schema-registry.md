@@ -49,6 +49,7 @@ Each schema builder stamps a `kind` discriminant, one of `kv`, `hash`, `set`, `l
 
 - Entries in the bound module that are not schemas (a re-exported type, a helper function, a Zod or Valibot validator you pass to `json()`) are dropped from the registry. Being a schema means carrying the store binding a builder attaches, not merely having a `kind` property of your own.
 - `redis.query` is `{}` when no `{ schema }` is bound.
+- Counter and string operations are the exception to "prefer `redis.query`", because they are not kinds. See [The Counter And String Exception](#the-counter-and-string-exception) below before you write your first `incr`.
 
 ## Kind To Resource
 
@@ -67,7 +68,36 @@ Each schema builder stamps a `kind` discriminant, one of `kv`, `hash`, `set`, `l
 | `pattern` | `redis.pubsub.pattern(schema)` | `redis.query.<name>.subscribe` |
 | `script` | `redis.script(schema)` | `redis.query.<name>.run({ keys, args })` |
 
-Counter and string stores are not separate kinds: a `kv` schema resolves to the `kv` resource in the registry. For counter or string operations, reach for `redis.counter(schema)` or `redis.string(schema)` explicitly.
+## The Counter And String Exception
+
+`redis.query` covers those twelve kinds and nothing else, and there is one gap worth knowing before you meet it. Counters and strings are not kinds of their own: they are alternate views over a plain `kv` keyspace, so a `kv` schema always resolves to the `kv` resource in the registry, whatever its codec.
+
+That means `redis.query.<name>` gives you `get` / `set` / `del` but **no `incr`**, even when the schema is a `kv(prefix, number())` that exists only to be incremented:
+
+```ts
+// schema.ts
+export const clicks = kv("clicks", number());
+```
+
+```ts
+// app.ts
+await redis.query.clicks.set("home", 0); // fine: the kv resource
+await redis.query.clicks.incr("home");   // does not compile: kv has no incr
+
+const total = await redis.counter(clicks).incr("home"); // reach for the counter view
+```
+
+The same holds for the string view: `append`, `getrange`, `strlen`, and friends live on `redis.string(schema)`, not on `redis.query.<name>`.
+
+So the "prefer `redis.query`" rule has exactly two exceptions, and they are both on `kv`:
+
+| Want | Use |
+| --- | --- |
+| `get`, `set`, `del`, `expire`, … | `redis.query.<name>` (the `kv` resource) |
+| `incr`, `incrby`, `incrbyfloat`, `decr`, `decrby` | `redis.counter(schema)` |
+| `append`, `getrange`, `setrange`, `strlen` | `redis.string(schema)` |
+
+Both accessors take the schema value, so a counter-heavy module tends to import its schemas directly rather than going through the registry for those calls. They read and write the same keys as the `kv` resource, so mixing them on one schema is normal: `redis.query.clicks.set("home", 0)` to seed and `redis.counter(clicks).incr("home")` to bump.
 
 ## Relationship To Explicit Accessors
 

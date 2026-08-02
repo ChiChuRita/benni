@@ -183,6 +183,23 @@ process.on("SIGTERM", () => void worker.stop());
 
 `stop()` never kills a running job: in-flight work keeps its lease and finishes, so nothing is double-run.
 
+## Inspecting a job
+
+`jobs.get(id)` returns the whole job record, and its current state is the `status` **property** on that record. There is no `jobs.status(id)`, and the field is `status`, not `state`:
+
+```ts
+const job = await jobs.get(id);
+//    ^? Job<{ prompt: string }, string> | null
+
+if (job?.status === "completed") {
+  const text = job.result; // present only on "completed"
+}
+```
+
+The record also carries `attempt` / `maxAttempts`, `progress` (`0`-`1`), `error` (the last failure message, kept across retries), `priority`, the `createdAt` / `updatedAt` / `startedAt` / `finishedAt` timestamps, `idempotencyKey`, and `cancelRequested` (true from the moment `cancel()` is called, even while the job is still running).
+
+Two names worth spelling out, because they do not match each other: a `Worker` is shut down with `worker.stop()`, while the Redis client is shut down with `client.close()`. The worker is not a connection, so it does not get `close()`.
+
 ## Operating it
 
 ```ts
