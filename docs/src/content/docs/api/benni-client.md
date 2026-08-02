@@ -16,7 +16,16 @@ const redis = benni({ client: node({ url }), schema });
 const redis = benni(client, { schema });
 ```
 
-The `client` accepts a connected `RedisClient`, a promise of one, a factory returning either, or another Benni handle. A promise or factory is resolved once on first use and cached, and a failed connect is retried on the next command rather than remembered. The cost of the lazy form is that a bad `REDIS_URL` surfaces at the first command instead of at startup.
+The `client` accepts a connected `RedisClient`, a promise of one, a factory returning either, or another Benni handle. The cost of either lazy form is that a bad `REDIS_URL` surfaces at the first command instead of at startup.
+
+The two lazy forms differ in one way worth knowing:
+
+| Source | When it connects | `close()` before the first command | After a failed connect |
+| --- | --- | --- | --- |
+| A promise (`node({ url })`) | Already connecting when you pass it | Closes the client it opened | Every command reports that same failure: a settled promise cannot be retried |
+| A factory (`() => node({ url })`) | On the first command | Opens nothing | The next command calls the factory again |
+
+Reach for the factory when a module is loaded in a context that must not connect at all, which is why `benni/next`'s `cacheHandler` documents one: Next.js loads `cache-handler.mjs` at build time.
 
 `BenniOptions` has three fields, all optional:
 

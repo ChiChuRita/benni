@@ -28,21 +28,38 @@ describe("resolveClient", () => {
     expect(resolveClient(benni(client))).toBe(client);
   });
 
-  it("resolves a promise on first command, not at construction", async () => {
+  it("sends nothing until a command, over a promise source", async () => {
     const commands: RedisCommand[] = [];
-    let settled = false;
-    const pending = Promise.resolve(fakeClient(commands, ["PONG"])).then(
-      (client) => {
-        settled = true;
-        return client;
-      }
-    );
+    const pending = Promise.resolve(fakeClient(commands, ["PONG"]));
 
     const client = resolveClient(pending);
-    expect(settled).toBe(false);
+    await Promise.resolve();
+    expect(commands).toEqual([]);
 
     await expect(client.send(["PING"])).resolves.toBe("PONG");
     expect(commands).toEqual([["PING"]]);
+  });
+
+  it("observes a rejecting promise source rather than letting it go unhandled", async () => {
+    // A promise handed here is already in flight, so nothing is waiting to
+    // attach a rejection handler. Left unobserved until the first command,
+    // `benni({ client: node({ url: bad }) })` killed the process with an
+    // unhandledRejection before any command could report the failure.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const client = resolveClient(Promise.reject(new Error("ECONNREFUSED")));
+      // Long enough for the rejection to be reported if nothing observed it.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+
+      // The failure is still delivered, through the command, every time.
+      await expect(client.send(["PING"])).rejects.toThrow("ECONNREFUSED");
+      await expect(client.send(["PING"])).rejects.toThrow("ECONNREFUSED");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("calls a factory once and reuses the client", async () => {
@@ -72,7 +89,7 @@ describe("resolveClient", () => {
     expect(calls).toBe(2);
   });
 
-  it("closing a client that was never used opens no connection", async () => {
+  it("closing a factory client that was never used opens no connection", async () => {
     let calls = 0;
     const client = resolveClient(() => {
       calls += 1;
@@ -81,6 +98,28 @@ describe("resolveClient", () => {
 
     await client.close();
     expect(calls).toBe(0);
+  });
+
+  it("closes a promise-backed client that was never used", async () => {
+    // The factory rule does not transfer: this connection is already open, so
+    // skipping the close leaks it and the process never exits.
+    let closed = false;
+    const client = resolveClient(
+      Promise.resolve({
+        async send() {
+          return null;
+        },
+        async pipeline() {
+          return [];
+        },
+        async close() {
+          closed = true;
+        }
+      })
+    );
+
+    await client.close();
+    expect(closed).toBe(true);
   });
 
   it("raises the capability guard's own message once resolved", async () => {
