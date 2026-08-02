@@ -12,7 +12,7 @@ One call with a 200k-token context costs what fifty 4k-token calls cost. "100 re
 When you know the cost before you spend it:
 
 ```ts
-import { budget } from "beni/primitives";
+import { budget } from "benni/primitives";
 
 const budgets = budget(client, {
   limit: 2_000_000,       // tokens
@@ -98,11 +98,11 @@ The one place cost is not O(1) is summing live reservations, which walks the res
 
 `retryAfterMs` is the time until enough units decay out of the window for that exact spend, computed server-side. It is not the time to the next bucket boundary, which frees nothing: the two-bucket estimate is continuous across the roll.
 
-Which bucket a call lands in is decided by the server's clock, so a call that crosses a boundary is re-run against the bucket the server named. If this process is stalled for longer than a whole window in between, every attempt misses and the call throws `BudgetWindowRolledError` (exported from `beni/primitives`) rather than inventing an answer. Nothing was applied, so it is safe to retry, and a hold whose `settle` throws it is still usable.
+Which bucket a call lands in is decided by the server's clock, so a call that crosses a boundary is re-run against the bucket the server named. If this process is stalled for longer than a whole window in between, every attempt misses and the call throws `BudgetWindowRolledError` (exported from `benni/primitives`) rather than inventing an answer. Nothing was applied, so it is safe to retry, and a hold whose `settle` throws it is still usable.
 
 ## Cluster Safety
 
-Each id's two window buckets, its reservation set, and its settle markers share a `{<id>}` hash tag, so they live on one node and the scripts can touch them together. Different ids still spread across the keyspace. See [Redis Cluster](/beni/advanced/cluster/).
+Each id's two window buckets, its reservation set, and its settle markers share a `{<id>}` hash tag, so they live on one node and the scripts can touch them together. Different ids still spread across the keyspace. See [Redis Cluster](/benni/advanced/cluster/).
 
 ## Options
 
@@ -116,12 +116,12 @@ Each id's two window buckets, its reservation set, and its settle markers share 
 
 ## When You Don't Need This
 
-- **You are limiting request rate, not spend.** Use [`ratelimit`](/beni/primitives/ratelimit/); it is exact and cheaper.
-- **You are limiting concurrency.** "At most 20 calls in flight" is [`semaphore`](/beni/primitives/semaphore/).
+- **You are limiting request rate, not spend.** Use [`ratelimit`](/benni/primitives/ratelimit/); it is exact and cheaper.
+- **You are limiting concurrency.** "At most 20 calls in flight" is [`semaphore`](/benni/primitives/semaphore/).
 - **You need per-request billing records.** This is a guardrail, not a ledger. Keep the ledger in your database and use this to stop runaway spend before it happens.
 
 ## See Also
 
-- [Rate Limiting](/beni/primitives/ratelimit/) for request-count limits
-- [Semaphore](/beni/primitives/semaphore/) for concurrency limits
-- [AI Apps](/beni/patterns/ai-apps/) for how these compose
+- [Rate Limiting](/benni/primitives/ratelimit/) for request-count limits
+- [Semaphore](/benni/primitives/semaphore/) for concurrency limits
+- [AI Apps](/benni/patterns/ai-apps/) for how these compose

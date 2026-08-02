@@ -1,6 +1,6 @@
 ---
 title: "Examples"
-description: "Copy-pasteable examples for the schema-first Beni API, one data structure at a time."
+description: "Copy-pasteable examples for the schema-first Benni API, one data structure at a time."
 ---
 
 Every example on this page uses the same shape: declare schemas once, bind a
@@ -24,7 +24,7 @@ import {
   stream,
   string,
   zset
-} from "beni/schema";
+} from "benni/schema";
 
 type UserProfile = {
   name: string;
@@ -72,21 +72,21 @@ export const incrementBy = script("increment-by", {
 
 ```ts
 // redis.ts
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node({
   url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
 });
 
-export const redis = beni(client, { schema });
+export const redis = benni(client, { schema });
 ```
 
 The sections below assume these two files. The lower-level building blocks the
 client is made of (`defineKeyspace`, `createHashStore`, …) live under
-`beni/core` for adapter authors and advanced integrations; see the
-[API overview](/beni/api/overview/).
+`benni/core` for adapter authors and advanced integrations; see the
+[API overview](/benni/api/overview/).
 
 ## Typed JSON Key-Value
 
@@ -115,8 +115,8 @@ When IDs are known at compile time, pass them into the schema. Editors then
 autocomplete IDs such as `"test1"` and full key strings such as `"demo:test1"`.
 
 ```ts
-import { type RedisKey } from "beni";
-import { kv, string } from "beni/schema";
+import { type RedisKey } from "benni";
+import { kv, string } from "benni/schema";
 
 const demos = kv("demo", string(), {
   ids: ["test1", "test2"]
@@ -131,7 +131,7 @@ type DemoKey = RedisKey<"demo", "test1" | "test2">;
 // DemoKey is "demo:test1" | "demo:test2"
 ```
 
-If IDs come from users, databases, or Redis itself, leave `ids` out and Beni
+If IDs come from users, databases, or Redis itself, leave `ids` out and Benni
 accepts normal `string | number | bigint` IDs.
 
 ## Integer Counter
@@ -356,9 +356,9 @@ for await (const message of redis.pubsub
 ```
 
 Publishing is one stateless `PUBLISH` on the bound client, so it works on every
-adapter including [`beni/upstash`](/beni/runtime/edge/). Subscribing needs a
+adapter including [`benni/upstash`](/benni/runtime/edge/). Subscribing needs a
 connection the adapter can hold, and `redis.pubsub.close()` drops every
-subscription at once. See [Pub/Sub](/beni/data-structures/pubsub/).
+subscription at once. See [Pub/Sub](/benni/data-structures/pubsub/).
 
 ## Typed Transaction
 
@@ -366,7 +366,7 @@ subscription at once. See [Pub/Sub](/beni/data-structures/pubsub/).
 position-typed tuple:
 
 ```ts
-import { booleanNumberReply, okReply, stringOrNullReply } from "beni";
+import { booleanNumberReply, okReply, stringOrNullReply } from "benni";
 
 const [setResult, stored, exists] = await redis
   .multi()
@@ -377,7 +377,7 @@ const [setResult, stored, exists] = await redis
 ```
 
 For `WATCH`-based optimistic transactions, see
-[Optimistic Transactions](/beni/advanced/optimistic-transactions/).
+[Optimistic Transactions](/benni/advanced/optimistic-transactions/).
 
 ## Typed Lua Script
 
@@ -415,12 +415,12 @@ typed API with a scripted fake:
 
 ```ts
 import {
-  beni,
+  benni,
   type RedisClient,
   type RedisCommand,
   type RedisReply
-} from "beni";
-import { json, kv } from "beni/schema";
+} from "benni";
+import { json, kv } from "benni/schema";
 
 function fakeClient(commands: RedisCommand[], replies: RedisReply[]): RedisClient {
   return {
@@ -440,7 +440,7 @@ function fakeClient(commands: RedisCommand[], replies: RedisReply[]): RedisClien
 
 const commands: RedisCommand[] = [];
 const profiles = kv("user", json<{ name: string }>());
-const redis = beni(fakeClient(commands, ["OK", "{\"name\":\"Ada\"}"]), {
+const redis = benni(fakeClient(commands, ["OK", "{\"name\":\"Ada\"}"]), {
   schema: { profiles }
 });
 

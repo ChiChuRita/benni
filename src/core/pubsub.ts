@@ -223,7 +223,7 @@ export function createPubSubHub(
     if (leasing) return leasing;
     if (!client.subscriber) {
       throw new TypeError(
-        "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through beni/node or beni/bun."
+        "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node or benni/bun."
       );
     }
     leasing = client

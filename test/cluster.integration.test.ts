@@ -8,7 +8,7 @@ import type {
   SetSchema,
   SortedSetSchema
 } from "../src/core/types.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
 import { kv, set as setSchema, zset } from "../src/schema.js";
 
@@ -19,9 +19,9 @@ import { kv, set as setSchema, zset } from "../src/schema.js";
  * plain instance refuses.
  *
  *   pnpm redis:cluster:build && pnpm redis:cluster:run
- *   BENI_REDIS_CLUSTER_URL=redis://127.0.0.1:6381 pnpm test
+ *   BENNI_REDIS_CLUSTER_URL=redis://127.0.0.1:6381 pnpm test
  */
-const clusterUrl = process.env.BENI_REDIS_CLUSTER_URL;
+const clusterUrl = process.env.BENNI_REDIS_CLUSTER_URL;
 const describeCluster = clusterUrl ? describe : describe.skip;
 
 describeCluster("redis cluster", () => {
@@ -102,7 +102,10 @@ describeCluster("redis cluster", () => {
   };
   const cases: ReadonlyArray<{
     readonly command: string;
-    readonly run: (redis: ReturnType<typeof beni>, s: Schemas) => Promise<void>;
+    readonly run: (
+      redis: ReturnType<typeof benni>,
+      s: Schemas
+    ) => Promise<void>;
   }> = [
     {
       command: "MGET",
@@ -147,14 +150,14 @@ describeCluster("redis cluster", () => {
     run
   }) => {
     // Guard OFF, so the command reaches the server and Redis is the judge.
-    const redis = beni(client, {});
+    const redis = benni(client, {});
     await expect(run(redis, untagged)).rejects.toThrow(/CROSSSLOT/);
   });
 
   it.each(cases)('$command succeeds under hashTag: "prefix"', async ({
     run
   }) => {
-    const redis = beni(client, { cluster: assertSameSlot });
+    const redis = benni(client, { cluster: assertSameSlot });
     await expect(run(redis, tagged)).resolves.toBeUndefined();
   });
 });

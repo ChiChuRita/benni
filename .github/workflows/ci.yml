@@ -61,7 +61,7 @@ jobs:
 
       # Runs lint, typecheck, coverage-gated unit tests, build, publint, and
       # attw. The unit suite skips the Redis-backed integration tests because
-      # BENI_REDIS_URL is unset here; those run in the integration job.
+      # BENNI_REDIS_URL is unset here; those run in the integration job.
       - name: Check
         run: pnpm check
 
@@ -90,10 +90,10 @@ jobs:
           SRH_TOKEN: example_token
           SRH_CONNECTION_STRING: redis://redis:6379
     env:
-      BENI_REDIS_URL: redis://127.0.0.1:6379
-      BENI_REDIS_CLUSTER_URL: redis://127.0.0.1:6381
-      BENI_UPSTASH_URL: http://127.0.0.1:8079
-      BENI_UPSTASH_TOKEN: example_token
+      BENNI_REDIS_URL: redis://127.0.0.1:6379
+      BENNI_REDIS_CLUSTER_URL: redis://127.0.0.1:6381
+      BENNI_UPSTASH_URL: http://127.0.0.1:8079
+      BENNI_UPSTASH_TOKEN: example_token
     steps:
       - uses: actions/checkout@v4
 
@@ -117,34 +117,34 @@ jobs:
       # cannot override the image's command. Built from Dockerfile.cluster so
       # CI and `pnpm redis:cluster:run` are the same node.
       #
-      # Without BENI_REDIS_CLUSTER_URL the cluster suites skip, and a skipped
+      # Without BENNI_REDIS_CLUSTER_URL the cluster suites skip, and a skipped
       # suite reads as a passing one: that is how an adapter bug that broke
       # every adopted ioredis.Cluster reached main. Slots are assigned here so
       # the cluster is routable before any file runs, rather than depending on
       # which suite happens to go first.
       - name: Start cluster-enabled Redis
         run: |
-          docker build -f Dockerfile.cluster -t beni-redis-cluster .
-          docker run -d --name beni-redis-cluster -p 6381:6379 beni-redis-cluster
+          docker build -f Dockerfile.cluster -t benni-redis-cluster .
+          docker run -d --name benni-redis-cluster -p 6381:6379 benni-redis-cluster
           for _ in $(seq 1 60); do
-            docker exec beni-redis-cluster redis-cli ping >/dev/null 2>&1 && break
+            docker exec benni-redis-cluster redis-cli ping >/dev/null 2>&1 && break
             sleep 1
           done
-          docker exec beni-redis-cluster redis-cli cluster addslotsrange 0 16383
+          docker exec benni-redis-cluster redis-cli cluster addslotsrange 0 16383
           state=""
           for _ in $(seq 1 60); do
-            state=$(docker exec beni-redis-cluster redis-cli cluster info \
+            state=$(docker exec benni-redis-cluster redis-cli cluster info \
               | tr -d '\r' | awk -F: '/^cluster_state:/{print $2}')
             [ "$state" = "ok" ] && break
             sleep 1
           done
           if [ "$state" != "ok" ]; then
             echo "cluster never reached cluster_state:ok (last: '$state')"
-            docker logs beni-redis-cluster
+            docker logs benni-redis-cluster
             exit 1
           fi
 
-      # With BENI_REDIS_URL and BENI_REDIS_CLUSTER_URL set, the full Vitest
+      # With BENNI_REDIS_URL and BENNI_REDIS_CLUSTER_URL set, the full Vitest
       # suite runs the Node and cluster integration tests against the services
       # above as well as the unit tests.
       - name: Node integration tests
@@ -170,7 +170,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      BENI_REDIS_URL: redis://127.0.0.1:6379
+      BENNI_REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
 
@@ -227,8 +227,8 @@ jobs:
         uses: changesets/action@v1
         with:
           publish: pnpm release
-          title: "Release Beni"
-          commit: "Release Beni"
+          title: "Release Benni"
+          commit: "Release Benni"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

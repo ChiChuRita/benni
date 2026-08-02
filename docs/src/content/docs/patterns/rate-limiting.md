@@ -4,7 +4,7 @@ description: "Cap requests per window with an atomic INCR + EXPIRE Lua script."
 ---
 
 :::tip
-For most apps, reach for the first-class [`ratelimit` primitive](/beni/primitives/ratelimit/), a sliding-window limiter in one atomic call. This page shows the underlying fixed-window pattern if you want to roll your own.
+For most apps, reach for the first-class [`ratelimit` primitive](/benni/primitives/ratelimit/), a sliding-window limiter in one atomic call. This page shows the underlying fixed-window pattern if you want to roll your own.
 :::
 
 Rate limiting caps how many actions a caller may take in a time window. The classic Redis approach is a **fixed window** counter: `INCR` a per-caller key and set its TTL to the window on the first hit. Doing both inside one `script()` keeps the increment and the expiry atomic, so a burst can never leave a counter without a TTL, the bug that turns a rate limiter into a permanent lockout.
@@ -12,7 +12,7 @@ Rate limiting caps how many actions a caller may take in a time window. The clas
 ## Define the limiter script
 
 ```ts
-import { number, script } from "beni/schema";
+import { number, script } from "benni/schema";
 
 export const rateLimit = script("rate-limit", {
   keys: ["counter"],
@@ -74,6 +74,6 @@ const allowed = count <= MAX_PER_WINDOW;
 ## Beyond fixed windows
 
 - **Sliding window**: key on a rolling bucket (`Math.floor(Date.now() / 1000 / WINDOW)`) and sum the current and previous buckets, weighted by how far into the window you are. Same `script()` shape, a little more Lua.
-- **Token bucket**: store the token count and last-refill timestamp in a `hash`, refilling on read. Combine [per-field TTL](/beni/data-structures/hashes/#field-expiration) with a `script()` for the atomic refill-and-take.
+- **Token bucket**: store the token count and last-refill timestamp in a `hash`, refilling on read. Combine [per-field TTL](/benni/data-structures/hashes/#field-expiration) with a `script()` for the atomic refill-and-take.
 
 The fixed window is the simplest correct choice and the right default; reach for the others only when smoothing bursts across the boundary actually matters.

@@ -8,7 +8,7 @@ Use geo sets to index members by coordinates and query them by radius or box.
 ## Define A Geo Set
 
 ```ts
-import { geo, string } from "beni/schema";
+import { geo, string } from "benni/schema";
 
 export const stores = geo("stores", string());
 ```

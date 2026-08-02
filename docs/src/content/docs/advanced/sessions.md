@@ -3,13 +3,13 @@ title: "Connection Sessions"
 description: "Use redis.session() to lease a dedicated connection for blocking commands and WATCH transactions."
 ---
 
-Use `redis.session()` to lease a dedicated connection from the client. A session is shaped like the Beni handle (the same store accessors, bound to a private connection), plus the operations that are only safe when one caller owns the connection: blocking pops, blocking stream reads, and `WATCH`.
+Use `redis.session()` to lease a dedicated connection from the client. A session is shaped like the Benni handle (the same store accessors, bound to a private connection), plus the operations that are only safe when one caller owns the connection: blocking pops, blocking stream reads, and `WATCH`.
 
 ## Why A Session Is A Dedicated Connection
 
 Two Redis workloads monopolize a connection. A blocking command (`BLPOP`, `BLMOVE`, `BZPOPMIN`, `XREAD`/`XREADGROUP` with `BLOCK`) parks the connection until an entry arrives or the timeout elapses; nothing else can use it meanwhile. A `WATCH`/`MULTI`/`EXEC` transaction arms optimistic-locking state that belongs to one connection and must not be interleaved with unrelated traffic.
 
-Running either on the shared client would stall every other query. So Beni puts them behind a session: one session is one connection is one logical worker. There is no pooling: an app that needs N workers blocked at once opens N sessions, and the connection cost is explicit (the shared client is one connection; each live session is exactly one more).
+Running either on the shared client would stall every other query. So Benni puts them behind a session: one session is one connection is one logical worker. There is no pooling: an app that needs N workers blocked at once opens N sessions, and the connection cost is explicit (the shared client is one connection; each live session is exactly one more).
 
 Because the blocking and `WATCH` methods live only on the session-flavored accessors, calling them on the shared client is a compile error, not a runtime surprise:
 
@@ -50,7 +50,7 @@ try {
 
 ## What A Session Exposes
 
-A session carries every data-store accessor from the Beni handle (`kv`, `hash`, `list`, `set`, `zset`, `stream`, `counter`, `string`, `bitmap`, `geo`, `hll`), each bound to the private connection. The `list`, `zset`, and `stream` accessors are supersets that also expose their blocking variants (see [Blocking Operations](/beni/advanced/blocking-operations/)) and the blocking consumer-group read (see [Consumer Groups](/beni/data-structures/consumer-groups/)).
+A session carries every data-store accessor from the Benni handle (`kv`, `hash`, `list`, `set`, `zset`, `stream`, `counter`, `string`, `bitmap`, `geo`, `hll`), each bound to the private connection. The `list`, `zset`, and `stream` accessors are supersets that also expose their blocking variants (see [Blocking Operations](/benni/advanced/blocking-operations/)) and the blocking consumer-group read (see [Consumer Groups](/benni/data-structures/consumer-groups/)).
 
 On top of the stores, a session adds the `WATCH` primitives:
 
@@ -60,7 +60,7 @@ session.unwatch();     // UNWATCH
 session.multi();        // abort-aware transaction builder; exec() resolves the tuple or null
 ```
 
-See [Optimistic Transactions](/beni/advanced/optimistic-transactions/) for the retrying `redis.watch(...)` helper built on these.
+See [Optimistic Transactions](/benni/advanced/optimistic-transactions/) for the retrying `redis.watch(...)` helper built on these.
 
 `scan`, `pubsub`, and `script` are intentionally absent from a session: they have no session-specific semantics, and the smaller surface keeps a session's purpose legible: block, or watch-then-commit. For raw commands there is `session.raw`, the underlying adapter session.
 

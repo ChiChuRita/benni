@@ -124,7 +124,7 @@ function docsSnippets() {
 void docsSnippets;
 
 describe("new primitives", () => {
-  it("are all reachable from beni/primitives", () => {
+  it("are all reachable from benni/primitives", () => {
     expect(typeof budget).toBe("function");
     expect(typeof semaphore).toBe("function");
     expect(typeof idempotency).toBe("function");

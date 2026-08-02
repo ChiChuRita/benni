@@ -1,16 +1,16 @@
 {
-  "name": "beni",
+  "name": "benni",
   "version": "0.1.0",
   "description": "The end-to-end typed Redis client for TypeScript — one API across Node, Bun, Deno, and the edge.",
   "author": "ChiChuRita",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ChiChuRita/beni.git"
+    "url": "git+https://github.com/ChiChuRita/benni.git"
   },
-  "homepage": "https://chichurita.github.io/beni/",
+  "homepage": "https://chichurita.github.io/benni/",
   "bugs": {
-    "url": "https://github.com/ChiChuRita/beni/issues"
+    "url": "https://github.com/ChiChuRita/benni/issues"
   },
   "engines": {
     "node": ">=22"
@@ -83,10 +83,10 @@
     "docs:dev": "pnpm --filter docs dev",
     "docs:build": "pnpm --filter docs build",
     "docs:preview": "pnpm --filter docs preview",
-    "redis:build": "docker build -t beni-redis .",
-    "redis:run": "docker run --rm --name beni-redis -p 6379:6379 beni-redis",
-    "redis:cluster:build": "docker build -f Dockerfile.cluster -t beni-redis-cluster .",
-    "redis:cluster:run": "docker run --rm --name beni-redis-cluster -p 6381:6379 beni-redis-cluster",
+    "redis:build": "docker build -t benni-redis .",
+    "redis:run": "docker run --rm --name benni-redis -p 6379:6379 benni-redis",
+    "redis:cluster:build": "docker build -f Dockerfile.cluster -t benni-redis-cluster .",
+    "redis:cluster:run": "docker run --rm --name benni-redis-cluster -p 6381:6379 benni-redis-cluster",
     "prebench": "pnpm run build",
     "bench": "node bench/redis.mjs",
     "bench:self-test": "node bench/redis.mjs --self-test",
@@ -99,7 +99,7 @@
     "format": "biome check --write",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "pnpm build && pnpm publish --access public",
+    "release": "pnpm build && changeset publish",
     "attw": "attw --pack . --profile esm-only",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test:coverage && pnpm run build && publint && pnpm run attw"
   },

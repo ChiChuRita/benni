@@ -8,7 +8,7 @@ Use bitmaps for dense boolean flags addressed by integer offsets.
 ## Define A Bitmap
 
 ```ts
-import { bitmap } from "beni/schema";
+import { bitmap } from "benni/schema";
 
 export const dailyActive = bitmap("daily-active");
 ```

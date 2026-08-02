@@ -6,7 +6,7 @@ description: "Use typed channels when publishers and subscribers should share a 
 Use typed channels when publishers and subscribers should share a message shape.
 
 ```ts
-import { channel, json } from "beni/schema";
+import { channel, json } from "benni/schema";
 
 export const userEvents = channel(
   "events:user",
@@ -17,17 +17,17 @@ export const userEvents = channel(
 There is nothing to configure. Bind a client the usual way and reach the channel through `redis.pubsub`:
 
 ```ts
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node();
-export const redis = beni(client, { schema });
+export const redis = benni(client, { schema });
 ```
 
 ## Publishing
 
-`PUBLISH` is one stateless command, so publishing rides the bound client and works on every adapter, including [`beni/upstash`](/beni/runtime/edge/) on the edge:
+`PUBLISH` is one stateless command, so publishing rides the bound client and works on every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge:
 
 ```ts
 const receivers = await redis.pubsub.channel(userEvents).publish({
@@ -50,7 +50,7 @@ const subscription = await redis.pubsub.channel(userEvents).subscribe((message) 
 await subscription.unsubscribe();
 ```
 
-Subscribing to the same channel twice costs one Redis subscription, not two: Beni registers a single listener per channel name and fans out to your handlers. Each `subscribe` call gets its own `unsubscribe`, and the channel is dropped from Redis when the last handler for it leaves.
+Subscribing to the same channel twice costs one Redis subscription, not two: Benni registers a single listener per channel name and fans out to your handlers. Each `subscribe` call gets its own `unsubscribe`, and the channel is dropped from Redis when the last handler for it leaves.
 
 To tear everything down at once (on shutdown, or between tests), use `close`:
 
@@ -65,7 +65,7 @@ That drops every subscription and closes the leased connection. It also ends any
 Use a pattern when one handler should receive several channels. The handler also gets the concrete channel the message arrived on:
 
 ```ts
-import { json, pattern } from "beni/schema";
+import { json, pattern } from "benni/schema";
 
 export const userEventPattern = pattern(
   "events:user:*",
@@ -109,14 +109,14 @@ for await (const { message, channel: channelName } of redis.pubsub
 }
 ```
 
-Messages that arrive while your loop body is busy are buffered in memory, so a slow consumer does not drop messages, but it also does not apply backpressure to Redis, which has none for Pub/Sub. If your consumer can fall behind indefinitely, use a [stream](/beni/data-structures/streams/) instead: Pub/Sub is fire-and-forget and has no replay.
+Messages that arrive while your loop body is busy are buffered in memory, so a slow consumer does not drop messages, but it also does not apply backpressure to Redis, which has none for Pub/Sub. If your consumer can fall behind indefinitely, use a [stream](/benni/data-structures/streams/) instead: Pub/Sub is fire-and-forget and has no replay.
 
 ## When a handler throws
 
 Delivery continues to the other handlers no matter what one of them does. By default a handler that throws or rejects is rethrown asynchronously, so the failure surfaces as an unhandled error instead of being swallowed. Pass `onPubSubError` when you would rather route it somewhere:
 
 ```ts
-const redis = beni(client, {
+const redis = benni(client, {
   schema,
   onPubSubError: (error) => logger.error({ error }, "pubsub handler failed")
 });
@@ -128,8 +128,8 @@ Subscribing needs a connection the adapter can hold open, which is the one thing
 
 | Adapter | Publish | Channel subscribe | Pattern subscribe |
 | --- | --- | --- | --- |
-| [`beni/node`](/beni/runtime/node/) | Yes | Yes | Yes |
-| [`beni/bun`](/beni/runtime/bun-and-deno/) | Yes | Yes | No (`psubscribe` is broken upstream in Bun 1.3.14) |
-| [`beni/upstash`](/beni/runtime/edge/) | Yes | No (HTTP is stateless) | No |
+| [`benni/node`](/benni/runtime/node/) | Yes | Yes | Yes |
+| [`benni/bun`](/benni/runtime/bun-and-deno/) | Yes | Yes | No (`psubscribe` is broken upstream in Bun 1.3.14) |
+| [`benni/upstash`](/benni/runtime/edge/) | Yes | No (HTTP is stateless) | No |
 
-Both gaps fail loudly rather than hanging. Subscribing on an adapter that cannot lease a connection throws `TypeError`, and so does `pattern(...).subscribe(...)` on Bun. An adapter advertises the capability by implementing the optional `subscriber?()` method on the [client contract](/beni/api/beni-client/#redispubsub), the same way `session?()` advertises sessions.
+Both gaps fail loudly rather than hanging. Subscribing on an adapter that cannot lease a connection throws `TypeError`, and so does `pattern(...).subscribe(...)` on Bun. An adapter advertises the capability by implementing the optional `subscriber?()` method on the [client contract](/benni/api/benni-client/#redispubsub), the same way `session?()` advertises sessions.

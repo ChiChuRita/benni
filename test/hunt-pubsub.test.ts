@@ -11,7 +11,7 @@ import type {
   RedisReply,
   RedisSubscriber
 } from "../src/core/types.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
 
 /**
@@ -300,20 +300,20 @@ describe("pub/sub hub channel and pattern sharing one name", () => {
   });
 });
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("pub/sub overlap against a live server", () => {
   it("survives an unsubscribe overlapping a subscribe to another channel", async () => {
     const client = await node({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const suffix = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
     const first = definePubSubChannel(
-      `beni:test:overlap:a:${suffix}`,
+      `benni:test:overlap:a:${suffix}`,
       codecs.json<{ n: number }>()
     );
     const second = definePubSubChannel(
-      `beni:test:overlap:b:${suffix}`,
+      `benni:test:overlap:b:${suffix}`,
       codecs.json<{ n: number }>()
     );
     const seen: number[] = [];

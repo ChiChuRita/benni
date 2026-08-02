@@ -4,9 +4,9 @@ import { expectRedisClientContract } from "./redis-contract.js";
 
 // Point at any Upstash-REST-compatible endpoint. In CI this is
 // hiett/serverless-redis-http (SRH) in front of a plain Redis container:
-//   BENI_UPSTASH_URL=http://127.0.0.1:8079 BENI_UPSTASH_TOKEN=example_token
-const upstashUrl = process.env.BENI_UPSTASH_URL;
-const upstashToken = process.env.BENI_UPSTASH_TOKEN ?? "example_token";
+//   BENNI_UPSTASH_URL=http://127.0.0.1:8079 BENNI_UPSTASH_TOKEN=example_token
+const upstashUrl = process.env.BENNI_UPSTASH_URL;
+const upstashToken = process.env.BENNI_UPSTASH_TOKEN ?? "example_token";
 const describeUpstash = upstashUrl ? describe : describe.skip;
 
 describeUpstash("upstash", () => {

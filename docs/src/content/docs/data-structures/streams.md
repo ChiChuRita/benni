@@ -8,7 +8,7 @@ Use streams for append-only event logs with ordered, ID-addressable entries.
 ## Define A Stream
 
 ```ts
-import { number, stream, string } from "beni/schema";
+import { number, stream, string } from "benni/schema";
 
 export const activity = stream("activity", {
   action: string(),
@@ -88,6 +88,6 @@ await nodeRedis.xAdd("activity:42", "*", {
 });
 ```
 
-For at-least-once delivery across many workers, use [consumer groups](/beni/data-structures/consumer-groups/) (`XGROUP`, `XREADGROUP`, `XACK`) via `redis.stream(activity).group(name)`. Use `xread` for single-consumer polling. To block a worker until an entry arrives, [`xread` with a `timeoutSeconds`](/beni/advanced/blocking-operations/) and the blocking group read run on a [session](/beni/advanced/sessions/).
+For at-least-once delivery across many workers, use [consumer groups](/benni/data-structures/consumer-groups/) (`XGROUP`, `XREADGROUP`, `XACK`) via `redis.stream(activity).group(name)`. Use `xread` for single-consumer polling. To block a worker until an entry arrives, [`xread` with a `timeoutSeconds`](/benni/advanced/blocking-operations/) and the blocking group read run on a [session](/benni/advanced/sessions/).
 
 Use streams for activity feeds, audit logs, and event pipelines where entries need stable IDs and time ordering.

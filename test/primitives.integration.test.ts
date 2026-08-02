@@ -10,7 +10,7 @@ import {
   semaphore
 } from "../src/primitives/index.js";
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("primitives (live)", () => {

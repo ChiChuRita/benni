@@ -19,7 +19,7 @@ export type UpstashOptions = {
 
 /**
  * A {@link RedisClient} that speaks the Upstash REST protocol over HTTP, so the
- * same typed Beni API runs on serverless/edge runtimes (Cloudflare Workers,
+ * same typed Benni API runs on serverless/edge runtimes (Cloudflare Workers,
  * Vercel Edge, Fastly, …) with nothing but `fetch` — zero dependencies.
  *
  * The REST endpoints map 1:1 onto the client contract: a command array is
@@ -30,7 +30,7 @@ export type UpstashOptions = {
  * `subscriber`: blocking commands (`BLPOP`, `XREAD BLOCK`, …), `WATCH`-based
  * optimistic transactions, and Pub/Sub *subscribing* all need a persistent
  * exclusive connection, so they are only available through the TCP adapters
- * (`beni/node`, `beni/bun`). `redis.session()` / `redis.watch()` and
+ * (`benni/node`, `benni/bun`). `redis.session()` / `redis.watch()` and
  * subscribing throw a clear `TypeError` when used with this client.
  * Publishing is a plain stateless command and works here.
  *
@@ -106,7 +106,7 @@ function isErrorPayload(value: unknown): value is { error: unknown } {
 function toRestArgument(argument: RedisCommandArgument): string {
   if (argument instanceof Uint8Array) {
     throw new TypeError(
-      "The Upstash HTTP adapter does not support binary (Uint8Array) command arguments; use the bytes() codec (base64 strings) or a TCP adapter (beni/node, beni/bun)."
+      "The Upstash HTTP adapter does not support binary (Uint8Array) command arguments; use the bytes() codec (base64 strings) or a TCP adapter (benni/node, benni/bun)."
     );
   }
   return typeof argument === "string" ? argument : String(argument);

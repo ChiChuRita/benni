@@ -1,4 +1,4 @@
-// beni/zod — Zod codecs (https://zod.dev/codecs) as beni field codecs.
+// benni/zod — Zod codecs (https://zod.dev/codecs) as benni field codecs.
 // Zod is an optional peer dependency; only this subpath imports it. Built
 // against `zod/v4/core` (Zod's stated interface for libraries), so schemas
 // from both `zod` and `zod/mini` work.
@@ -76,7 +76,7 @@ function runDecode<S extends $ZodType>(
  * decode failures throw `ReplyShapeError` with the stored string attached.
  * The schema must be synchronous — async refinements throw `ValidationError`.
  * If such a refinement **rejects**, zod also leaves an unhandled rejection
- * behind: it discards that promise internally, out of beni's reach.
+ * behind: it discards that promise internally, out of benni's reach.
  *
  * @example
  * ```ts
@@ -124,7 +124,7 @@ export function zodCodec<S extends $ZodType<unknown, string>>(
  * decode failures throw `ReplyShapeError` with the stored string attached.
  * The schema must be synchronous — async refinements throw `ValidationError`.
  * If such a refinement **rejects**, zod also leaves an unhandled rejection
- * behind: it discards that promise internally, out of beni's reach.
+ * behind: it discards that promise internally, out of benni's reach.
  *
  * @example
  * ```ts

@@ -1,14 +1,14 @@
 ---
 title: "Worked Examples"
-description: "These examples show Beni as application Redis code, not isolated method calls."
+description: "These examples show Benni as application Redis code, not isolated method calls."
 ---
 
-These examples show Beni as application Redis code, not isolated method calls.
+These examples show Benni as application Redis code, not isolated method calls.
 
 ## User Profiles
 
 ```ts
-import { hash, json, kv, number, string } from "beni/schema";
+import { hash, json, kv, number, string } from "benni/schema";
 
 export const users = hash("user", {
   name: string(),
@@ -37,7 +37,7 @@ await redis.kv(profiles).set("42", {
 ## Feature Flags
 
 ```ts
-import { boolean, kv } from "beni/schema";
+import { boolean, kv } from "benni/schema";
 
 export const flags = kv("feature-flag", boolean());
 
@@ -55,4 +55,4 @@ const key = redis.hash(users).key("42");
 const exists = await redis.raw.send(["EXISTS", key]);
 ```
 
-For a copy-pasteable example of every data structure in turn, see [Examples](/beni/examples/). The lower-level store builders live under `beni/core`; see the [API Overview](/beni/api/overview/).
+For a copy-pasteable example of every data structure in turn, see [Examples](/benni/examples/). The lower-level store builders live under `benni/core`; see the [API Overview](/benni/api/overview/).

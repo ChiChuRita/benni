@@ -161,9 +161,9 @@ describe("xreadgroup with an explicitly undefined after", () => {
   });
 });
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
-const runPrefix = `beni:hunt-stream:${Date.now()}:${Math.random()
+const runPrefix = `benni:hunt-stream:${Date.now()}:${Math.random()
   .toString(36)
   .slice(2)}`;
 

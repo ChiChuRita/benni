@@ -1,17 +1,17 @@
 /* Custom overrides: theme fonts (Geist) are loaded by starlight-theme-next */
 
-/* Beni brand red: the single source of truth for every CSS-driven accent.
+/* Benni brand red: the single source of truth for every CSS-driven accent.
    Both shades are derived from it, so this is the only hex to change here.
    The logo and favicon must repeat the value literally: they render through
    <img> and rel="icon", which are isolated documents that page-level custom
    properties and currentColor never reach. test/brand.test.ts fails if the
    three copies drift apart. */
 :root {
-  --beni-brand: #e11d48;
+  --benni-brand: #e11d48;
 
-  --sl-color-accent-low: color-mix(in oklab, var(--beni-brand) 40%, black);
-  --sl-color-accent: var(--beni-brand);
-  --sl-color-accent-high: color-mix(in oklab, var(--beni-brand) 55%, white);
+  --sl-color-accent-low: color-mix(in oklab, var(--benni-brand) 40%, black);
+  --sl-color-accent: var(--benni-brand);
+  --sl-color-accent-high: color-mix(in oklab, var(--benni-brand) 55%, white);
   --sl-color-bg-sidebar: var(--sl-color-black);
 }
 

@@ -150,7 +150,7 @@ export type SemaphoreHandle = {
  *
  * A holder that crashes frees its slot when its lease lapses, so a dead
  * process cannot wedge the pool. Works over any adapter, including
- * `beni/upstash` on the edge.
+ * `benni/upstash` on the edge.
  *
  * This is [`lock`](./lock.js) with a number: same handle, same `run`, same
  * retry options. Reach for `lock` when the answer is one, and this when it is

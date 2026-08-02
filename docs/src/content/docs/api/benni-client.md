@@ -1,35 +1,35 @@
 ---
-title: "Beni Client"
-description: "Create a Beni client by passing a Redis adapter to beni(), then reach every schema through typed data-structure accessors."
+title: "Benni Client"
+description: "Create a Benni client by passing a Redis adapter to benni(), then reach every schema through typed data-structure accessors."
 ---
 
-Create a Beni client by passing a Redis adapter to `beni`.
+Create a Benni client by passing a Redis adapter to `benni`.
 
 ```ts
-import { beni } from "beni";
+import { benni } from "benni";
 
-const redis = beni(client, { schema });
+const redis = benni(client, { schema });
 ```
 
-`BeniOptions` has three fields, all optional:
+`BenniOptions` has three fields, all optional:
 
 | Option | Effect |
 | --- | --- |
 | `schema` | The schema module that backs [`redis.query`](#redisquery). |
 | `onPubSubError` | Called when a Pub/Sub handler throws (see [`redis.pubsub`](#redispubsub)). Without it, the error is rethrown asynchronously rather than swallowed. |
-| `cluster` | Check, before sending, that every key in a multi-key command hashes to one Redis Cluster slot, throwing `CrossSlotError` when it does not. Off by default. See [Redis Cluster](/beni/advanced/cluster/). |
+| `cluster` | Check, before sending, that every key in a multi-key command hashes to one Redis Cluster slot, throwing `CrossSlotError` when it does not. Off by default. See [Redis Cluster](/benni/advanced/cluster/). |
 
 Everything else a client can do follows from the adapter you pass in.
 
 Every data-structure accessor exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
 
-To type a function parameter that accepts the bound handle, use the exported `Beni<TSchema>` type:
+To type a function parameter that accepts the bound handle, use the exported `Benni<TSchema>` type:
 
 ```ts
-import type { Beni } from "beni";
+import type { Benni } from "benni";
 import * as schema from "./schema";
 
-export function makeHandlers(redis: Beni<typeof schema>) {
+export function makeHandlers(redis: Benni<typeof schema>) {
   // redis.query.users, redis.hash(...), ... all fully typed
 }
 ```
@@ -54,7 +54,7 @@ await redis.query.userEvents.publish({ id: "42", action: "created" });
 await redis.query.rateLimit.run({ keys: { counter: "user:42" }, args: { limit: 100 } });
 ```
 
-Counter and string stores are not separate kinds; a `kv` schema maps to the `kv` resource; use `redis.counter(schema)` or `redis.string(schema)` for those operations. Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/beni/core-concepts/schema-registry/).
+Counter and string stores are not separate kinds; a `kv` schema maps to the `kv` resource; use `redis.counter(schema)` or `redis.string(schema)` for those operations. Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/benni/core-concepts/schema-registry/).
 
 ## `redis.kv(schema)`
 
@@ -174,7 +174,7 @@ const names = await redis.zset(nameIndex).zrange("directory", {
 });
 ```
 
-See [Lexicographic Ranges](/beni/data-structures/sorted-sets/#lexicographic-ranges).
+See [Lexicographic Ranges](/benni/data-structures/sorted-sets/#lexicographic-ranges).
 
 ## `redis.hll(schema)`
 
@@ -202,7 +202,7 @@ await group.create("42", { from: "start" });
 const batch = await group.consumer("w-1").xreadgroup("42", { count: 10 });
 ```
 
-See [Consumer Groups](/beni/data-structures/consumer-groups/).
+See [Consumer Groups](/benni/data-structures/consumer-groups/).
 
 ## `redis.bitmap(schema)`
 
@@ -249,7 +249,7 @@ for await (const entry of redis.scan.hash(users, "42")) { /* { field, value } */
 for await (const entry of redis.scan.zset(leaderboards, "global")) { /* { member, score } */ }
 ```
 
-See [Scans](/beni/advanced/scans/) for options and iteration guarantees.
+See [Scans](/benni/advanced/scans/) for options and iteration guarantees.
 
 ## `redis.pubsub`
 
@@ -301,7 +301,7 @@ await redis.pubsub.close();
 Subscribing requires a client that can hold a connection. An adapter advertises this with the optional `subscriber?()` method on the `RedisClient` contract, the pub/sub counterpart to `session?()`:
 
 ```ts
-import type { RedisClient, RedisSubscriber } from "beni";
+import type { RedisClient, RedisSubscriber } from "benni";
 
 declare const client: RedisClient;
 //    ^? { send, pipeline, transaction?, session?, subscriber?, close }
@@ -310,7 +310,7 @@ declare function open(): Promise<RedisSubscriber>;
 //    ^? { subscribe, unsubscribe, psubscribe?, punsubscribe?, closed, close }
 ```
 
-Beni leases at most one subscriber per client, so adapters do no bookkeeping. When `subscriber` is undefined (the HTTP adapter), `subscribe` throws `TypeError` at call time, the same style as the session guard. `psubscribe`/`punsubscribe` are optional in turn, which is how the Bun adapter reports patterns as unsupported instead of hanging. Pass `onPubSubError` to `beni()` to route a handler that throws; without it the error is rethrown asynchronously rather than swallowed. See [Pub/Sub](/beni/data-structures/pubsub/).
+Benni leases at most one subscriber per client, so adapters do no bookkeeping. When `subscriber` is undefined (the HTTP adapter), `subscribe` throws `TypeError` at call time, the same style as the session guard. `psubscribe`/`punsubscribe` are optional in turn, which is how the Bun adapter reports patterns as unsupported instead of hanging. Pass `onPubSubError` to `benni()` to route a handler that throws; without it the error is rethrown asynchronously rather than swallowed. See [Pub/Sub](/benni/data-structures/pubsub/).
 
 ## `redis.session`
 
@@ -324,7 +324,7 @@ const job = await redis.session(async (s) => {
 await using session = await redis.session();
 ```
 
-A session carries the same store accessors as the Beni handle, bound to its private connection, where `list`, `zset`, and `stream` are supersets that add the blocking variants and the blocking consumer-group read. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. It throws `TypeError` if the client does not support sessions. See [Sessions](/beni/advanced/sessions/), [Blocking Operations](/beni/advanced/blocking-operations/), and [Consumer Groups](/beni/data-structures/consumer-groups/).
+A session carries the same store accessors as the Benni handle, bound to its private connection, where `list`, `zset`, and `stream` are supersets that add the blocking variants and the blocking consumer-group read. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. It throws `TypeError` if the client does not support sessions. See [Sessions](/benni/advanced/sessions/), [Blocking Operations](/benni/advanced/blocking-operations/), and [Consumer Groups](/benni/data-structures/consumer-groups/).
 
 ## `redis.watch`
 
@@ -342,7 +342,7 @@ const result = await redis.watch(
 //    ^? [void] | null   (null = the body opted out)
 ```
 
-Each attempt watches the keys, runs the body, and commits the transaction it returns; a conflict retries, a `null` body opts out, and exhausted attempts throw `WatchRetriesExceededError`. See [Optimistic Transactions](/beni/advanced/optimistic-transactions/).
+Each attempt watches the keys, runs the body, and commits the transaction it returns; a conflict retries, a `null` body opts out, and exhausted attempts throw `WatchRetriesExceededError`. See [Optimistic Transactions](/benni/advanced/optimistic-transactions/).
 
 ## `redis.raw`
 

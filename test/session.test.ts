@@ -4,7 +4,7 @@ import {
   type BlockingWait,
   blockingTimeoutMilliseconds,
   blockingTimeoutSeconds,
-  createBeniSession,
+  createBenniSession,
   runWatch,
   SessionClosedError,
   WatchRetriesExceededError
@@ -66,17 +66,17 @@ describe("blocking timeout helpers", () => {
 describe("createWatchedTransaction", () => {
   it("decodes the tuple from a committed EXEC", async () => {
     const commands: RedisCommand[] = [];
-    const raw = fakeSession(commands, [], [["OK", "beni", 2]]);
+    const raw = fakeSession(commands, [], [["OK", "benni", 2]]);
 
     const results = await createWatchedTransaction(raw)
-      .add(["SET", "user:42", "beni"], okReply)
+      .add(["SET", "user:42", "benni"], okReply)
       .add(["GET", "user:42"], stringOrNullReply)
       .add(["INCR", "user:42:hits"], numberReply)
       .exec();
 
-    expect(results).toEqual([undefined, "beni", 2]);
+    expect(results).toEqual([undefined, "benni", 2]);
     expect(commands).toEqual([
-      ["SET", "user:42", "beni"],
+      ["SET", "user:42", "benni"],
       ["GET", "user:42"],
       ["INCR", "user:42:hits"]
     ]);
@@ -136,23 +136,23 @@ describe("createWatchedTransaction", () => {
   });
 });
 
-describe("createBeniSession", () => {
+describe("createBenniSession", () => {
   it("sends WATCH with the given keys and validates OK", async () => {
     const commands: RedisCommand[] = [];
-    const session = createBeniSession(fakeSession(commands, ["OK", "OK"]));
+    const session = createBenniSession(fakeSession(commands, ["OK", "OK"]));
 
-    await session.watch(["beni:views:home", "beni:views:about"]);
+    await session.watch(["benni:views:home", "benni:views:about"]);
     await session.unwatch();
 
     expect(commands).toEqual([
-      ["WATCH", "beni:views:home", "beni:views:about"],
+      ["WATCH", "benni:views:home", "benni:views:about"],
       ["UNWATCH"]
     ]);
   });
 
   it("rejects a WATCH with no keys before sending anything", async () => {
     const commands: RedisCommand[] = [];
-    const session = createBeniSession(fakeSession(commands, []));
+    const session = createBenniSession(fakeSession(commands, []));
 
     await expect(session.watch([])).rejects.toThrow(
       "watch requires at least one key"
@@ -161,7 +161,7 @@ describe("createBeniSession", () => {
   });
 
   it("throws when WATCH or UNWATCH does not return OK", async () => {
-    const session = createBeniSession(fakeSession([], [null, null]));
+    const session = createBenniSession(fakeSession([], [null, null]));
 
     await expect(session.watch(["k"])).rejects.toThrow(
       "Expected Redis WATCH to return OK"
@@ -174,30 +174,30 @@ describe("createBeniSession", () => {
   it("multi() builds a watched transaction over the gated connection", async () => {
     const commands: RedisCommand[] = [];
     const raw = fakeSession(commands, ["OK"], [null, [3]]);
-    const session = createBeniSession(raw);
+    const session = createBenniSession(raw);
 
-    await session.watch(["beni:views:home"]);
+    await session.watch(["benni:views:home"]);
     const first = await session
       .multi()
-      .add(["INCR", "beni:views:home"], numberReply)
+      .add(["INCR", "benni:views:home"], numberReply)
       .exec();
     const second = await session
       .multi()
-      .add(["INCR", "beni:views:home"], numberReply)
+      .add(["INCR", "benni:views:home"], numberReply)
       .exec();
 
     expect(first).toBeNull();
     expect(second).toEqual([3]);
     expect(commands).toEqual([
-      ["WATCH", "beni:views:home"],
-      ["INCR", "beni:views:home"],
-      ["INCR", "beni:views:home"]
+      ["WATCH", "benni:views:home"],
+      ["INCR", "benni:views:home"],
+      ["INCR", "benni:views:home"]
     ]);
   });
 
   it("facade send and pipeline flow through the raw session in order", async () => {
     const commands: RedisCommand[] = [];
-    const session = createBeniSession(
+    const session = createBenniSession(
       fakeSession(commands, ["PONG", "1", "2"])
     );
 
@@ -212,7 +212,7 @@ describe("createBeniSession", () => {
   });
 
   it("facade transaction throws TypeError when a bare multi aborts", async () => {
-    const session = createBeniSession(fakeSession([], [], [null]));
+    const session = createBenniSession(fakeSession([], [], [null]));
 
     await expect(
       session.client.transaction!([["INCR", "hits"]])
@@ -225,7 +225,7 @@ describe("createBeniSession", () => {
       ...fakeSession([], []),
       watchedTransaction: watched
     };
-    const session = createBeniSession(raw);
+    const session = createBenniSession(raw);
 
     await expect(session.client.transaction!([])).resolves.toEqual([]);
     expect(watched).not.toHaveBeenCalled();
@@ -248,7 +248,7 @@ describe("createBeniSession", () => {
       closed: false,
       async close() {}
     };
-    const session = createBeniSession(raw);
+    const session = createBenniSession(raw);
 
     const exec = session.multi().add(["INCR", "hits"], numberReply).exec();
     const stray = session.client.send(["GET", "hits"]);
@@ -262,7 +262,7 @@ describe("createBeniSession", () => {
   });
 
   it("rejects everything with SessionClosedError after close()", async () => {
-    const session = createBeniSession(fakeSession([], ["OK"]));
+    const session = createBenniSession(fakeSession([], ["OK"]));
 
     await session.close();
 
@@ -282,7 +282,7 @@ describe("createBeniSession", () => {
 
   it("close() is idempotent and also closes the raw session", async () => {
     const raw = fakeSession([], []);
-    const session = createBeniSession(raw);
+    const session = createBenniSession(raw);
 
     await session.close();
     await session.close();
@@ -293,7 +293,7 @@ describe("createBeniSession", () => {
 
   it("Symbol.asyncDispose closes the session for await using", async () => {
     const raw = fakeSession([], []);
-    const session = createBeniSession(raw);
+    const session = createBenniSession(raw);
 
     await session[Symbol.asyncDispose]();
 
@@ -303,7 +303,7 @@ describe("createBeniSession", () => {
 
   it("reflects a dropped raw connection through closed", async () => {
     const raw = fakeSession([], []);
-    const session = createBeniSession(raw);
+    const session = createBenniSession(raw);
 
     expect(session.closed).toBe(false);
     await raw.close();
@@ -317,7 +317,7 @@ describe("runWatch", () => {
     replies: RedisReply[],
     watchedResults: FakeWatchedResult[]
   ) {
-    return createBeniSession(fakeSession(commands, replies, watchedResults));
+    return createBenniSession(fakeSession(commands, replies, watchedResults));
   }
 
   it("retries on abort with a fresh WATCH, then commits", async () => {
@@ -327,19 +327,19 @@ describe("runWatch", () => {
 
     const result = await runWatch(
       async () => kernel,
-      "beni:views:home",
+      "benni:views:home",
       async (session) =>
-        session.multi().add(["INCR", "beni:views:home"], numberReply),
+        session.multi().add(["INCR", "benni:views:home"], numberReply),
       { onAbort: ({ attempt }) => aborts.push(attempt) }
     );
 
     expect(result).toEqual([1]);
     expect(aborts).toEqual([1]);
     expect(commands).toEqual([
-      ["WATCH", "beni:views:home"],
-      ["INCR", "beni:views:home"],
-      ["WATCH", "beni:views:home"],
-      ["INCR", "beni:views:home"]
+      ["WATCH", "benni:views:home"],
+      ["INCR", "benni:views:home"],
+      ["WATCH", "benni:views:home"],
+      ["INCR", "benni:views:home"]
     ]);
     expect(kernel.closed).toBe(true);
   });
@@ -355,9 +355,9 @@ describe("runWatch", () => {
 
     const result = await runWatch(
       async () => kernel,
-      ["beni:views:home"],
+      ["benni:views:home"],
       async (session) =>
-        session.multi().add(["INCR", "beni:views:home"], numberReply),
+        session.multi().add(["INCR", "benni:views:home"], numberReply),
       {
         backoff: (attempt) => {
           backoffCalls.push(attempt);
@@ -376,12 +376,12 @@ describe("runWatch", () => {
 
     const result = await runWatch(
       async () => kernel,
-      "beni:views:home",
+      "benni:views:home",
       async () => null
     );
 
     expect(result).toBeNull();
-    expect(commands).toEqual([["WATCH", "beni:views:home"], ["UNWATCH"]]);
+    expect(commands).toEqual([["WATCH", "benni:views:home"], ["UNWATCH"]]);
     expect(kernel.closed).toBe(true);
   });
 
@@ -392,9 +392,9 @@ describe("runWatch", () => {
 
     const attempt = runWatch(
       async () => kernel,
-      "beni:views:home",
+      "benni:views:home",
       async (session) =>
-        session.multi().add(["INCR", "beni:views:home"], numberReply),
+        session.multi().add(["INCR", "benni:views:home"], numberReply),
       { attempts: 2, onAbort: ({ attempt }) => aborts.push(attempt) }
     );
 
@@ -415,14 +415,14 @@ describe("runWatch", () => {
     await expect(
       runWatch(
         async () => kernel,
-        "beni:views:home",
+        "benni:views:home",
         async () => {
           throw boom;
         }
       )
     ).rejects.toBe(boom);
 
-    expect(commands).toEqual([["WATCH", "beni:views:home"], ["UNWATCH"]]);
+    expect(commands).toEqual([["WATCH", "benni:views:home"], ["UNWATCH"]]);
     expect(kernel.closed).toBe(true);
   });
 
@@ -433,7 +433,7 @@ describe("runWatch", () => {
     await expect(
       runWatch(
         async () => kernel,
-        "beni:views:home",
+        "benni:views:home",
         async () => {
           throw boom;
         }
@@ -448,9 +448,9 @@ describe("runWatch", () => {
 
     const result = await runWatch(
       openSession as unknown as () => Promise<typeof kernel>,
-      "beni:views:home",
+      "benni:views:home",
       async (session) =>
-        session.multi().add(["INCR", "beni:views:home"], numberReply),
+        session.multi().add(["INCR", "benni:views:home"], numberReply),
       { session: kernel }
     );
 
@@ -468,7 +468,7 @@ describe("runWatch", () => {
     const openSession = vi.fn();
 
     await expect(
-      runWatch(openSession, "beni:views:home", async () => null, {
+      runWatch(openSession, "benni:views:home", async () => null, {
         attempts
       })
     ).rejects.toThrow("attempts must be a safe integer >= 1");
@@ -495,7 +495,7 @@ type Expect<T extends true> = T;
 const typedSession = null as unknown as RedisSession;
 
 const typedWatched = createWatchedTransaction(typedSession)
-  .add(["SET", "user:42", "beni"], okReply)
+  .add(["SET", "user:42", "benni"], okReply)
   .add(["GET", "user:42"], stringOrNullReply)
   .add(["INCR", "hits"], numberReply);
 

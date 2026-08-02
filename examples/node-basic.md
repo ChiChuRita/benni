@@ -1,9 +1,9 @@
 # Node Basic Example
 
-This example shows how an app uses Beni from Node:
+This example shows how an app uses Benni from Node:
 
 - declare Redis schemas as plain TypeScript values
-- bind a client once with `beni(client, { schema })`
+- bind a client once with `benni(client, { schema })`
 - store JSON objects, counters, hashes, sets, lists, and sorted sets, with
   every read decoded back to your declared type
 - clean up keys after the demo
@@ -49,9 +49,9 @@ Schemas are plain values: a key prefix bound to a Redis data structure and a
 codec. They don't create keys or run migrations; they just carry your types.
 
 ```js
-import { beni } from "beni";
-import { node } from "beni/node";
-import { hash, json, kv, list, number, set, string, zset } from "beni/schema";
+import { benni } from "benni";
+import { node } from "benni/node";
+import { hash, json, kv, list, number, set, string, zset } from "benni/schema";
 
 const schema = {
   profiles: kv("example:profile", json()),
@@ -76,7 +76,7 @@ const client = await node({
   url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
 });
 
-const redis = beni(client, { schema });
+const redis = benni(client, { schema });
 ```
 
 ## Use Typed Operations
@@ -114,7 +114,7 @@ const topScores = await redis.zset(schema.leaderboard).zrange("daily", {
 
 ## Why This Shape
 
-The app owns the domain types. Beni owns key formatting, encoding/decoding,
+The app owns the domain types. Benni owns key formatting, encoding/decoding,
 and Redis reply checks.
 
 Every resource exposes `key(id)` when you need the full Redis key, and the raw

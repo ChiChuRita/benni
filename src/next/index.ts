@@ -78,7 +78,7 @@ export type NextCacheHandlerContext = {
  * `ctx.revalidate?: number | false`, entries as
  * `{ value, lastModified, tags }`); `resetRequestCache()` is called by
  * Next.js 15 and is a harmless no-op on 14. Deliberately not imported from
- * `"next"` so `beni/next` has zero dependencies.
+ * `"next"` so `benni/next` has zero dependencies.
  */
 export interface NextCacheHandler {
   get(key: string): Promise<NextCacheEntry | null>;
@@ -114,7 +114,7 @@ export type CacheHandlerOptions = {
  * expires.
  *
  * Only `send`/`pipeline` are used, so it works over every adapter —
- * including [`beni/upstash`](../upstash/index.js). PAGE, ROUTE, and FETCH
+ * including [`benni/upstash`](../upstash/index.js). PAGE, ROUTE, and FETCH
  * payloads all round-trip as JSON (Next.js base64-encodes route bodies
  * itself). Reads fail open: an entry that does not decode is a miss, never an
  * error. Only `ctx.tags` feeds the tag index — tags carried solely in
@@ -123,8 +123,8 @@ export type CacheHandlerOptions = {
  * @example
  * ```ts
  * // cache-handler.mjs
- * import { cacheHandler } from "beni/next";
- * import { upstash } from "beni/upstash";
+ * import { cacheHandler } from "benni/next";
+ * import { upstash } from "benni/upstash";
  *
  * export default cacheHandler({
  *   client: () => upstash({
@@ -162,7 +162,7 @@ export function cacheHandler(
     return defaultTtlSeconds;
   };
 
-  return class BeniCacheHandler implements NextCacheHandler {
+  return class BenniCacheHandler implements NextCacheHandler {
     async get(key: string): Promise<NextCacheEntry | null> {
       const client = await getClient();
       const reply = await client.send(["GET", entryKey(key)]);
@@ -315,13 +315,13 @@ export type NextRateLimitHandler = ((
  * `Retry-After` (seconds) and `X-RateLimit-Limit` / `X-RateLimit-Remaining` /
  * `X-RateLimit-Reset` (epoch seconds) headers when it is not. Only
  * web-standard APIs are used, so it runs in Edge middleware and Node route
- * handlers alike — pair it with `beni/upstash` on the edge.
+ * handlers alike — pair it with `benni/upstash` on the edge.
  *
  * @example
  * ```ts
  * // middleware.ts
- * import { rateLimit } from "beni/next";
- * import { upstash } from "beni/upstash";
+ * import { rateLimit } from "benni/next";
+ * import { upstash } from "benni/upstash";
  *
  * const limiter = rateLimit({
  *   client: () => upstash({

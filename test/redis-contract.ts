@@ -46,32 +46,32 @@ export async function expectRedisClientContract(
 ): Promise<void> {
   const client = await createClient();
   const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  const rawKey = `beni:test:${id}`;
+  const rawKey = `benni:test:${id}`;
   const profiles = defineKeyspace(
-    "beni:profile",
+    "benni:profile",
     codecs.json<{ name: string; score: number }>()
   );
-  const users = defineHash("beni:user", {
+  const users = defineHash("benni:user", {
     name: codecs.string(),
     score: codecs.number()
   });
   const profileStore = createKeyValueStore(client, profiles);
-  const texts = defineKeyspace("beni:text", codecs.string());
+  const texts = defineKeyspace("benni:text", codecs.string());
   const textStore = createStringStore(client, texts);
-  const counters = defineKeyspace("beni:counter", codecs.number());
+  const counters = defineKeyspace("benni:counter", codecs.number());
   const counterStore = createCounterStore(client, counters);
-  const roles = defineSet("beni:roles", codecs.string());
+  const roles = defineSet("benni:roles", codecs.string());
   const roleStore = createSetStore(client, roles);
   const userStore = createHashStore(client, users);
-  const jobs = defineList("beni:jobs", codecs.json<{ name: string }>());
+  const jobs = defineList("benni:jobs", codecs.json<{ name: string }>());
   const jobStore = createListStore(client, jobs);
-  const leaderboard = defineSortedSet("beni:leaderboard", codecs.string());
+  const leaderboard = defineSortedSet("benni:leaderboard", codecs.string());
   const leaderboardStore = createSortedSetStore(client, leaderboard);
 
   try {
     await expect(client.send(["PING"])).resolves.toBe("PONG");
-    await expect(client.send(["SET", rawKey, "beni"])).resolves.toBe("OK");
-    await expect(client.send(["GET", rawKey])).resolves.toBe("beni");
+    await expect(client.send(["SET", rawKey, "benni"])).resolves.toBe("OK");
+    await expect(client.send(["GET", rawKey])).resolves.toBe("benni");
     await expect(
       client.pipeline([
         ["SET", rawKey, "pipeline"],
@@ -245,9 +245,9 @@ export async function expectRedisClientContract(
       expect(survivingSubscriber.closed).toBe(true);
     }
 
-    await profileStore.set(id, { name: "beni", score: 1 }, { ttlSeconds: 60 });
+    await profileStore.set(id, { name: "benni", score: 1 }, { ttlSeconds: 60 });
     await expect(profileStore.get(id)).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: 1
     });
     await expect(
@@ -260,7 +260,7 @@ export async function expectRedisClientContract(
     await expect(
       profileStore.getset(id, { name: "updated", score: 2 })
     ).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: 1
     });
     await expect(
@@ -392,9 +392,9 @@ export async function expectRedisClientContract(
     });
     await expect(leaderboardStore.del(id)).resolves.toBeGreaterThanOrEqual(0);
 
-    await userStore.hset(id, { name: "beni", score: 2 }, { ttlSeconds: 60 });
+    await userStore.hset(id, { name: "benni", score: 2 }, { ttlSeconds: 60 });
     await expect(userStore.hget(id)).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: 2
     });
     await expect(userStore.hset(id, "name", "updated")).resolves.toBe(0);

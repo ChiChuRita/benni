@@ -3,9 +3,9 @@ title: "Next.js"
 description: "Redis-backed ISR caching and edge-ready rate limiting for Next.js: a custom cache handler and a middleware limiter in one import."
 ---
 
-`beni/next` connects Next.js to Redis in the two places it matters: a **custom cache handler** so ISR/App-Router cache entries survive deploys and are shared across instances, and a **rate limiter** for middleware, route handlers, and Server Actions.
+`benni/next` connects Next.js to Redis in the two places it matters: a **custom cache handler** so ISR/App-Router cache entries survive deploys and are shared across instances, and a **rate limiter** for middleware, route handlers, and Server Actions.
 
-Both work over every adapter. On Vercel and other edge runtimes, pair them with [`beni/upstash`](/beni/runtime/edge/): middleware has no TCP, but the Upstash adapter needs nothing beyond `fetch`.
+Both work over every adapter. On Vercel and other edge runtimes, pair them with [`benni/upstash`](/benni/runtime/edge/): middleware has no TCP, but the Upstash adapter needs nothing beyond `fetch`.
 
 ## Cache handler
 
@@ -13,8 +13,8 @@ Next.js caches pages, route handler output, and `fetch` data in local files by d
 
 ```ts
 // cache-handler.mjs
-import { cacheHandler } from "beni/next";
-import { upstash } from "beni/upstash";
+import { cacheHandler } from "benni/next";
+import { upstash } from "benni/upstash";
 
 export default cacheHandler({
   client: () =>
@@ -60,12 +60,12 @@ A tag set is expired alongside the entries it names: every write extends the set
 
 ## Rate limiting
 
-`rateLimit(options)` wraps the [`ratelimit`](/beni/primitives/ratelimit/) primitive (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
+`rateLimit(options)` wraps the [`ratelimit`](/benni/primitives/ratelimit/) primitive (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
 
 ```ts
 // middleware.ts
-import { rateLimit } from "beni/next";
-import { upstash } from "beni/upstash";
+import { rateLimit } from "benni/next";
+import { upstash } from "benni/upstash";
 
 const limiter = rateLimit({
   client: () =>
@@ -102,7 +102,7 @@ const limiter = rateLimit({
 
 ### Server Actions
 
-A Server Action has no `Request`. The limiter also exposes `.check(identity)`, which returns the raw [`RatelimitResult`](/beni/primitives/ratelimit/):
+A Server Action has no `Request`. The limiter also exposes `.check(identity)`, which returns the raw [`RatelimitResult`](/benni/primitives/ratelimit/):
 
 ```ts
 "use server";
@@ -118,6 +118,6 @@ export async function submitComment(formData: FormData) {
 
 ## Which adapter where
 
-- **Edge middleware**: [`beni/upstash`](/beni/runtime/edge/). The edge runtime has no TCP sockets; the Upstash adapter speaks HTTP with zero dependencies.
-- **Route handlers / Server Actions on Node, and self-hosted deploys**: [`beni/node`](/beni/runtime/node/) for pooled TCP connections; `beni/upstash` also works if you are already on Upstash.
+- **Edge middleware**: [`benni/upstash`](/benni/runtime/edge/). The edge runtime has no TCP sockets; the Upstash adapter speaks HTTP with zero dependencies.
+- **Route handlers / Server Actions on Node, and self-hosted deploys**: [`benni/node`](/benni/runtime/node/) for pooled TCP connections; `benni/upstash` also works if you are already on Upstash.
 - **The cache handler** runs wherever your Next.js server runs and only needs `send`/`pipeline`, so either adapter fits.

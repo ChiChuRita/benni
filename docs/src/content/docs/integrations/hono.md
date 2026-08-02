@@ -3,12 +3,12 @@ title: "Hono"
 description: "Rate limiting, response caching, and sessions as Hono middleware: one stack that runs on Node, Bun, Deno, and Cloudflare Workers."
 ---
 
-`beni/hono` packages the [primitives](/beni/primitives/ratelimit/) as drop-in [Hono](https://hono.dev) middleware: rate limiting, response caching, and sessions. Because they take any `RedisClient`, the same middleware stack runs everywhere Hono does: Node, Bun, Deno, and Cloudflare Workers. On Workers, pair it with [`beni/upstash`](/beni/runtime/edge/).
+`benni/hono` packages the [primitives](/benni/primitives/ratelimit/) as drop-in [Hono](https://hono.dev) middleware: rate limiting, response caching, and sessions. Because they take any `RedisClient`, the same middleware stack runs everywhere Hono does: Node, Bun, Deno, and Cloudflare Workers. On Workers, pair it with [`benni/upstash`](/benni/runtime/edge/).
 
 ```ts
 import { Hono } from "hono";
-import { upstash } from "beni/upstash";
-import { ratelimit } from "beni/hono";
+import { upstash } from "benni/upstash";
+import { ratelimit } from "benni/hono";
 
 const client = upstash({
   url: process.env.UPSTASH_REDIS_REST_URL as string,
@@ -26,11 +26,11 @@ Every middleware accepts `client` as a `RedisClient`, a `Promise<RedisClient>`, 
 
 ## Rate limiting
 
-Sliding-window rate limiting, one atomic Lua round trip per request, the [`ratelimit` primitive](/beni/primitives/ratelimit/) behind a middleware. Allowed requests carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds); denied requests get a JSON `429` with `Retry-After`.
+Sliding-window rate limiting, one atomic Lua round trip per request, the [`ratelimit` primitive](/benni/primitives/ratelimit/) behind a middleware. Allowed requests carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds); denied requests get a JSON `429` with `Retry-After`.
 
 ```ts
 import { Hono } from "hono";
-import { ratelimit } from "beni/hono";
+import { ratelimit } from "benni/hono";
 
 const app = new Hono();
 
@@ -63,7 +63,7 @@ key: (c) => c.req.header("cf-connecting-ip") ?? "anonymous"
 
 ## Response caching
 
-Read-through caching for `GET`/`HEAD` responses (other methods pass through). On a hit the stored response is replayed with an `X-Beni-Cache: hit` header; on a miss the handler runs and successful responses are stored with `SET PX ttlMs`. **Every Redis failure fails open**: the request always runs.
+Read-through caching for `GET`/`HEAD` responses (other methods pass through). On a hit the stored response is replayed with an `X-Benni-Cache: hit` header; on a miss the handler runs and successful responses are stored with `SET PX ttlMs`. **Every Redis failure fails open**: the request always runs.
 
 The cache key is the full URL (`method:origin+path+query`) plus any `vary` headers, so it is a *shared* cache, and one app bound to several hostnames keeps one entry per host. A response is never stored when any of these hold:
 
@@ -79,7 +79,7 @@ Stored entries keep `content-type`, `cache-control`, `vary`, `etag`, and `last-m
 
 ```ts
 import { Hono } from "hono";
-import { cache } from "beni/hono";
+import { cache } from "benni/hono";
 
 const app = new Hono();
 
@@ -101,7 +101,7 @@ Bodies are stored as text (`{ status, headers, body }` JSON), so this is for tex
 
 ## Sessions
 
-These are **cookie-backed user sessions**, not [`redis.session()`](/beni/advanced/sessions/) connection leases, so they work on Workers and other edge runtimes with `beni/upstash`.
+These are **cookie-backed user sessions**, not [`redis.session()`](/benni/advanced/sessions/) connection leases, so they work on Workers and other edge runtimes with `benni/upstash`.
 
 Redis-backed sessions behind a `sid` cookie. The record is a JSON object under `<prefix>:<id>`, loaded before your handler and persisted after it, but only when the handler actually wrote something (`SET ... EX ttlSeconds`, so the TTL rolls on every write). New sessions get a `crypto.randomUUID()` id and a `Set-Cookie` header; `clear()` deletes the stored record.
 
@@ -111,7 +111,7 @@ Call `regenerate()` on login and on any privilege change. It mints a fresh id, c
 
 ```ts
 import { Hono } from "hono";
-import { getSession, session } from "beni/hono";
+import { getSession, session } from "benni/hono";
 
 const app = new Hono();
 app.use("*", session({ client, ttlSeconds: 86_400 }));
@@ -143,14 +143,14 @@ app.post("/logout", (c) => {
 | `cookieName` | `"sid"` | Session cookie name. |
 | `cookie` | `path: "/"`, `httpOnly: true`, `sameSite: "Lax"`, `secure: false` | Cookie attributes; enable `secure` in production. |
 
-Session values are `unknown` per key; `get<T>` is a convenience assertion, not a validation. The session is a convenience bag; codec-level typing belongs to your [Beni schemas](/beni/core-concepts/defining-schemas/).
+Session values are `unknown` per key; `get<T>` is a convenience assertion, not a validation. The session is a convenience bag; codec-level typing belongs to your [Benni schemas](/benni/core-concepts/defining-schemas/).
 
 ## Putting it together
 
 ```ts
 import { Hono } from "hono";
-import { upstash } from "beni/upstash";
-import { cache, getSession, ratelimit, session } from "beni/hono";
+import { upstash } from "benni/upstash";
+import { cache, getSession, ratelimit, session } from "benni/hono";
 
 const client = upstash({
   url: process.env.UPSTASH_REDIS_REST_URL as string,

@@ -597,7 +597,7 @@ function createGroup<
 }
 
 /**
- * Consumer-group operations the Beni layer hangs off the shared stream store:
+ * Consumer-group operations the Benni layer hangs off the shared stream store:
  * `redis.stream(events).group("workers")` and `group.consumer("w-1")`. Groups
  * are operational runtime resources addressed by name — group topology
  * changes at deploy time, so they hang off the store, not the schema. The

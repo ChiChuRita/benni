@@ -3,13 +3,13 @@ title: "Redis Cluster"
 description: "Declare where a schema's hash tag goes so multi-key commands stay in one slot, and catch cross-slot mistakes at compile time and before they are sent."
 ---
 
-Beni models slot **co-location**, not cluster topology. Declare where a schema puts its hash tag and Beni will keep multi-key commands inside one slot, reject the ones that cannot be, and tell you which layout fixes it.
+Benni models slot **co-location**, not cluster topology. Declare where a schema puts its hash tag and Benni will keep multi-key commands inside one slot, reject the ones that cannot be, and tell you which layout fixes it.
 
-## Beni Does Not Route
+## Benni Does Not Route
 
-Routing is your driver's job. Beni has no transport of its own: it binds to whatever `RedisClient` an adapter hands it, so cluster routing comes from the client underneath. Today that means adopting a cluster-aware ioredis instance through [`beni/ioredis`](/beni/runtime/ioredis/); `beni/node` builds its own single-node `createClient()` and cannot be handed a `createCluster()` one.
+Routing is your driver's job. Benni has no transport of its own: it binds to whatever `RedisClient` an adapter hands it, so cluster routing comes from the client underneath. Today that means adopting a cluster-aware ioredis instance through [`benni/ioredis`](/benni/runtime/ioredis/); `benni/node` builds its own single-node `createClient()` and cannot be handed a `createCluster()` one.
 
-Topology discovery, `MOVED`/`ASK` redirects, per-node pools, and failover all stay in the driver, which has had a decade to get them right. What no driver can do for you is know, before you send, that a command's keys belong together. That is the part Beni owns, because Beni is the only client where keys come from schemas rather than string concatenation.
+Topology discovery, `MOVED`/`ASK` redirects, per-node pools, and failover all stay in the driver, which has had a decade to get them right. What no driver can do for you is know, before you send, that a command's keys belong together. That is the part Benni owns, because Benni is the only client where keys come from schemas rather than string concatenation.
 
 ## The Problem
 
@@ -37,7 +37,7 @@ So `mget(["u1", "u2"])`, `sunionstore`, `zmpop`, `bitop`, `pfmerge`, `lmove`, an
 | `hashTag: "id"` | `cart:{u1}` | Keys stay spread, but the same id co-locates across schemas. |
 
 ```ts
-import { json, kv, zset } from "beni/schema";
+import { json, kv, zset } from "benni/schema";
 
 // Bounded keyspace, needs within-schema set algebra: pin the whole thing.
 const featureFlags = zset("flags", string(), { hashTag: "prefix" });
@@ -63,7 +63,7 @@ A `hashTag: "id"` prefix may not contain `{`. Redis reads the tag from the first
 
 ## Compile-Time Checking
 
-Because the tag is part of the key's template-literal type, Beni can reject cross-slot combinations before you run anything. This covers `script().run()`, `redis.watch()`, and the transaction key declaration:
+Because the tag is part of the key's template-literal type, Benni can reject cross-slot combinations before you run anything. This covers `script().run()`, `redis.watch()`, and the transaction key declaration:
 
 ```ts
 await redis.script(moveItem).run({
@@ -76,7 +76,7 @@ await redis.script(moveItem).run({
 
 The alias name is the error message: these keys must share one hash slot, and the tag they had to match was `u1`.
 
-**A passing check means "no provable conflict", not "provably co-located."** Beni rejects only pairs whose hash tags are distinct string literals. Three things pass silently:
+**A passing check means "no provable conflict", not "provably co-located."** Benni rejects only pairs whose hash tags are distinct string literals. Three things pass silently:
 
 - Untagged keys, so adopting `hashTag` on one schema never breaks unrelated call sites.
 - Keys built from runtime ids. `carts.key(userId)` has type `` `cart:{${string}}` ``, and no type system can tell whether two of those hold the same value.
@@ -89,9 +89,9 @@ That last group is why the runtime guard exists.
 Install the guard and every multi-key command is verified before it is sent:
 
 ```ts
-import { assertSameSlot } from "beni/cluster";
+import { assertSameSlot } from "benni/cluster";
 
-const redis = beni(client, { cluster: assertSameSlot });
+const redis = benni(client, { cluster: assertSameSlot });
 
 await redis.set(sessions).sunion("a1", ["b7"]);
 // CrossSlotError: SUNION spans two Redis Cluster hash slots, which the server
@@ -104,19 +104,19 @@ await redis.set(sessions).sunion("a1", ["b7"]);
 // and stay spread while co-locating one id across schemas.
 ```
 
-`CrossSlotError` extends `ValidationError`, carries `command`, `keys`, and `slots`, and is thrown before anything reaches the socket. It is exported from `beni/cluster` alongside `slotOf` and `hashTagOf`.
+`CrossSlotError` extends `ValidationError`, carries `command`, `keys`, and `slots`, and is thrown before anything reaches the socket. It is exported from `benni/cluster` alongside `slotOf` and `hashTagOf`.
 
 The guard is **off by default** and should be: cross-slot multi-key commands are perfectly legal on a single-node Redis, and plenty of code relies on that. Turn it on in development and CI, where you want the mistake to surface.
 
 ### Why You Pass The Checker, Not `true`
 
-`beni()` has to reference the guard in order to install it, so a `cluster: true` boolean would mean the root entry names it, and no bundler could then drop it. The CRC16 table and the error's fix-hint prose would ship in every app, including every app that never turns the check on. Taking the function as a value moves all of it into `beni/cluster`, which only an app that imports it ever pays for. That is about 1.4 KB gzipped, roughly 15% of the default root entry.
+`benni()` has to reference the guard in order to install it, so a `cluster: true` boolean would mean the root entry names it, and no bundler could then drop it. The CRC16 table and the error's fix-hint prose would ship in every app, including every app that never turns the check on. Taking the function as a value moves all of it into `benni/cluster`, which only an app that imports it ever pays for. That is about 1.4 KB gzipped, roughly 15% of the default root entry.
 
 The cost when it *is* installed is close to nothing. The guard compares hash tags as strings first, so a correctly configured schema never runs a CRC at all. When it is absent, each check is an optional call on an undefined function, and an optional call short-circuits its argument evaluation, so the key arrays are never even built.
 
 ### Declaring Transaction Keys
 
-`multi()` queues raw command tuples, so Beni cannot see which keys they touch. Declare them:
+`multi()` queues raw command tuples, so Benni cannot see which keys they touch. Declare them:
 
 ```ts
 await redis
@@ -133,7 +133,7 @@ This is a declaration, not a derivation. A key you queue but do not declare is n
 
 Be clear-eyed about the boundary. A green build is not a cluster-safe build:
 
-- Beni does not route. `MOVED`, `ASK`, topology, and failover are the driver's.
+- Benni does not route. `MOVED`, `ASK`, topology, and failover are the driver's.
 - Sharded pub/sub (`SSUBSCRIBE`/`SPUBLISH`) is not modeled.
 - `redis.raw.send()` and `redis.raw.pipeline()` bypass every check by design.
 - Each surface validates itself. The keys you `watch()` are not checked against the keys the body's transaction declares.

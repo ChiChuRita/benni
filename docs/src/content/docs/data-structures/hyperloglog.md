@@ -6,7 +6,7 @@ description: "Use HyperLogLog when you need approximate cardinality counts with 
 Use HyperLogLog when you need approximate cardinality counts with low memory usage.
 
 ```ts
-import { hll, string } from "beni/schema";
+import { hll, string } from "benni/schema";
 
 export const pageViews = hll("page-views", string());
 ```

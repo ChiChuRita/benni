@@ -24,7 +24,7 @@ import {
   type StreamEntry
 } from "../src/core/index.js";
 import type { SameSlotScriptKeys } from "../src/core/keys.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import {
   hash as schemaHash,
   json as schemaJson,
@@ -43,7 +43,7 @@ type Expect<T extends true> = T;
 
 const client = null as unknown as RedisClient;
 
-const db = beni(client);
+const db = benni(client);
 
 const schemaProfiles = schemaKv(
   "schema-profile",
@@ -304,7 +304,7 @@ type _UserIncrementFieldName = Expect<Equal<UserIncrementFieldName, "score">>;
 
 function expectTypeErrorsOnly() {
   // @ts-expect-error score must be a number.
-  void userStore.hset("42", { name: "beni", score: "2" });
+  void userStore.hset("42", { name: "benni", score: "2" });
 
   // @ts-expect-error field value must match the declared field codec.
   void userStore.hset("42", "score", "2");
@@ -316,13 +316,13 @@ function expectTypeErrorsOnly() {
   void userStore.hincrby("42", "name", 1);
 
   // @ts-expect-error key-value store value must match the JSON codec type.
-  void profileStore.set("42", { name: "beni" });
+  void profileStore.set("42", { name: "benni" });
 
   // @ts-expect-error known keyspaces only accept declared ids.
-  void demoProfileStore.set("test3", "beni");
+  void demoProfileStore.set("test3", "benni");
 
   // @ts-expect-error mset values must match the JSON codec type.
-  void profileStore.mset([["42", { name: "beni" }]]);
+  void profileStore.mset([["42", { name: "benni" }]]);
 
   // @ts-expect-error counter amounts must be numbers.
   void counters.incrby("hits", "1");

@@ -123,7 +123,7 @@ export function decodeStreamEntry<TFields extends FieldCodecs>(
     const codec = fields[field];
     if (!codec) continue;
     // defineProperty, not assignment: a declared field named "__proto__" would
-    // otherwise reach Object.prototype's setter, so the value beni just wrote
+    // otherwise reach Object.prototype's setter, so the value benni just wrote
     // through xadd would be dropped on read and take the entry's prototype
     // with it.
     Object.defineProperty(value, field, {

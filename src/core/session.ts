@@ -86,11 +86,11 @@ export function blockingTimeoutMilliseconds(timeout: BlockingTimeout): string {
 }
 
 /**
- * The runtime-agnostic session kernel the Beni layer wraps into BeniSession.
+ * The runtime-agnostic session kernel the Benni layer wraps into BenniSession.
  * `client` is the RedisClient-shaped facade the existing store factories
  * consume verbatim; every method funnels through the FIFO command gate.
  */
-export type BeniSessionKernel = {
+export type BenniSessionKernel = {
   /** Gated RedisClient facade for the session-bound store accessors. */
   readonly client: RedisClient;
   /** WATCH k1 k2…; throws on empty. */
@@ -123,10 +123,10 @@ export type BeniSessionKernel = {
  * it can promptly reject an in-flight blocking read; queued-but-unsent
  * work then rejects with SessionClosedError.
  */
-export function createBeniSession(
+export function createBenniSession(
   raw: RedisSession,
   assertSameSlot?: SlotGuard
-): BeniSessionKernel {
+): BenniSessionKernel {
   let closed = false;
   let tail: Promise<void> = Promise.resolve();
   // WATCH state is connection-wide, so the facade has to know when one is
@@ -195,7 +195,7 @@ export function createBeniSession(
     close
   };
 
-  const kernel: BeniSessionKernel = {
+  const kernel: BenniSessionKernel = {
     client,
     async watch(keys) {
       if (keys.length === 0) {
@@ -248,7 +248,7 @@ export function createBeniSession(
 
 /**
  * The slice of a session runWatch() needs; both the core kernel and the
- * Beni layer's BeniSession satisfy it.
+ * Benni layer's BenniSession satisfy it.
  */
 export type WatchSession = {
   watch(keys: readonly string[]): Promise<void>;

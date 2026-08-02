@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// The docs accent is derived from a single --beni-brand custom property, but
+// The docs accent is derived from a single --benni-brand custom property, but
 // the logo and favicon cannot read it: both render as isolated documents (<img>
 // / rel="icon"), where page-level custom properties and currentColor do not
 // apply, so each repeats the hex literally. These tests are the guard that
@@ -16,16 +16,16 @@ const SVG_PATHS = ["docs/src/assets/logo.svg", "docs/public/favicon.svg"];
 
 const brandFromCss = () => {
   const css = read(CSS_PATH);
-  const match = css.match(/--beni-brand:\s*(#[0-9a-fA-F]{3,8})\s*;/);
+  const match = css.match(/--benni-brand:\s*(#[0-9a-fA-F]{3,8})\s*;/);
   if (!match) {
-    throw new Error(`--beni-brand not found in ${CSS_PATH}`);
+    throw new Error(`--benni-brand not found in ${CSS_PATH}`);
   }
   return match[1].toLowerCase();
 };
 
 describe("docs brand color", () => {
-  it("declares --beni-brand exactly once", () => {
-    const declarations = read(CSS_PATH).match(/--beni-brand:/g) ?? [];
+  it("declares --benni-brand exactly once", () => {
+    const declarations = read(CSS_PATH).match(/--benni-brand:/g) ?? [];
     expect(declarations).toHaveLength(1);
   });
 
@@ -42,7 +42,7 @@ describe("docs brand color", () => {
   });
 
   // The sync comments in those SVGs are a trap: an XML comment may not contain
-  // a double hyphen, so spelling the token as "--beni-brand" inside one makes
+  // a double hyphen, so spelling the token as "--benni-brand" inside one makes
   // the file malformed and the browser renders a broken image instead of the
   // logo. Nothing else in the pipeline rejects it — Vite serves the file 200 OK
   // and sharp re-encodes it happily — so this is the only guard.
@@ -62,7 +62,7 @@ describe("docs brand color", () => {
 
     expect(accents.length).toBeGreaterThan(0);
     for (const declaration of accents) {
-      expect(declaration).toContain("var(--beni-brand)");
+      expect(declaration).toContain("var(--benni-brand)");
     }
   });
 });

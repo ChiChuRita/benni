@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="beni-logo-title">
-  <title id="beni-logo-title">Beni</title>
-  <!-- A beni-choko: the small lacquer dish beni pigment was sold in, dried, with
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="benni-logo-title">
+  <title id="benni-logo-title">Benni</title>
+  <!-- A benni-choko: the small lacquer dish benni pigment was sold in, dried, with
        the drop lifted back out of it. Brand red, literal on purpose: Starlight
        renders this file through <img> (SiteTitle) and astro:assets Image (hero),
        and an SVG loaded that way is an isolated document, so CSS custom
        properties and currentColor never reach it. Keep in sync with the
-       beni-brand token in docs/src/styles/custom.css; test/brand.test.ts
+       benni-brand token in docs/src/styles/custom.css; test/brand.test.ts
        enforces it. The token is named here without its leading dashes because an
        XML comment may not contain a double hyphen. -->
   <path d="M13 29 a19 19 0 0 0 38 0" fill="none" stroke="#e11d48" stroke-width="7" stroke-linecap="round"/>

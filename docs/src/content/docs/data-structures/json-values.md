@@ -1,12 +1,12 @@
 ---
 title: "JSON Values"
-description: "Beni JSON values are encoded into normal Redis string values with JSON.stringify and decoded with JSON.parse."
+description: "Benni JSON values are encoded into normal Redis string values with JSON.stringify and decoded with JSON.parse."
 ---
 
-Beni JSON values are encoded into normal Redis string values with `JSON.stringify` and decoded with `JSON.parse`.
+Benni JSON values are encoded into normal Redis string values with `JSON.stringify` and decoded with `JSON.parse`.
 
 ```ts
-import { json, kv } from "beni/schema";
+import { json, kv } from "benni/schema";
 
 type Settings = {
   theme: "light" | "dark";
@@ -63,8 +63,8 @@ const value = await redis.kv(settings).get("user:42");
 //    ^? { theme: "light" | "dark"; emailNotifications: boolean } | null (validated)
 ```
 
-Invalid stored data throws a `ReplyShapeError` naming the issues. See [schema builders](/beni/api/schema-builders/) for details.
+Invalid stored data throws a `ReplyShapeError` naming the issues. See [schema builders](/benni/api/schema-builders/) for details.
 
-Standard Schema defines only the read direction. To also validate writes, and to store rich types like `Date` that genuinely round-trip, use a [Zod codec](/beni/integrations/zod/) via `zodJson(schema)` instead.
+Standard Schema defines only the read direction. To also validate writes, and to store rich types like `Date` that genuinely round-trip, use a [Zod codec](/benni/integrations/zod/) via `zodJson(schema)` instead.
 
 Use JSON key-value schemas when your app treats the value as a document. Use hashes when individual fields need independent Redis operations.

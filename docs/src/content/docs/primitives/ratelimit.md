@@ -6,7 +6,7 @@ description: "A sliding-window rate limiter over Redis: one atomic round trip pe
 `ratelimit` is a sliding-window rate limiter. Each `check(id)` is a single atomic Lua round trip that drops expired entries, counts the window, and admits the request if it is under the limit.
 
 ```ts
-import { ratelimit } from "beni/primitives";
+import { ratelimit } from "benni/primitives";
 
 const limiter = ratelimit(client, { limit: 10, windowMs: 60_000 });
 
@@ -19,7 +19,7 @@ if (!success) {
 }
 ```
 
-`ratelimit` takes any `RedisClient`, so it runs over every adapter, including [`beni/upstash`](/beni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
+`ratelimit` takes any `RedisClient`, so it runs over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
 
 ## The result
 
@@ -46,4 +46,4 @@ The window is a **log of request timestamps in one sorted set** (a single key, s
 
 Use a stable `id` per subject: a user id, API key, or IP. Each id is limited independently.
 
-See [Rate Limiting patterns](/beni/patterns/rate-limiting/) for the underlying Redis approach if you want to roll your own.
+See [Rate Limiting patterns](/benni/patterns/rate-limiting/) for the underlying Redis approach if you want to roll your own.

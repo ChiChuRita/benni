@@ -18,7 +18,7 @@ import type {
   RedisCommand,
   RedisReply
 } from "../src/core/types.js";
-import { beni } from "../src/database.js";
+import { benni } from "../src/database.js";
 import { node } from "../src/node/index.js";
 import * as s from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
@@ -49,7 +49,7 @@ function rejectingClient(
   };
 }
 
-describe("beni() binds a module that co-exports a foreign validator", () => {
+describe("benni() binds a module that co-exports a foreign validator", () => {
   const users = s.hash("user", { name: s.string() });
 
   it("keeps an object that merely has a kind property out of the registry", () => {
@@ -58,14 +58,14 @@ describe("beni() binds a module that co-exports a foreign validator", () => {
     // schema module co-exporting one is the ordinary layout. It used to throw
     // at bind time, blaming a copy the user never made.
     const validator = { kind: "schema", type: "object", entries: {} };
-    const db = beni(fakeClient([], []), { schema: { users, validator } });
+    const db = benni(fakeClient([], []), { schema: { users, validator } });
 
     expect(Object.keys(db.query)).toEqual(["users"]);
   });
 
-  it("still rejects a copied beni schema, naming the export", () => {
+  it("still rejects a copied benni schema, naming the export", () => {
     expect(() =>
-      beni(fakeClient([], []), { schema: { users: { ...users } } })
+      benni(fakeClient([], []), { schema: { users: { ...users } } })
     ).toThrow(/schema\.users .*no store binding/s);
   });
 });
@@ -345,12 +345,12 @@ describe("bytes() reports a decode failure like every other codec", () => {
   });
 });
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("GETRANGE and SETRANGE index bytes (live)", () => {
   const texts = defineKeyspace(
-    `beni:hunt:string:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    `benni:hunt:string:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     codecs.string()
   );
   let client: RedisClient;

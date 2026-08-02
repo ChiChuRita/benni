@@ -30,14 +30,14 @@ describe("createKeyValueStore conditional writes", () => {
       users
     );
 
-    await expect(store.set("42", "beni", { nx: true })).resolves.toBe(true);
+    await expect(store.set("42", "benni", { nx: true })).resolves.toBe(true);
     await expect(
-      store.set("42", "beni", { nx: true, ttlSeconds: 60 })
+      store.set("42", "benni", { nx: true, ttlSeconds: 60 })
     ).resolves.toBe(false);
 
     expect(commands).toEqual([
-      ["SET", "user:42", "beni", "NX"],
-      ["SET", "user:42", "beni", "NX", "EX", 60]
+      ["SET", "user:42", "benni", "NX"],
+      ["SET", "user:42", "benni", "NX", "EX", 60]
     ]);
   });
 
@@ -48,25 +48,25 @@ describe("createKeyValueStore conditional writes", () => {
       users
     );
 
-    await expect(store.set("42", "beni", { xx: true })).resolves.toBe(false);
+    await expect(store.set("42", "benni", { xx: true })).resolves.toBe(false);
     await expect(
-      store.set("42", "beni", { xx: true, ttlSeconds: 30 })
+      store.set("42", "benni", { xx: true, ttlSeconds: 30 })
     ).resolves.toBe(true);
 
     expect(commands).toEqual([
-      ["SET", "user:42", "beni", "XX"],
-      ["SET", "user:42", "beni", "XX", "EX", 30]
+      ["SET", "user:42", "benni", "XX"],
+      ["SET", "user:42", "benni", "XX", "EX", 30]
     ]);
   });
 
   it("throws TypeError on unexpected conditional SET replies", async () => {
     await expect(
-      createKeyValueStore(fakeClient([], [1]), users).set("42", "beni", {
+      createKeyValueStore(fakeClient([], [1]), users).set("42", "benni", {
         nx: true
       })
     ).rejects.toThrow(TypeError);
     await expect(
-      createKeyValueStore(fakeClient([], [1]), users).set("42", "beni", {
+      createKeyValueStore(fakeClient([], [1]), users).set("42", "benni", {
         xx: true
       })
     ).rejects.toThrow(TypeError);
@@ -79,12 +79,12 @@ describe("createKeyValueStore conditional writes", () => {
       users
     );
 
-    await store.set("42", "beni", { keepTtl: true });
-    await store.set("42", "beni", { ttlSeconds: 60 });
+    await store.set("42", "benni", { keepTtl: true });
+    await store.set("42", "benni", { ttlSeconds: 60 });
 
     expect(commands).toEqual([
-      ["SET", "user:42", "beni", "KEEPTTL"],
-      ["SET", "user:42", "beni", "EX", 60]
+      ["SET", "user:42", "benni", "KEEPTTL"],
+      ["SET", "user:42", "benni", "EX", 60]
     ]);
   });
 
@@ -94,7 +94,7 @@ describe("createKeyValueStore conditional writes", () => {
 
     await expect(
       // @ts-expect-error keepTtl+ttlSeconds no longer compiles; pin the runtime guard
-      store.set("42", "beni", { keepTtl: true, ttlSeconds: 60 })
+      store.set("42", "benni", { keepTtl: true, ttlSeconds: 60 })
     ).rejects.toThrow(TypeError);
 
     expect(commands).toEqual([]);
@@ -433,12 +433,12 @@ type _IncrByFloatResult = Expect<Equal<IncrByFloatResult, number>>;
 
 async function conditionalSetTypeProbes() {
   // nx/xx select the conditional overload that resolves to boolean.
-  const nx = await profileStore.set("42", { name: "beni" }, { nx: true });
+  const nx = await profileStore.set("42", { name: "benni" }, { nx: true });
   type _Nx = Expect<Equal<typeof nx, boolean>>;
-  const xx = await profileStore.set("42", { name: "beni" }, { xx: true });
+  const xx = await profileStore.set("42", { name: "benni" }, { xx: true });
   type _Xx = Expect<Equal<typeof xx, boolean>>;
   // plain set resolves to void.
-  const plain = await profileStore.set("42", { name: "beni" });
+  const plain = await profileStore.set("42", { name: "benni" });
   type _Plain = Expect<Equal<typeof plain, void>>;
 }
 void conditionalSetTypeProbes;
@@ -461,7 +461,7 @@ function expectTypeErrorsOnly() {
   void stringStore.lcs("a", "b", { len: true, idx: true });
 
   // @ts-expect-error keepTtl must be a boolean.
-  void profileStore.set("42", { name: "beni" }, { keepTtl: "yes" });
+  void profileStore.set("42", { name: "benni" }, { keepTtl: "yes" });
 
   // @ts-expect-error set value must match the codec input type.
   void profileStore.set("42", { name: 1 }, { nx: true });

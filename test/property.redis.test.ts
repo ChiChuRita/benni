@@ -25,7 +25,7 @@ import { node } from "../src/node/index.js";
 // plain in-memory model applies the documented Redis semantics, and the two
 // must agree — on every return value and on the final observable state.
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 // Ids exercise the awkward corners of key building: empty, colon, unicode.

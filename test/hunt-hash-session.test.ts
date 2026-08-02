@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { codecs } from "../src/core/codecs.js";
 import { createHashStore, defineHash } from "../src/core/hash.js";
-import { createBeniSession, runWatch } from "../src/core/session.js";
+import { createBenniSession, runWatch } from "../src/core/session.js";
 import { numberReply, okReply } from "../src/core/transaction.js";
 import type {
   RedisCommand,
   RedisReply,
   RedisSession
 } from "../src/core/types.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
 import { fakeClient, fakeSession } from "./fake-client.js";
 
@@ -35,7 +35,7 @@ function sessionWithSpy(commands: RedisCommand[], replies: RedisReply[]) {
     ...fakeSession(commands, replies),
     watchedTransaction
   };
-  return { kernel: createBeniSession(raw), watchedTransaction };
+  return { kernel: createBenniSession(raw), watchedTransaction };
 }
 
 describe("session-bound hset with a ttl (F1/F9)", () => {
@@ -49,12 +49,12 @@ describe("session-bound hset with a ttl (F1/F9)", () => {
     const store = createHashStore(kernel.client, users);
 
     await kernel.watch(["hunt:ctr"]);
-    await store.hset("42", { name: "beni", score: 7 }, { ttlSeconds: 60 });
+    await store.hset("42", { name: "benni", score: 7 }, { ttlSeconds: 60 });
 
     expect(watchedTransaction).not.toHaveBeenCalled();
     expect(commands).toEqual([
       ["WATCH", "hunt:ctr"],
-      ["HSET", "hunt:user:42", "name", "beni", "score", "7"],
+      ["HSET", "hunt:user:42", "name", "benni", "score", "7"],
       ["EXPIRE", "hunt:user:42", 60]
     ]);
   });
@@ -64,7 +64,7 @@ describe("session-bound hset with a ttl (F1/F9)", () => {
     const { kernel, watchedTransaction } = sessionWithSpy(commands, []);
     const store = createHashStore(kernel.client, users);
 
-    await store.hset("42", { name: "beni", score: 7 }, { ttlSeconds: 60 });
+    await store.hset("42", { name: "benni", score: 7 }, { ttlSeconds: 60 });
 
     expect(watchedTransaction).toHaveBeenCalledTimes(1);
   });
@@ -79,7 +79,7 @@ describe("session-bound hset with a ttl (F1/F9)", () => {
 
     await kernel.watch(["hunt:ctr"]);
     await kernel.unwatch();
-    await store.hset("42", { name: "beni", score: 7 }, { ttlSeconds: 60 });
+    await store.hset("42", { name: "benni", score: 7 }, { ttlSeconds: 60 });
 
     expect(watchedTransaction).toHaveBeenCalledTimes(1);
   });
@@ -88,12 +88,12 @@ describe("session-bound hset with a ttl (F1/F9)", () => {
     const commands: RedisCommand[] = [];
     const raw = fakeSession(commands, ["OK"], [[1], [1, 1]]);
     const watchedTransaction = vi.fn(raw.watchedTransaction);
-    const kernel = createBeniSession({ ...raw, watchedTransaction });
+    const kernel = createBenniSession({ ...raw, watchedTransaction });
     const store = createHashStore(kernel.client, users);
 
     await kernel.watch(["hunt:ctr"]);
     await kernel.multi().add(["INCR", "hunt:ctr"], numberReply).exec();
-    await store.hset("42", { name: "beni", score: 7 }, { ttlSeconds: 60 });
+    await store.hset("42", { name: "benni", score: 7 }, { ttlSeconds: 60 });
 
     expect(watchedTransaction).toHaveBeenCalledTimes(2);
   });
@@ -102,7 +102,7 @@ describe("session-bound hset with a ttl (F1/F9)", () => {
 describe("concurrent watch windows on one borrowed session (F10)", () => {
   it("queues the second window instead of interleaving the WATCH sets", async () => {
     const commands: RedisCommand[] = [];
-    const kernel = createBeniSession(
+    const kernel = createBenniSession(
       fakeSession(commands, ["OK", "OK"], [[1], [2]])
     );
     const gate = deferred<void>();
@@ -146,7 +146,7 @@ describe("concurrent watch windows on one borrowed session (F10)", () => {
 
   it("releases the window when the body throws", async () => {
     const commands: RedisCommand[] = [];
-    const kernel = createBeniSession(
+    const kernel = createBenniSession(
       fakeSession(commands, ["OK", "OK", "OK"], [[1]])
     );
     const boom = new Error("boom");
@@ -227,7 +227,7 @@ describe("hgetex with an empty field list (F36)", () => {
   });
 });
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("session-bound hset with a ttl against a live server", () => {
@@ -237,7 +237,7 @@ describeRedis("session-bound hset with a ttl against a live server", () => {
   it("aborts the caller's watched transaction instead of losing the update", async () => {
     const client = await node({ url: redisUrl });
     const other = await node({ url: redisUrl });
-    const redis = beni(client);
+    const redis = benni(client);
     const counter = unique("ctr");
     const profiles = defineHash(unique("profile"), {
       name: codecs.string(),
@@ -260,7 +260,7 @@ describeRedis("session-bound hset with a ttl against a live server", () => {
           // that disarmed the WATCH above.
           await session
             .hash(profiles)
-            .hset("42", { name: "beni", score: seen }, { ttlSeconds: 60 });
+            .hset("42", { name: "benni", score: seen }, { ttlSeconds: 60 });
           return session
             .multi()
             .add(["SET", counter, String(seen + 10)], okReply);
@@ -274,7 +274,7 @@ describeRedis("session-bound hset with a ttl against a live server", () => {
       // The retry read 2 and committed 12; the lost-update path commits 11.
       await expect(client.send(["GET", counter])).resolves.toBe("12");
       await expect(redis.hash(profiles).hget("42")).resolves.toEqual({
-        name: "beni",
+        name: "benni",
         score: 2
       });
       await expect(

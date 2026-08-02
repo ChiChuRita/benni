@@ -35,7 +35,7 @@ function withReplyDefaults(options?: NodeOptions): NodeOptions {
  * node-redis rejects a committed `MULTI` with a `MultiErrorReply`, an
  * aggregate whose message is only "N commands failed, see .replies and
  * .errorIndexes". Surface the first real error instead, so a per-command
- * failure reads the same here as it does through `beni/ioredis`.
+ * failure reads the same here as it does through `benni/ioredis`.
  */
 function unwrapMultiError(error: unknown): unknown {
   if (!(error instanceof MultiErrorReply)) return error;
@@ -47,7 +47,7 @@ function unwrapMultiError(error: unknown): unknown {
 
 /**
  * The Node.js adapter: connects a [node-redis](https://www.npmjs.com/package/redis)
- * client and returns the `RedisClient` handle `beni()` binds to. Accepts
+ * client and returns the `RedisClient` handle `benni()` binds to. Accepts
  * every node-redis option (`url`, `socket`, `username`/`password`, ...).
  * Replies default to RESP2 for stable wire shapes. Deno uses this same
  * adapter via `npm:` specifiers. Supports Pub/Sub subscribing: core leases a
@@ -55,9 +55,9 @@ function unwrapMultiError(error: unknown): unknown {
  *
  * @example
  * ```ts
- * import { node } from "beni/node";
+ * import { node } from "benni/node";
  * const client = await node({ url: process.env.REDIS_URL });
- * const redis = beni(client, { schema });
+ * const redis = benni(client, { schema });
  * ```
  */
 export async function node(options?: NodeOptions): Promise<RedisClient> {
@@ -235,7 +235,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
  * a connection the leak backstop has already stopped watching.
  */
 function closedError(): Error {
-  return new Error("beni/node client is closed");
+  return new Error("benni/node client is closed");
 }
 
 /**

@@ -3,7 +3,7 @@ import * as z from "zod";
 import * as mini from "zod/mini";
 import type { RedisCommand } from "../src/core/index.js";
 import { ReplyShapeError, ValidationError } from "../src/core/index.js";
-import { beni } from "../src/index.js";
+import { benni } from "../src/index.js";
 import type { InferOutput } from "../src/schema.js";
 import { kv } from "../src/schema.js";
 import { zodCodec, zodJson } from "../src/zod/index.js";
@@ -78,7 +78,7 @@ describe("zodJson", () => {
 
     const wire = '{"name":"ada","created":"2020-01-01T00:00:00.000Z"}';
     const commands: RedisCommand[] = [];
-    const redis = beni(fakeClient(commands, ["OK", wire]));
+    const redis = benni(fakeClient(commands, ["OK", wire]));
 
     await redis.kv(users).set("u1", {
       name: "ada",
@@ -93,7 +93,7 @@ describe("zodJson", () => {
 
   it("rejects an invalid write before anything is sent", async () => {
     const commands: RedisCommand[] = [];
-    const redis = beni(fakeClient(commands, []));
+    const redis = benni(fakeClient(commands, []));
     await expect(
       redis.kv(users).set("u1", { name: 42, created: new Date() } as never)
     ).rejects.toThrow(ValidationError);

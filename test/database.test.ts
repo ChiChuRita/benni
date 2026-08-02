@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { BeniSession } from "../src/database.js";
+import type { BenniSession } from "../src/database.js";
 import {
-  beni,
+  benni,
   numberReply,
   okReply,
   type RedisClient,
@@ -52,10 +52,10 @@ function fakeSessionClient(
   };
 }
 
-describe("beni", () => {
+describe("benni", () => {
   it("binds key-value schemas to a client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, ["OK", '{"name":"Ada"}']));
+    const db = benni(fakeClient(commands, ["OK", '{"name":"Ada"}']));
     const profiles = kv("profile", json<{ name: string }>());
 
     const store = db.kv(profiles);
@@ -71,7 +71,7 @@ describe("beni", () => {
   });
 
   it("rejects a set combining nx and xx", async () => {
-    const db = beni(fakeClient([], []));
+    const db = benni(fakeClient([], []));
     const profiles = kv("profile", json<{ name: string }>());
 
     await expect(
@@ -84,7 +84,7 @@ describe("beni", () => {
 
   it("binds hash schemas to a client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [2, 1, ["Ada", "10"]]));
+    const db = benni(fakeClient(commands, [2, 1, ["Ada", "10"]]));
     const users = hash("user", {
       name: string(),
       score: number()
@@ -105,7 +105,7 @@ describe("beni", () => {
 
   it("publishes typed channel messages through the raw client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [1]));
+    const db = benni(fakeClient(commands, [1]));
     const events = channel("events:user", json<{ id: string }>());
 
     await expect(db.pubsub.channel(events).publish({ id: "42" })).resolves.toBe(
@@ -117,7 +117,7 @@ describe("beni", () => {
 
   it("binds zset and hll schemas to a client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [1, 1]));
+    const db = benni(fakeClient(commands, [1, 1]));
     const leaderboard = zset("leaderboard", string());
     const visitors = hll("visitors", string());
 
@@ -134,7 +134,7 @@ describe("beni", () => {
 
   it("runs typed scripts with named keys and args", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, ["sha-1", 6]));
+    const db = benni(fakeClient(commands, ["sha-1", 6]));
     const incrementBy = script("incrementBy", {
       keys: ["counter"],
       args: {
@@ -163,7 +163,7 @@ describe("beni", () => {
 
   it("binds stream schemas to a client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(
+    const db = benni(
       fakeClient(commands, ["1-1", [["1-1", ["type", "click", "size", "2"]]]])
     );
     const events = stream("events", {
@@ -189,7 +189,7 @@ describe("beni", () => {
 
   it("binds bitmap schemas to a client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [0, 1]));
+    const db = benni(fakeClient(commands, [0, 1]));
     const flags = bitmap("flags");
 
     const store = db.bitmap(flags);
@@ -206,7 +206,7 @@ describe("beni", () => {
 
   it("binds geo schemas to a client", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [1, "877.4"]));
+    const db = benni(fakeClient(commands, [1, "877.4"]));
     const cities = geo("cities", string());
 
     const store = db.geo(cities);
@@ -229,7 +229,7 @@ describe("beni", () => {
 
   it("binds counter keyspaces to a client and deletes with DEL", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [1, 1]));
+    const db = benni(fakeClient(commands, [1, 1]));
     const hits = kv("hits", number());
 
     const store = db.counter(hits);
@@ -246,7 +246,7 @@ describe("beni", () => {
 
   it("binds string keyspaces to a client and deletes with DEL", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [2, "hi", 1]));
+    const db = benni(fakeClient(commands, [2, "hi", 1]));
     const notes = kv("note", string());
 
     const store = db.string(notes);
@@ -265,7 +265,7 @@ describe("beni", () => {
 
   it("scans keys across cursor pages", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(
+    const db = benni(
       fakeClient(commands, [
         ["3", ["a:1", "a:2"]],
         ["0", ["a:3"]]
@@ -286,7 +286,7 @@ describe("beni", () => {
 
   it("scans set members across cursor pages", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(
+    const db = benni(
       fakeClient(commands, [
         ["3", ["admin"]],
         ["0", ["editor"]]
@@ -307,7 +307,7 @@ describe("beni", () => {
   });
 
   it("throws eagerly when the client does not support sessions", async () => {
-    const db = beni(fakeClient([], []));
+    const db = benni(fakeClient([], []));
 
     await expect(db.session()).rejects.toThrow(
       "Redis client does not support sessions"
@@ -319,10 +319,10 @@ describe("beni", () => {
 
   it("scoped db.session(fn) closes the session on success", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, ["v"]));
+    const db = benni(fakeSessionClient(commands, ["v"]));
     const notes = kv("note", string());
 
-    let leased: BeniSession | undefined;
+    let leased: BenniSession | undefined;
     const result = await db.session(async (s) => {
       leased = s;
       expect(s.closed).toBe(false);
@@ -336,9 +336,9 @@ describe("beni", () => {
 
   it("scoped db.session(fn) closes the session when the body throws", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, []));
+    const db = benni(fakeSessionClient(commands, []));
 
-    let leased: BeniSession | undefined;
+    let leased: BenniSession | undefined;
     await expect(
       db.session(async (s) => {
         leased = s;
@@ -351,7 +351,7 @@ describe("beni", () => {
 
   it("no-arg db.session() leases a session the caller owns", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, [["jobs:pending", "job"]]));
+    const db = benni(fakeSessionClient(commands, [["jobs:pending", "job"]]));
     const jobs = list("jobs", string());
 
     const session = await db.session();
@@ -371,7 +371,9 @@ describe("beni", () => {
 
   it("sends the exact wire args for a session blocking pop", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, [["jobs:pending", "email-1"]]));
+    const db = benni(
+      fakeSessionClient(commands, [["jobs:pending", "email-1"]])
+    );
     const jobs = list("jobs", string());
 
     await db.session(async (s) => {
@@ -385,7 +387,7 @@ describe("beni", () => {
 
   it("reads through a consumer group over the db surface", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(
+    const db = benni(
       fakeClient(commands, [
         [["audit:login", [["1-1", ["type", "click", "userId", "u1"]]]]]
       ])
@@ -419,7 +421,7 @@ describe("beni", () => {
 
   it("reads through a session-only blocking consumer group", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(
+    const db = benni(
       fakeSessionClient(commands, [
         [["audit:login", [["2-1", ["type", "view", "userId", "u2"]]]]]
       ])
@@ -460,7 +462,7 @@ describe("beni", () => {
     const commands: RedisCommand[] = [];
     // Reply queue (FIFO across shared + session sends): WATCH ok, GET, WATCH
     // ok, GET. watchedResults: attempt 1 aborts (null), attempt 2 commits.
-    const db = beni(
+    const db = benni(
       fakeSessionClient(commands, ["OK", null, "OK", "7"], [null, ["OK", 8]])
     );
     const views = kv("views", number());
@@ -494,7 +496,7 @@ describe("beni", () => {
 
   it("db.watch throws WatchRetriesExceededError once attempts run out", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, ["OK", "OK"], [null, null]));
+    const db = benni(fakeSessionClient(commands, ["OK", "OK"], [null, null]));
 
     const seen: number[] = [];
     await expect(
@@ -510,7 +512,7 @@ describe("beni", () => {
 
   it("db.watch resolves null and UNWATCHes when the body opts out", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, ["OK", "OK"]));
+    const db = benni(fakeSessionClient(commands, ["OK", "OK"]));
 
     const result = await db.watch("k", async () => null);
 
@@ -520,7 +522,7 @@ describe("beni", () => {
 
   it("db.watch does not close a borrowed session", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeSessionClient(commands, ["OK"], [[1]]));
+    const db = benni(fakeSessionClient(commands, ["OK"], [[1]]));
 
     const borrowed = await db.session();
     try {
@@ -548,7 +550,7 @@ describe("db.query registry", () => {
 
   it("dispatches each schema to its typed store by kind", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [2, 1, "OK", '{"tier":"gold"}']), {
+    const db = benni(fakeClient(commands, [2, 1, "OK", '{"tier":"gold"}']), {
       schema
     });
 
@@ -569,7 +571,7 @@ describe("db.query registry", () => {
 
   it("exposes key() and delete() on registry resources", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [1]), { schema });
+    const db = benni(fakeClient(commands, [1]), { schema });
 
     expect(db.query.users.key("42")).toBe("user:42");
     await expect(db.query.users.del("42")).resolves.toBe(1);
@@ -577,13 +579,13 @@ describe("db.query registry", () => {
   });
 
   it("is an empty object when no schema is bound", () => {
-    const db = beni(fakeClient([], []));
+    const db = benni(fakeClient([], []));
     expect(db.query).toEqual({});
   });
 
   it("skips schema-module entries that are not schemas", async () => {
     const commands: RedisCommand[] = [];
-    const db = beni(fakeClient(commands, [1, 1]), {
+    const db = benni(fakeClient(commands, [1, 1]), {
       schema: {
         users,
         NOT_A_SCHEMA: { hello: "world" } as unknown as typeof users
@@ -606,7 +608,7 @@ type Equal<TLeft, TRight> =
 type Expect<T extends true> = T;
 
 const typeClient = null as unknown as RedisClient;
-const typeDb = beni(typeClient);
+const typeDb = benni(typeClient);
 
 const typeProfiles = kv("type-profile", json<{ name: string }>());
 const typeKvStore = typeDb.kv(typeProfiles);
@@ -658,7 +660,7 @@ function databaseTypeAssertions() {
 
 void databaseTypeAssertions;
 
-const registryDb = beni(typeClient, {
+const registryDb = benni(typeClient, {
   schema: {
     users: hash("q-user", { name: string(), score: number() }),
     board: zset("q-board", string()),
@@ -721,7 +723,7 @@ const typeJobs = list("type-jobs", string());
 const typeViews = kv("type-views", number());
 
 function sessionTypeAssertions() {
-  const session = null as unknown as BeniSession;
+  const session = null as unknown as BenniSession;
 
   // Blocking methods exist only on the session's list accessor — the shared
   // db.list has no blpop (ts(2339), not a runtime throw).
@@ -747,11 +749,11 @@ function sessionTypeAssertions() {
   void sessionZset.bzpopmin;
   void sessionZset.zadd;
 
-  // beni() rejects a session: RedisSession is not assignable to RedisClient
+  // benni() rejects a session: RedisSession is not assignable to RedisClient
   // (no pipeline, no plain transaction), so there is no typed route from a
   // session to the shared surface.
-  // @ts-expect-error beni(session.raw) must not compile.
-  void beni(session.raw);
+  // @ts-expect-error benni(session.raw) must not compile.
+  void benni(session.raw);
 
   // The watched builder infers a growing tuple through add() and exec()
   // returns that tuple or null (abort).

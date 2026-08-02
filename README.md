@@ -1,4 +1,4 @@
-# Beni
+# Benni
 
 **The end-to-end typed Redis client for TypeScript.** One typed API across
 Node, Bun, Deno, and the edge.
@@ -8,18 +8,18 @@ methods named after the Redis commands they run, with full input **and output**
 type inference and typed key prefixing. Your declared types travel from write to
 read, so replies come back as *your* types, not `string | null`.
 
-**[Documentation](https://chichurita.github.io/beni/)** ·
+**[Documentation](https://chichurita.github.io/benni/)** ·
 **[llms.txt](llms.txt)** (condensed reference for coding agents)
 
 ## Install
 
 ```sh
-pnpm add beni redis
+pnpm add benni redis
 ```
 
 [`redis`](https://www.npmjs.com/package/redis) (node-redis) is an optional peer
-dependency used only by the Node adapter. On Bun, install just `beni`; the Bun
-adapter uses Bun's built-in Redis client. On the edge, install just `beni`; the
+dependency used only by the Node adapter. On Bun, install just `benni`; the Bun
+adapter uses Bun's built-in Redis client. On the edge, install just `benni`; the
 HTTP adapter needs nothing but `fetch`.
 
 ## Quick Start
@@ -28,7 +28,7 @@ Three files: declare schemas, bind a client, use it.
 
 ```ts
 // schema.ts: plain TypeScript values; they create no keys and run no migrations
-import { hash, json, kv, number, string } from "beni/schema";
+import { hash, json, kv, number, string } from "benni/schema";
 
 type UserProfile = {
   name: string;
@@ -45,15 +45,15 @@ export const profiles = kv("profile", json<UserProfile>());
 
 ```ts
 // redis.ts: bind once, export the handle
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node({
   url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
 });
 
-export const redis = beni(client, { schema });
+export const redis = benni(client, { schema });
 ```
 
 ```ts
@@ -76,9 +76,9 @@ const pong = await redis.raw.send(["PING"]);
 Because the schema module is bound to the client, each store is reachable by its
 export name through `redis.query`. The explicit `redis.hash(users)` /
 `redis.kv(profiles)` accessors return the same store; see the
-[Schema Registry](https://chichurita.github.io/beni/core-concepts/schema-registry/).
+[Schema Registry](https://chichurita.github.io/benni/core-concepts/schema-registry/).
 
-## They type the commands; Beni types your data
+## They type the commands; Benni types your data
 
 `node-redis` and `ioredis` are already typed, but only at the *command surface*.
 A reply comes back as Redis's generic wire shape, and the type is gone the moment
@@ -90,12 +90,12 @@ is where the bugs live:
 const raw = await nodeRedis.get("profile:42"); // string | null
 const cast = JSON.parse(raw!) as UserProfile; // hand-cast; the compiler never checked it
 
-// Beni: your declared type, decoded for you
+// Benni: your declared type, decoded for you
 const user = await redis.query.profiles.get("42");
 //    ^? UserProfile | null
 ```
 
-Your Redis client types the commands; Beni types your data. Beni is a typed
+Your Redis client types the commands; Benni types your data. Benni is a typed
 **client**, not an ORM or object mapper:
 schemas are plain TypeScript values that don't create keys, run migrations, or
 block raw Redis access (`redis.raw.send([...])` is always there).
@@ -106,13 +106,13 @@ fully inferred reads, with zero added dependencies.
 
 ## Philosophy
 
-- **Command names stay.** `hgetall` runs `HGETALL`. Beni adds a type layer, not
+- **Command names stay.** `hgetall` runs `HGETALL`. Benni adds a type layer, not
   a query language, so everything you know about Redis still applies.
 - **Schemas are values, not migrations.** No CLI, no codegen, no generated
   files. Declaring a schema creates no keys and runs nothing.
 - **One round trip whenever Redis allows one.** `hget` is a single `HMGET`, not
   a pipeline of `HGET`s; `ratelimit.check()` is one atomic Lua call. On the edge
-  every command is an HTTP request, so Beni never quietly turns one call into
+  every command is an HTTP request, so Benni never quietly turns one call into
   four.
 - **Nothing is hidden.** No lazy loading, no identity map. The key is always
   yours (`.key(id)`), and `redis.raw` is always there.
@@ -123,7 +123,7 @@ fully inferred reads, with zero added dependencies.
   sliding window, a stampede-proof cache. Not a search engine or an index
   manager.
 
-[Read the full philosophy →](https://chichurita.github.io/beni/getting-started/philosophy/)
+[Read the full philosophy →](https://chichurita.github.io/benni/getting-started/philosophy/)
 
 ## Runtime Support
 
@@ -131,26 +131,26 @@ One runtime-agnostic core, thin client adapters, the same typed API everywhere.
 
 | Runtime | Adapter | Client |
 |---|---|---|
-| Node.js | `beni/node` | [`redis`](https://www.npmjs.com/package/redis) (node-redis), optional peer dependency |
-| Node.js | `beni/ioredis` | [`ioredis`](https://www.npmjs.com/package/ioredis), optional peer dependency. **Can adopt a client you already have** |
-| Bun | `beni/bun` | Bun's built-in Redis client, no extra package |
-| Deno | `beni/node` | `npm:redis` via Deno's npm compatibility |
-| Edge / serverless | `beni/upstash` | HTTP adapter over the Upstash REST protocol (or any compatible server), zero deps |
+| Node.js | `benni/node` | [`redis`](https://www.npmjs.com/package/redis) (node-redis), optional peer dependency |
+| Node.js | `benni/ioredis` | [`ioredis`](https://www.npmjs.com/package/ioredis), optional peer dependency. **Can adopt a client you already have** |
+| Bun | `benni/bun` | Bun's built-in Redis client, no extra package |
+| Deno | `benni/node` | `npm:redis` via Deno's npm compatibility |
+| Edge / serverless | `benni/upstash` | HTTP adapter over the Upstash REST protocol (or any compatible server), zero deps |
 
-Already running ioredis? You don't have to switch clients to use Beni: hand your
-existing instance to `beni/ioredis` and it shares that connection. Beni closes only
+Already running ioredis? You don't have to switch clients to use Benni: hand your
+existing instance to `benni/ioredis` and it shares that connection. Benni closes only
 what it leased from it; the client stays yours.
 
 ```ts
 import Redis from "ioredis";
-import { ioredis } from "beni/ioredis";
+import { ioredis } from "benni/ioredis";
 
 const client = await ioredis(myExistingRedis); // or a URL, or options
 ```
 
 `redis` and `ioredis` are optional peer dependencies, so non-Node runtimes stay dependency-free.
 Blocking commands, sessions, `WATCH` transactions, and Pub/Sub *subscribing* need a
-persistent connection (Node/Bun/Deno); the HTTP/edge adapter (`beni/upstash`) covers
+persistent connection (Node/Bun/Deno); the HTTP/edge adapter (`benni/upstash`) covers
 the stateless command surface, the whole typed API minus those connection-bound
 features. Pub/Sub *publishing* is one stateless `PUBLISH`, so it works everywhere,
 edge included.
@@ -160,7 +160,7 @@ from the client you already bound, multiplexes every channel and pattern onto it
 closes it when the last subscription goes away.
 
 ```ts
-import { channel, json } from "beni/schema";
+import { channel, json } from "benni/schema";
 
 const userEvents = channel(
   "events:user",
@@ -195,11 +195,11 @@ works from Redis 7.2 up.
 
 ## Primitives
 
-`beni/primitives` ships the batteries you'd otherwise hand-roll (and get subtly
+`benni/primitives` ships the batteries you'd otherwise hand-roll (and get subtly
 wrong), built on any adapter, including the edge:
 
 ```ts
-import { cache, lock, queue, ratelimit } from "beni/primitives";
+import { cache, lock, queue, ratelimit } from "benni/primitives";
 
 // A correct distributed lock: never frees a lock that expired and was re-acquired.
 await lock(client).run("order:42", async () => { /* critical section */ });
@@ -233,10 +233,10 @@ for await (const event of jobs.watch(id, { after: lastSeenEventId })) {
 ## Docs
 
 The full documentation is at
-**[chichurita.github.io/beni](https://chichurita.github.io/beni/)**. For LLMs and
+**[chichurita.github.io/benni](https://chichurita.github.io/benni/)**. For LLMs and
 coding agents, the same content is served flattened at
-[`/llms.txt`](https://chichurita.github.io/beni/llms.txt) and
-[`/llms-full.txt`](https://chichurita.github.io/beni/llms-full.txt); the
+[`/llms.txt`](https://chichurita.github.io/benni/llms.txt) and
+[`/llms-full.txt`](https://chichurita.github.io/benni/llms-full.txt); the
 [`llms.txt`](llms.txt) shipped inside the package is the condensed version.
 
 The site is built with [Astro Starlight](https://starlight.astro.build/) and
@@ -263,7 +263,7 @@ REDIS_URL=redis://127.0.0.1:6379 pnpm example:node
 ```
 
 The walkthrough is in [examples/node-basic.md](examples/node-basic.md), and
-[examples/beni-use-cases.md](examples/beni-use-cases.md) works through
+[examples/benni-use-cases.md](examples/benni-use-cases.md) works through
 common application workloads (sessions, queues, leaderboards, rate limiting)
 end to end.
 
@@ -289,4 +289,4 @@ REDIS_URL=redis://127.0.0.1:6379 BENCH_ITERATIONS=10000 BENCH_PIPELINE=64 pnpm b
 ```
 
 The benchmark compares a tiny dependency-free RESP client baseline against the
-Beni Node adapter.
+Benni Node adapter.

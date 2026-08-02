@@ -1,13 +1,13 @@
-# Beni Use Cases
+# Benni Use Cases
 
-These examples pressure-test Beni against common application workloads. They use the schema-first API: define Redis resources as TypeScript values, bind a client once, then use `redis.query` or the explicit `redis.<kind>(schema)` accessors.
+These examples pressure-test Benni against common application workloads. They use the schema-first API: define Redis resources as TypeScript values, bind a client once, then use `redis.query` or the explicit `redis.<kind>(schema)` accessors.
 
 ## Shared Setup
 
 ```ts
 // redis.ts
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node({
@@ -15,14 +15,14 @@ const client = await node({
 });
 
 export { client };
-export const redis = beni(client, { schema });
+export const redis = benni(client, { schema });
 ```
 
 ## 1. SaaS User Profiles And Team Membership
 
 ```ts
 // schema.ts
-import { boolean, enumOf, hash, json, kv, set, string } from "beni/schema";
+import { boolean, enumOf, hash, json, kv, set, string } from "benni/schema";
 
 type Preferences = {
   theme: "light" | "dark";
@@ -67,7 +67,7 @@ const teammates = await redis.query.teamMembers.smembers("team_1");
 
 ```ts
 // schema.ts
-import { json, kv } from "beni/schema";
+import { json, kv } from "benni/schema";
 
 export type Session = {
   userId: string;
@@ -106,7 +106,7 @@ export async function revokeSession(token: string) {
 
 ```ts
 // schema.ts
-import { bitmap, hll, string } from "beni/schema";
+import { bitmap, hll, string } from "benni/schema";
 
 export const pageVisitors = hll("analytics:page-visitors", string());
 export const dailyActiveUsers = bitmap("analytics:dau");
@@ -136,7 +136,7 @@ export async function readDailyDashboard(pageId: string) {
 
 ```ts
 // schema.ts
-import { hash, number, string, zset } from "beni/schema";
+import { hash, number, string, zset } from "benni/schema";
 
 export const players = hash("player", {
   displayName: string(),
@@ -177,7 +177,7 @@ export async function topPlayers() {
 
 ```ts
 // schema.ts
-import { json, list } from "beni/schema";
+import { json, list } from "benni/schema";
 
 export type Job = {
   id: string;
@@ -224,7 +224,7 @@ export async function runWorker() {
 
 ```ts
 // schema.ts
-import { number, stream, string } from "beni/schema";
+import { number, stream, string } from "benni/schema";
 
 export const auditEvents = stream("audit", {
   actorId: string(),
@@ -263,7 +263,7 @@ export async function processAuditEvents() {
 
 ```ts
 // schema.ts
-import { channel, json, pattern } from "beni/schema";
+import { channel, json, pattern } from "benni/schema";
 
 type Notification = {
   id: string;
@@ -277,12 +277,12 @@ export const allTenantNotifications = pattern("notifications:tenant:*", json<Not
 
 ```ts
 // notifications.ts
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node();
-const redis = beni(client, { schema });
+const redis = benni(client, { schema });
 
 // The first subscribe leases one subscriber connection off the bound client and
 // closes it again when the last subscription goes away.
@@ -304,7 +304,7 @@ await client.close();
 
 ```ts
 // schema.ts
-import { geo, string } from "beni/schema";
+import { geo, string } from "benni/schema";
 
 export const stores = geo("stores", string());
 ```
@@ -332,8 +332,8 @@ export async function nearbyStores(longitude: number, latitude: number) {
 
 ```ts
 // edge-rate-limit.ts
-import { ratelimit } from "beni/primitives";
-import { upstash } from "beni/upstash";
+import { ratelimit } from "benni/primitives";
+import { upstash } from "benni/upstash";
 
 const client = upstash({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -363,7 +363,7 @@ export async function guardRequest(userId: string) {
 
 ```ts
 // schema.ts
-import { zset, string } from "beni/schema";
+import { zset, string } from "benni/schema";
 
 export const nameIndex = zset("search:name", string());
 ```
@@ -395,14 +395,14 @@ export async function autocomplete(prefix: string) {
 
 ```ts
 // schema.ts
-import { kv, number } from "beni/schema";
+import { kv, number } from "benni/schema";
 
 export const stock = kv("inventory:stock", number());
 ```
 
 ```ts
 // inventory.ts
-import { numberReply, okReply } from "beni";
+import { numberReply, okReply } from "benni";
 import { redis } from "./redis";
 import { stock } from "./schema";
 
@@ -427,7 +427,7 @@ export async function reserveSku(sku: string, quantity: number) {
 
 ```ts
 // schema.ts
-import { json, zset } from "beni/schema";
+import { json, zset } from "benni/schema";
 
 export type ScheduledJob = {
   id: string;
@@ -440,7 +440,7 @@ export const scheduledJobs = zset("scheduled-jobs", json<ScheduledJob>());
 
 ```ts
 // scheduler.ts
-import { lock } from "beni/primitives";
+import { lock } from "benni/primitives";
 import type { ScheduledJob } from "./schema";
 import { client, redis } from "./redis";
 
@@ -481,5 +481,5 @@ protection, `lock` for mutual exclusion, `ratelimit` for a sliding window, and
 for at-least-once queue processing, the consumer-group and blocking-worker
 patterns in the [docs](../docs/src/content/docs/advanced/blocking-operations.md).
 
-Anything Beni does not type yet stays reachable through `redis.raw.send([...])`,
+Anything Benni does not type yet stays reachable through `redis.raw.send([...])`,
 so no use case is blocked on the typed surface catching up.

@@ -102,12 +102,12 @@ describe("zrandmember with a computed count of zero", () => {
   });
 });
 
-const redisUrl = process.env.BENI_REDIS_URL ?? process.env.REDIS_URL;
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("infinite scores survive the full round trip", () => {
   const live = defineSortedSet(
-    `beni:hunt:zset:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    `benni:hunt:zset:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     codecs.string()
   );
   let client: RedisClient;

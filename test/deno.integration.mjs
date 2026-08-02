@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { beni } from "beni";
-import { node } from "beni/node";
-import { json, kv } from "beni/schema";
+import { benni } from "benni";
+import { node } from "benni/node";
+import { json, kv } from "benni/schema";
 
-const url = Deno.env.get("BENI_REDIS_URL");
-if (!url) throw new Error("BENI_REDIS_URL is required");
+const url = Deno.env.get("BENNI_REDIS_URL");
+if (!url) throw new Error("BENNI_REDIS_URL is required");
 
 const client = await node({ url });
 const profiles = kv(
-  `beni:deno:${Date.now()}:${crypto.randomUUID()}`,
+  `benni:deno:${Date.now()}:${crypto.randomUUID()}`,
   json()
 );
-const redis = beni(client, { schema: { profiles } });
+const redis = benni(client, { schema: { profiles } });
 
 try {
   const profile = { name: "Ada", score: 10 };

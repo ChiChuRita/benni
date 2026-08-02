@@ -5,7 +5,7 @@ description: "Use redis.watch() to run a WATCH/MULTI/EXEC check-and-set that ret
 
 Use `redis.watch()` for check-and-set logic: read some keys, decide what to write, and commit atomically only if none of the watched keys changed underneath you. If a watched key changed, the commit aborts and the helper retries.
 
-This is Redis optimistic locking (`WATCH`/`MULTI`/`EXEC`) wrapped as a retry loop. It runs on a [session](/beni/advanced/sessions/) connection, because `WATCH` state belongs to one connection.
+This is Redis optimistic locking (`WATCH`/`MULTI`/`EXEC`) wrapped as a retry loop. It runs on a [session](/benni/advanced/sessions/) connection, because `WATCH` state belongs to one connection.
 
 ## `redis.watch(keys, body, options?)`
 
@@ -24,15 +24,15 @@ Per attempt the helper opens (or borrows) a session, sends `WATCH keys`, runs yo
 - The body returns `null` → the helper `UNWATCH`es and resolves `null`; you opted out.
 - Attempts run out → the helper throws `WatchRetriesExceededError`.
 
-Read the watched keys through the session (`s.kv(...)`, `s.hash(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/beni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
+Read the watched keys through the session (`s.kv(...)`, `s.hash(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/benni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
 
 ## Check-And-Set Example
 
 Cap a counter at a ceiling, retrying if a concurrent writer moves it:
 
 ```ts
-import { okReply, numberReply, WatchRetriesExceededError } from "beni";
-import { number, kv } from "beni/schema";
+import { okReply, numberReply, WatchRetriesExceededError } from "benni";
+import { number, kv } from "benni/schema";
 
 const views = kv("views", number());
 
@@ -59,8 +59,8 @@ const result = await redis.watch(
 Move funds between two accounts atomically, aborting the whole operation if either balance shifts mid-flight, and opting out cleanly when the source lacks funds:
 
 ```ts
-import { okReply } from "beni";
-import { number, kv } from "beni/schema";
+import { okReply } from "benni";
+import { number, kv } from "benni/schema";
 
 const balances = kv("balance", number());
 
@@ -146,4 +146,4 @@ An empty watched `exec()` throws a `TypeError`. Unlike `redis.multi()`, a watche
 
 ## When To Reach For Lua Instead
 
-`WATCH` livelocks under heavy contention by design: many writers keep invalidating each other's reads, and retries pile up. For very hot check-and-set keys, prefer a [Lua script](/beni/advanced/scripts/): scripts run atomically on the server, reading before they write without any retry loop. The `onAbort` metrics exist precisely because this failure mode is load-dependent and invisible in low-traffic testing.
+`WATCH` livelocks under heavy contention by design: many writers keep invalidating each other's reads, and retries pile up. For very hot check-and-set keys, prefer a [Lua script](/benni/advanced/scripts/): scripts run atomically on the server, reading before they write without any retry loop. The `onAbort` metrics exist precisely because this failure mode is load-dependent and invisible in low-traffic testing.

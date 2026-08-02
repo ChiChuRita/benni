@@ -6,14 +6,14 @@ description: "The three imports most applications need, plus where the lower-lev
 Most applications use three imports:
 
 ```ts
-import { beni } from "beni";
-import { node } from "beni/node";
-import { hash, hll, json, kv, number, string, zset } from "beni/schema";
+import { benni } from "benni";
+import { node } from "benni/node";
+import { hash, hll, json, kv, number, string, zset } from "benni/schema";
 ```
 
 ## Schema API
 
-Use `beni/schema` to define Redis key families:
+Use `benni/schema` to define Redis key families:
 
 ```ts
 kv("profile", json<Profile>());
@@ -30,7 +30,7 @@ channel("events:user", json<UserEvent>());
 Bind a Redis client:
 
 ```ts
-const redis = beni(client, { schema });
+const redis = benni(client, { schema });
 ```
 
 Use data-structure resources:
@@ -53,6 +53,6 @@ await redis.raw.send(["PING"]);
 
 ## Lower-Level Core API
 
-The `beni/core` entrypoint exposes the building blocks the client is made of (`defineKeyspace`, `createKeyValueStore`, `createHashStore`, and the other store builders) for adapter authors and advanced integrations.
+The `benni/core` entrypoint exposes the building blocks the client is made of (`defineKeyspace`, `createKeyValueStore`, `createHashStore`, and the other store builders) for adapter authors and advanced integrations.
 
-Application code should prefer the schema-first API shown in the guide; every accessor is documented in the [Beni Client reference](/beni/api/beni-client/).
+Application code should prefer the schema-first API shown in the guide; every accessor is documented in the [Benni Client reference](/benni/api/benni-client/).

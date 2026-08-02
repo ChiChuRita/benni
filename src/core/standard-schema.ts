@@ -1,6 +1,6 @@
 // Minimal inline Standard Schema v1 (https://standardschema.dev) — the
 // ecosystem-wide validator interface implemented by Zod, Valibot, ArkType,
-// and friends. Inlined so beni stays zero-dependency.
+// and friends. Inlined so benni stays zero-dependency.
 
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
   readonly "~standard": {

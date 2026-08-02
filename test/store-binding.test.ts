@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { STORE } from "../src/core/store.js";
-import { beni } from "../src/database.js";
+import { benni } from "../src/database.js";
 import * as s from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
 // Schemas carry their store factory on a non-enumerable symbol, which is what
-// lets `beni()` dispatch without naming every store (and so lets a bundler
+// lets `benni()` dispatch without naming every store (and so lets a bundler
 // drop the kinds an app never declares). These tests pin the two consequences:
 // the binding must be invisible to ordinary object inspection, and a schema
 // that has lost it must fail loudly rather than silently resolve to nothing.
@@ -21,7 +21,7 @@ describe("schema store bindings", () => {
       fields: { name: {}, score: {} }
     });
     expect(Object.getOwnPropertyNames(users)).not.toContain(
-      "Symbol(beni.store)"
+      "Symbol(benni.store)"
     );
   });
 
@@ -54,18 +54,18 @@ describe("schema store bindings", () => {
     const client = fakeClient([], []);
     // Object spread drops the symbol — the one thing that used to work and
     // now does not, so it has to fail with an actionable message.
-    expect(() => beni(client, { schema: { users: { ...users } } })).toThrow(
+    expect(() => benni(client, { schema: { users: { ...users } } })).toThrow(
       /schema\.users .*no store binding/s
     );
   });
 
   it("rejects a copied schema passed to an accessor", () => {
-    const redis = beni(fakeClient([], []));
+    const redis = benni(fakeClient([], []));
     expect(() => redis.hash({ ...users })).toThrow(/hash schema/);
   });
 
   it("still ignores non-schema exports on the schema module", () => {
-    const redis = beni(fakeClient([], []), {
+    const redis = benni(fakeClient([], []), {
       schema: { users, notASchema: { hello: "world" }, alsoNot: 42 }
     });
     expect(Object.keys(redis.query)).toEqual(["users"]);

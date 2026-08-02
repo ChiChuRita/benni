@@ -1,5 +1,5 @@
 // Public API of the root entrypoint. The full low-level surface (store
-// builders, keyspace helpers, reply utilities) lives under `beni/core`.
+// builders, keyspace helpers, reply utilities) lives under `benni/core`.
 
 // Codecs.
 export { codecs } from "./core/codecs.js";
@@ -25,7 +25,7 @@ export {
   WatchRetriesExceededError
 } from "./core/session.js";
 // `CrossSlotError`, `slotOf`, `hashTagOf`, and the guard itself live in
-// `beni/cluster`, NOT here: naming them from the root entry would put the
+// `benni/cluster`, NOT here: naming them from the root entry would put the
 // CRC16 table and the error's fix-hint prose in every bundle, including the
 // ones that never enable the check. Only the erased types stay.
 export type { SlotGuard, SlotHint } from "./core/slot.js";
@@ -54,12 +54,12 @@ export type {
   RedisSubscriber
 } from "./core/types.js";
 export {
-  type Beni,
-  type BeniOptions,
-  type BeniSchema,
-  type BeniSession,
-  type BeniWatchOptions,
-  beni,
+  type Benni,
+  type BenniOptions,
+  type BenniSchema,
+  type BenniSession,
+  type BenniWatchOptions,
+  benni,
   type QueryRegistry,
   type QueryResource,
   type SchemaKind

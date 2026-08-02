@@ -3,7 +3,7 @@ title: "Blocking Operations"
 description: "Block on lists, sorted sets, and streams from a session with a required timeout and typed multi-key attribution."
 ---
 
-Blocking commands park a connection until an entry is available or the timeout elapses. Because they monopolize a connection, they live only on the [session](/beni/advanced/sessions/) accessors (`session.list(x)`, `session.zset(x)`, and `session.stream(x)`), never on the shared client. Calling one on `redis.list(x)` is a compile error.
+Blocking commands park a connection until an entry is available or the timeout elapses. Because they monopolize a connection, they live only on the [session](/benni/advanced/sessions/) accessors (`session.list(x)`, `session.zset(x)`, and `session.stream(x)`), never on the shared client. Calling one on `redis.list(x)` is a compile error.
 
 ## The Timeout Is Required
 
@@ -27,7 +27,7 @@ const job = await s.list(jobs).blpop("pending", { timeoutSeconds: "forever" });
 
 ## Lists
 
-Session list stores add the blocking pops and blocking move on top of the [regular list methods](/beni/data-structures/sets-and-lists/):
+Session list stores add the blocking pops and blocking move on top of the [regular list methods](/benni/data-structures/sets-and-lists/):
 
 ```ts
 await using s = await redis.session();
@@ -68,7 +68,7 @@ const batch = await s.stream(auditEvents).xread(
 ); // XREAD BLOCK -> StreamEntry[]  ([] on timeout)
 ```
 
-`xread` with a `timeoutSeconds` wraps `XREAD BLOCK` and returns an empty array on timeout, matching non-blocking `xread`'s null-to-`[]` convention. The `afterEntryId` accepts a concrete entry id or `"$"`; track the last seen id across iterations, because `"$"` re-arms "from now" on each call and can miss entries that arrive between calls. For at-least-once delivery across many workers, use [consumer groups](/beni/data-structures/consumer-groups/) instead.
+`xread` with a `timeoutSeconds` wraps `XREAD BLOCK` and returns an empty array on timeout, matching non-blocking `xread`'s null-to-`[]` convention. The `afterEntryId` accepts a concrete entry id or `"$"`; track the last seen id across iterations, because `"$"` re-arms "from now" on each call and can miss entries that arrive between calls. For at-least-once delivery across many workers, use [consumer groups](/benni/data-structures/consumer-groups/) instead.
 
 ## Typed Id Attribution Across Keys
 
@@ -134,7 +134,7 @@ A `BLPOP` reply served onto a connection that dies before the reply is read is l
 
 ```ts
 // schema.ts
-import { list, json } from "beni/schema";
+import { list, json } from "benni/schema";
 type Job = { id: string; kind: "email" | "report" };
 export const jobs = list("jobs", json<Job>());
 

@@ -6,7 +6,7 @@ description: "Use a sorted set when Redis should rank members by score."
 Use a sorted set when Redis should rank members by score.
 
 ```ts
-import { zset, string } from "beni/schema";
+import { zset, string } from "benni/schema";
 
 export const leaderboards = zset("leaderboard", string());
 ```

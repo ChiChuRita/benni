@@ -1,4 +1,4 @@
-# Contributing to Beni
+# Contributing to Benni
 
 Thank you for helping make Redis safer and more predictable for TypeScript
 applications.
@@ -24,17 +24,17 @@ Run the integration suite against Redis:
 
 ```sh
 pnpm redis:run
-BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test
-BENI_REDIS_URL=redis://127.0.0.1:6379 pnpm test:bun
+BENNI_REDIS_URL=redis://127.0.0.1:6379 pnpm test
+BENNI_REDIS_URL=redis://127.0.0.1:6379 pnpm test:bun
 ```
 
 The cluster suites need a cluster-enabled node on 6381. Without
-`BENI_REDIS_CLUSTER_URL` they skip, and a skipped suite looks exactly like a
+`BENNI_REDIS_CLUSTER_URL` they skip, and a skipped suite looks exactly like a
 passing one, so set it when touching keys, slots, or an adapter:
 
 ```sh
 pnpm redis:cluster:build && pnpm redis:cluster:run
-BENI_REDIS_CLUSTER_URL=redis://127.0.0.1:6381 pnpm test
+BENNI_REDIS_CLUSTER_URL=redis://127.0.0.1:6381 pnpm test
 ```
 
 The HTTP/edge suite is gated separately. Without these two variables the
@@ -43,7 +43,7 @@ adapter — point them at [`serverless-redis-http`](https://github.com/hiett/ser
 in front of a local Redis (this is what CI does):
 
 ```sh
-BENI_UPSTASH_URL=http://127.0.0.1:8079 BENI_UPSTASH_TOKEN=example_token pnpm test
+BENNI_UPSTASH_URL=http://127.0.0.1:8079 BENNI_UPSTASH_TOKEN=example_token pnpm test
 ```
 
 CI sets all of these, so the only suite that skips there is one whose service

@@ -396,7 +396,7 @@ export function createHashStore<
     // adapter implements transaction(); the fallback is for a custom client
     // that does not, which is no worse off than before. On a session holding
     // a WATCH the facade degrades this back to a pipeline rather than let an
-    // EXEC clear the caller's watch set (see createBeniSession).
+    // EXEC clear the caller's watch set (see createBenniSession).
     const replies =
       options.ttlSeconds === undefined
         ? await client.pipeline(commands)

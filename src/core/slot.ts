@@ -86,7 +86,7 @@ export type SlotHint = {
 /**
  * Throws {@link CrossSlotError} unless every key hashes to one Cluster slot.
  *
- * Installed only under `beni(client, { cluster: assertSameSlot })`. Call sites invoke it
+ * Installed only under `benni(client, { cluster: assertSameSlot })`. Call sites invoke it
  * as `assertSameSlot?.(…)` so that when it is absent the optional call
  * short-circuits argument evaluation too, and the key array is never built.
  */
@@ -161,7 +161,7 @@ function crossSlotMessage(
     `  ${JSON.stringify(firstKey)} hashes to slot ${firstSlot}`,
     `  ${JSON.stringify(otherKey)} hashes to slot ${otherSlot}`,
     `Every key in one command must hash to the same slot. ${fixFor(hint)}`,
-    "This check is opt-in: drop `cluster` from beni(client, options) to allow cross-slot commands, which are legal on a single-node Redis."
+    "This check is opt-in: drop `cluster` from benni(client, options) to allow cross-slot commands, which are legal on a single-node Redis."
   ].join("\n");
 }
 

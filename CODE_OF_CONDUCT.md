@@ -2,7 +2,7 @@
 
 ## Our pledge
 
-We pledge to make participation in Beni a harassment-free experience for
+We pledge to make participation in Benni a harassment-free experience for
 everyone, regardless of age, body size, disability, ethnicity, sex
 characteristics, gender identity and expression, experience, education,
 socio-economic status, nationality, personal appearance, race, caste, color,

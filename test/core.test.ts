@@ -99,17 +99,17 @@ describe("codec soundness and typed errors", () => {
 describe("createKeyValueStore", () => {
   it("emits SET, GET, and DEL commands", async () => {
     const commands: RedisCommand[] = [];
-    const replies: RedisReply[] = ["OK", '{"name":"beni"}', 1];
+    const replies: RedisReply[] = ["OK", '{"name":"benni"}', 1];
     const client = fakeClient(commands, replies);
     const users = defineKeyspace("user", codecs.json<{ name: string }>());
     const store = createKeyValueStore(client, users);
 
-    await store.set("42", { name: "beni" });
-    await expect(store.get("42")).resolves.toEqual({ name: "beni" });
+    await store.set("42", { name: "benni" });
+    await expect(store.get("42")).resolves.toEqual({ name: "benni" });
     await expect(store.del("42")).resolves.toBe(1);
 
     expect(commands).toEqual([
-      ["SET", "user:42", '{"name":"beni"}'],
+      ["SET", "user:42", '{"name":"benni"}'],
       ["GET", "user:42"],
       ["DEL", "user:42"]
     ]);
@@ -122,9 +122,9 @@ describe("createKeyValueStore", () => {
       defineKeyspace("user", codecs.string())
     );
 
-    await store.set("42", "beni", { ttlSeconds: 60 });
+    await store.set("42", "benni", { ttlSeconds: 60 });
 
-    expect(commands).toEqual([["SET", "user:42", "beni", "EX", 60]]);
+    expect(commands).toEqual([["SET", "user:42", "benni", "EX", 60]]);
   });
 
   it("returns null for missing values", async () => {
@@ -194,7 +194,7 @@ describe("createKeyValueStore", () => {
       createKeyValueStore(
         fakeClient([], [0]),
         defineKeyspace("user", codecs.string())
-      ).set("42", "beni")
+      ).set("42", "benni")
     ).rejects.toThrow(TypeError);
 
     await expect(
@@ -779,7 +779,7 @@ describe("createSortedSetStore", () => {
 describe("createHashStore", () => {
   it("emits HSET, HGET, and DEL commands", async () => {
     const commands: RedisCommand[] = [];
-    const replies: RedisReply[] = [2, ["beni", "42"], 1];
+    const replies: RedisReply[] = [2, ["benni", "42"], 1];
     const client = fakeClient(commands, replies);
     const users = defineHash("user", {
       name: codecs.string(),
@@ -787,15 +787,15 @@ describe("createHashStore", () => {
     });
     const store = createHashStore(client, users);
 
-    await store.hset("42", { name: "beni", score: 42 });
+    await store.hset("42", { name: "benni", score: 42 });
     await expect(store.hget("42")).resolves.toEqual({
-      name: "beni",
+      name: "benni",
       score: 42
     });
     await expect(store.del("42")).resolves.toBe(1);
 
     expect(commands).toEqual([
-      ["HSET", "user:42", "name", "beni", "score", "42"],
+      ["HSET", "user:42", "name", "benni", "score", "42"],
       ["HMGET", "user:42", "name", "score"],
       ["DEL", "user:42"]
     ]);
@@ -808,18 +808,18 @@ describe("createHashStore", () => {
       score: codecs.number()
     });
     const store = createHashStore(
-      fakeClient(commands, [1, "beni", 1, 1, 43]),
+      fakeClient(commands, [1, "benni", 1, 1, 43]),
       users
     );
 
-    await expect(store.hset("42", "name", "beni")).resolves.toBe(1);
-    await expect(store.hget("42", "name")).resolves.toBe("beni");
+    await expect(store.hset("42", "name", "benni")).resolves.toBe(1);
+    await expect(store.hget("42", "name")).resolves.toBe("benni");
     await expect(store.hdel("42", "name")).resolves.toBe(1);
     await expect(store.hexists("42", "score")).resolves.toBe(true);
     await expect(store.hincrby("42", "score", 1)).resolves.toBe(43);
 
     expect(commands).toEqual([
-      ["HSET", "user:42", "name", "beni"],
+      ["HSET", "user:42", "name", "benni"],
       ["HGET", "user:42", "name"],
       ["HDEL", "user:42", "name"],
       ["HEXISTS", "user:42", "score"],
@@ -846,10 +846,10 @@ describe("createHashStore", () => {
     });
     const store = createHashStore(fakeClient(commands, [2, 1]), users);
 
-    await store.hset("42", { name: "beni", score: 42 }, { ttlSeconds: 60 });
+    await store.hset("42", { name: "benni", score: 42 }, { ttlSeconds: 60 });
 
     expect(commands).toEqual([
-      ["HSET", "user:42", "name", "beni", "score", "42"],
+      ["HSET", "user:42", "name", "benni", "score", "42"],
       ["EXPIRE", "user:42", 60]
     ]);
   });
@@ -873,7 +873,7 @@ describe("createHashStore", () => {
 
     await expect(
       createHashStore(fakeClient([], ["OK"]), users).hset("42", {
-        name: "beni"
+        name: "benni"
       })
     ).rejects.toThrow(TypeError);
 
@@ -893,7 +893,7 @@ describe("createHashStore", () => {
     });
 
     await expect(
-      createHashStore(fakeClient([], ["1"]), users).hset("42", "name", "beni")
+      createHashStore(fakeClient([], ["1"]), users).hset("42", "name", "benni")
     ).rejects.toThrow(TypeError);
     await expect(
       createHashStore(fakeClient([], [1]), users).hget("42", "name")

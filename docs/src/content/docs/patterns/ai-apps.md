@@ -3,14 +3,14 @@ title: "AI Apps"
 description: "Redis recipes for LLM apps: chat memory on streams, token budgets, response caching by prompt hash, and resumable generations, fully typed."
 ---
 
-LLM backends are state-heavy: conversation history, per-user budgets, response caches, in-flight generation tracking. Redis is the natural home for all of it, and every recipe on this page is fully typed end to end. They all assume the client binding from the [Quick Start](/beni/getting-started/quick-start/), and every one of them (streams, counters, and all three primitives) runs unchanged on the [edge adapter](/beni/runtime/edge/).
+LLM backends are state-heavy: conversation history, per-user budgets, response caches, in-flight generation tracking. Redis is the natural home for all of it, and every recipe on this page is fully typed end to end. They all assume the client binding from the [Quick Start](/benni/getting-started/quick-start/), and every one of them (streams, counters, and all three primitives) runs unchanged on the [edge adapter](/benni/runtime/edge/).
 
 ## Chat Memory On A Stream
 
 A conversation is an append-only log, which is exactly what a Redis stream is: ordered entries with stable IDs, one stream per conversation id. Trimming on write with `maxLen` keeps memory bounded per conversation: no cron job, no unbounded keys.
 
 ```ts
-import { enumOf, stream, string } from "beni/schema";
+import { enumOf, stream, string } from "benni/schema";
 
 export const chat = stream("chat", {
   role: enumOf(["user", "assistant", "system"]),
@@ -55,15 +55,15 @@ Entry values are `Partial` because Redis does not enforce stream entry shapes; t
 await redis.stream(chat).expire(conversationId, 60 * 60 * 24 * 30); // 30 days
 ```
 
-In production, size `maxLen` to your model's context budget, not your UI's history length, and remember `approximate: true` trims in whole macro nodes, so the stream may briefly hold a few more entries than the count. See [Streams](/beni/data-structures/streams/) for the full store API.
+In production, size `maxLen` to your model's context budget, not your UI's history length, and remember `approximate: true` trims in whole macro nodes, so the stream may briefly hold a few more entries than the count. See [Streams](/benni/data-structures/streams/) for the full store API.
 
 ## Token Budgets For LLM Endpoints
 
-Requests-per-minute alone does not protect an LLM endpoint: twenty small requests and twenty 100k-token requests cost wildly different amounts. Layer two checks: a sliding-window request limit via the [`ratelimit` primitive](/beni/primitives/ratelimit/), and a daily token budget in a plain counter keyed by user and date.
+Requests-per-minute alone does not protect an LLM endpoint: twenty small requests and twenty 100k-token requests cost wildly different amounts. Layer two checks: a sliding-window request limit via the [`ratelimit` primitive](/benni/primitives/ratelimit/), and a daily token budget in a plain counter keyed by user and date.
 
 ```ts
-import { kv, number } from "beni/schema";
-import { ratelimit } from "beni/primitives";
+import { kv, number } from "benni/schema";
+import { ratelimit } from "benni/primitives";
 
 export const dailyTokens = kv("tokens", number());
 
@@ -111,10 +111,10 @@ The sliding window matters here: a fixed window resets all at once, so a caller 
 
 ## Cache Responses By Prompt Hash
 
-Identical prompts arrive in bursts (the same trending question, the same retried classification), and every duplicate model call costs real money and seconds of latency. The [`cache` primitive](/beni/primitives/cache/) is single-flight: on a miss, exactly one caller runs the loader while concurrent identical prompts wait for the filled value, so a burst of the same prompt becomes one model call. Key it by a SHA-256 over everything that determines the output: model, system prompt, and user input.
+Identical prompts arrive in bursts (the same trending question, the same retried classification), and every duplicate model call costs real money and seconds of latency. The [`cache` primitive](/benni/primitives/cache/) is single-flight: on a miss, exactly one caller runs the loader while concurrent identical prompts wait for the filled value, so a burst of the same prompt becomes one model call. Key it by a SHA-256 over everything that determines the output: model, system prompt, and user input.
 
 ```ts
-import { cache } from "beni/primitives";
+import { cache } from "benni/primitives";
 
 const responses = cache<string>(client, {
   ttlMs: 24 * 60 * 60 * 1000,
@@ -147,7 +147,7 @@ Only cache calls that are deterministic enough to reuse: classification, extract
 
 Streamed responses die with the connection: a mobile client drops mid-generation and has to start (and you have to pay) from scratch. Append chunks to a stream as the model produces them, and a reconnecting client replays everything after the last entry ID it saw.
 
-If the generation should also survive the *server* going away (a deploy, a crash, a serverless invocation timing out), reach for the [`queue` primitive](/beni/primitives/queue/) instead. It runs the generation on a worker, gives every job this same resumable stream, and adds the lifecycle this recipe leaves to you: retries, cancellation, and dead-lettering.
+If the generation should also survive the *server* going away (a deploy, a crash, a serverless invocation timing out), reach for the [`queue` primitive](/benni/primitives/queue/) instead. It runs the generation on a worker, gives every job this same resumable stream, and adds the lifecycle this recipe leaves to you: retries, cancellation, and dead-lettering.
 
 ```ts
 export const generation = stream("generation", { chunk: string() });
@@ -162,12 +162,12 @@ await redis.stream(generation).expire(generationId, 60 * 60);
 const missed = await redis.stream(generation).xread(generationId, lastSeenEntryId);
 ```
 
-`xread` returns entries newer than the given ID (use `"0"` for a full replay). On a long-lived server, a [session](/beni/advanced/sessions/)'s blocking `xread` with `{ timeoutSeconds }` turns the replay loop into a live tail. Writing one entry per token is chatty, so batch a few chunks per `xadd` under load. See [Streams](/beni/data-structures/streams/) for ranges, trimming, and consumer groups.
+`xread` returns entries newer than the given ID (use `"0"` for a full replay). On a long-lived server, a [session](/benni/advanced/sessions/)'s blocking `xread` with `{ timeoutSeconds }` turns the replay loop into a live tail. Writing one entry per token is chatty, so batch a few chunks per `xadd` under load. See [Streams](/benni/data-structures/streams/) for ranges, trimming, and consumer groups.
 
-Use a stream, not [Pub/Sub](/beni/data-structures/pubsub/), for anything a client might reconnect to: Pub/Sub is fire-and-forget, so chunks published while the client was offline are simply gone. Pub/Sub earns its place when you need *live fan-out* to several watchers of the same generation (a shared session, an ops dashboard), and each one only cares about what arrives from now on. That subscriber side needs a held connection, so it runs on Node or Bun rather than the edge, and `stream()` makes it a plain loop you can pipe into an SSE response:
+Use a stream, not [Pub/Sub](/benni/data-structures/pubsub/), for anything a client might reconnect to: Pub/Sub is fire-and-forget, so chunks published while the client was offline are simply gone. Pub/Sub earns its place when you need *live fan-out* to several watchers of the same generation (a shared session, an ops dashboard), and each one only cares about what arrives from now on. That subscriber side needs a held connection, so it runs on Node or Bun rather than the edge, and `stream()` makes it a plain loop you can pipe into an SSE response:
 
 ```ts
-import { channel, json } from "beni/schema";
+import { channel, json } from "benni/schema";
 
 export const generationFeed = channel("feed:generation", json<{ chunk: string }>());
 
@@ -184,12 +184,12 @@ Publishing is one stateless `PUBLISH`, so the producer side of that fan-out stil
 
 ## Deduplicate In-Flight Generations
 
-Retries and double-clicks are the other way to pay twice for one answer. Wrap the generation in the [`lock` primitive](/beni/primitives/lock/) keyed by a client-supplied request ID: the first request generates, and any duplicate that arrives while it is running gets a `409` instead of a second model call.
+Retries and double-clicks are the other way to pay twice for one answer. Wrap the generation in the [`lock` primitive](/benni/primitives/lock/) keyed by a client-supplied request ID: the first request generates, and any duplicate that arrives while it is running gets a `409` instead of a second model call.
 
-For a queued generation, prefer the [`queue` primitive](/beni/primitives/queue/)'s `idempotencyKey`, which returns the *original job* rather than a `409`, so the duplicate request can watch or await the answer the first one is already producing.
+For a queued generation, prefer the [`queue` primitive](/benni/primitives/queue/)'s `idempotencyKey`, which returns the *original job* rather than a `409`, so the duplicate request can watch or await the answer the first one is already producing.
 
 ```ts
-import { lock, LockNotAcquiredError } from "beni/primitives";
+import { lock, LockNotAcquiredError } from "benni/primitives";
 
 const generating = lock(client, { ttlMs: 60_000, prefix: "generating" });
 
@@ -210,4 +210,4 @@ Set `ttlMs` above your worst-case generation time (or `extend()` the handle for 
 
 ## Works Everywhere
 
-Everything on this page (streams, counters, `ratelimit`, `cache`, and `lock`) runs on the same typed API across Node, Bun, and Deno, and over [`beni/upstash`](/beni/runtime/edge/) on Cloudflare Workers, Vercel Edge, and Deno Deploy. The one exception is blocking stream reads, which need a persistent connection; the polling `xread` shown here works on every adapter.
+Everything on this page (streams, counters, `ratelimit`, `cache`, and `lock`) runs on the same typed API across Node, Bun, and Deno, and over [`benni/upstash`](/benni/runtime/edge/) on Cloudflare Workers, Vercel Edge, and Deno Deploy. The one exception is blocking stream reads, which need a persistent connection; the polling `xread` shown here works on every adapter.

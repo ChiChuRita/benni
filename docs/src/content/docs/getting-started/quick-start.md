@@ -5,17 +5,17 @@ description: "Declare two Redis key families, bind a client, and read your own t
 
 This example defines two Redis key families: one hash for user metadata and one JSON key-value store for full profiles.
 
-First install Beni and the Node client (see [Installation](/beni/getting-started/installation/) for other runtimes):
+First install Benni and the Node client (see [Installation](/benni/getting-started/installation/) for other runtimes):
 
 ```sh
-pnpm add beni redis
+pnpm add benni redis
 ```
 
 ## Define Schemas
 
 ```ts
 // schema.ts
-import { hash, json, kv, number, string } from "beni/schema";
+import { hash, json, kv, number, string } from "benni/schema";
 
 type UserProfile = {
   name: string;
@@ -36,26 +36,26 @@ Schemas are plain TypeScript values. They do not create Redis keys or require mi
 
 ```ts
 // redis.ts
-import { beni } from "beni";
-import { node } from "beni/node";
+import { benni } from "benni";
+import { node } from "benni/node";
 import * as schema from "./schema";
 
 const client = await node({
   url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
 });
 
-export const redis = beni(client, { schema });
+export const redis = benni(client, { schema });
 ```
 
-To pass the bound handle around, type it with the exported `Beni<TSchema>`:
+To pass the bound handle around, type it with the exported `Benni<TSchema>`:
 
 ```ts
-import type { Beni } from "beni";
+import type { Benni } from "benni";
 
-export function makeHandlers(redis: Beni<typeof schema>) { /* ... */ }
+export function makeHandlers(redis: Benni<typeof schema>) { /* ... */ }
 ```
 
-Every accessor the handle exposes is listed in the [Beni Client reference](/beni/api/beni-client/). The client owns a connection, so close it when your process or test finishes, otherwise Node never exits:
+Every accessor the handle exposes is listed in the [Benni Client reference](/benni/api/benni-client/). The client owns a connection, so close it when your process or test finishes, otherwise Node never exits:
 
 ```ts
 await client.close();
@@ -84,7 +84,7 @@ await redis.query.profiles.set(
 );
 ```
 
-The explicit `redis.hash(schema)` accessors remain available and return the same store; see the [Schema Registry](/beni/core-concepts/schema-registry/).
+The explicit `redis.hash(schema)` accessors remain available and return the same store; see the [Schema Registry](/benni/core-concepts/schema-registry/).
 
 ## Drop To Redis
 

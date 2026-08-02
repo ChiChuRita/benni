@@ -4,7 +4,7 @@
 
 ### Minor Changes
 
-- 3c07e16: Add `queue` to `beni/primitives` — a job queue built for AI work.
+- 3c07e16: Add `queue` to `benni/primitives` — a job queue built for AI work.
 
   Model calls run for minutes, stream their output, cost money per attempt, and
   get cancelled mid-flight. `queue` treats those as the design rather than as
@@ -30,12 +30,12 @@
   Job lifecycle lives in sorted sets (delays, priority, backoff, dead-lettering);
   streams carry output. Every key shares one hash tag, so a queue occupies a
   single Redis Cluster slot. `enqueue`/`get`/`cancel`/`wait`/`watch`/`stats` need
-  only `EVALSHA` and stream reads and run on `beni/upstash` at the edge;
+  only `EVALSHA` and stream reads and run on `benni/upstash` at the edge;
   `worker()` needs a persistent process and blocks on a doorbell list where the
   adapter provides a dedicated connection, falling back to polling where it does
   not.
 
-- 4887dfc: Add three primitives to `beni/primitives`: `budget`, `semaphore`, and `idempotency`.
+- 4887dfc: Add three primitives to `benni/primitives`: `budget`, `semaphore`, and `idempotency`.
 
   These came out of auditing the existing primitives against what people actually install. `queue` and `lock` hold up, `cache` is narrow but sound, and `ratelimit` was a strict subset of @upstash/ratelimit and rate-limiter-flexible. Rather than chase their feature lists and ship a worse clone, we went after gaps nobody fills.
 
@@ -66,11 +66,11 @@
 
   Amounts in `budget` must be whole numbers, since the counters underneath are Redis integers; budget in the smallest unit you meter.
 
-  All three take their time from the Redis server rather than the caller, work over every adapter including `beni/upstash`, and are cluster-safe by construction. Their concurrency guarantees are proved against a live server, not a fake client: 50 concurrent `semaphore` runs never exceed the limit, 20 concurrent `reserve` calls admit exactly the number that fit, and 10 concurrent `idempotency` calls run the handler once.
+  All three take their time from the Redis server rather than the caller, work over every adapter including `benni/upstash`, and are cluster-safe by construction. Their concurrency guarantees are proved against a live server, not a fake client: 50 concurrent `semaphore` runs never exceed the limit, 20 concurrent `reserve` calls admit exactly the number that fit, and 10 concurrent `idempotency` calls run the handler once.
 
 - f40bdac: Add cluster-safe keys: declare where a schema puts its Redis Cluster hash tag, and catch cross-slot mistakes at compile time and before they are sent.
 
-  Beni models slot co-location, not cluster topology. Routing stays your driver's job (pass `createCluster()` or an ioredis `Cluster`). What no driver can do is know, before you send, that a command's keys belong together, and Beni is the only TypeScript client positioned to: keys come from schemas rather than string concatenation.
+  Benni models slot co-location, not cluster topology. Routing stays your driver's job (pass `createCluster()` or an ioredis `Cluster`). What no driver can do is know, before you send, that a command's keys belong together, and Benni is the only TypeScript client positioned to: keys come from schemas rather than string concatenation.
 
   Every keyed schema factory now takes an opt-in `hashTag` option. Omitting it leaves today's `prefix:id` layout and behaviour byte-for-byte unchanged.
 
@@ -88,19 +88,19 @@
   });
   ```
 
-  A passing check means "no provable conflict", not "provably co-located": untagged keys and keys built from runtime ids pass silently. For those, install the runtime guard from the new `beni/cluster` entry:
+  A passing check means "no provable conflict", not "provably co-located": untagged keys and keys built from runtime ids pass silently. For those, install the runtime guard from the new `benni/cluster` entry:
 
   ```ts
-  import { assertSameSlot } from "beni/cluster";
+  import { assertSameSlot } from "benni/cluster";
 
-  const redis = beni(client, { cluster: assertSameSlot });
+  const redis = benni(client, { cluster: assertSameSlot });
   ```
 
   It verifies every multi-key command before it is sent and throws `CrossSlotError` naming both keys, both slots, and the layout that fixes it. Off by default, because cross-slot commands are legal on a single-node Redis; turn it on in development and CI.
 
-  You pass the checker rather than `true` for a reason worth stating: `beni()` has to reference the guard to install it, so a boolean would mean the root entry names it and no bundler could drop it, putting the CRC16 table and the error's fix-hint prose in every app that never turns the check on. Taking it as a value keeps all of that in `beni/cluster`, which is about 1.4 KB gzipped, roughly 15% of the default root entry. When the guard is absent each check is an optional call on an undefined function, which short-circuits argument evaluation, so the key arrays are never even built.
+  You pass the checker rather than `true` for a reason worth stating: `benni()` has to reference the guard to install it, so a boolean would mean the root entry names it and no bundler could drop it, putting the CRC16 table and the error's fix-hint prose in every app that never turns the check on. Taking it as a value keeps all of that in `benni/cluster`, which is about 1.4 KB gzipped, roughly 15% of the default root entry. When the guard is absent each check is an optional call on an undefined function, which short-circuits argument evaluation, so the key arrays are never even built.
 
-  `beni/cluster` also exports `slotOf` and `hashTagOf`, verified against a live cluster-enabled Redis for every generated key.
+  `benni/cluster` also exports `slotOf` and `hashTagOf`, verified against a live cluster-enabled Redis for every generated key.
 
 - f9f76f1: Fix four correctness bugs in `budget`, and bound the reservation set.
 
@@ -133,11 +133,11 @@
   or a call that used to succeed silently: the `lpos` and `script` overload
   changes below, and the new schema-definition and reply checks.
 
-  `beni()` no longer refuses to bind a schema module that co-exports a validator.
-  Any object carrying a `kind` property used to be claimed as a beni schema and
+  `benni()` no longer refuses to bind a schema module that co-exports a validator.
+  Any object carrying a `kind` property used to be claimed as a benni schema and
   crash at bind time, which hit every module declaring a Valibot schema or an
-  ArkType type next to its beni schemas, the layout `json(validator)` invites.
-  The store binding decides now, and a copied beni schema still fails loudly and
+  ArkType type next to its benni schemas, the layout `json(validator)` invites.
+  The store binding decides now, and a copied benni schema still fails loudly and
   names the export.
 
   A `hashTag: "id"` prefix containing `{` is rejected when the schema is defined.
@@ -150,7 +150,7 @@
   side already refused unsafe integers; the read side now matches.
 
   A script that returns its own `NOSCRIPT`-coded error is no longer mistaken for
-  a server-side cache miss and re-run. Beni confirms with `SCRIPT EXISTS` before
+  a server-side cache miss and re-run. Benni confirms with `SCRIPT EXISTS` before
   reloading a cached SHA, so a script's side effects are not applied twice.
 
   `script()` no longer accepts a forwarded or computed `nullable`, and `lpos()`
@@ -165,7 +165,7 @@
   is what Redis does. Chunked reads of non-ASCII values must split on byte
   boundaries.
 
-- b15f448: Close a set of correctness and safety holes in the `beni/hono` middleware, and add session id rotation.
+- b15f448: Close a set of correctness and safety holes in the `benni/hono` middleware, and add session id rotation.
 
   `cache()` no longer stores a response that was derived from the session identity. The touched-tracking that keeps a per-user response out of a shared cache only fired on `get`/`set`/`delete`/`clear`, so a handler that returned something built from `session.id` or `session.isNew` slipped past it. A live session id was then stored under a session-independent key and replayed to every later visitor, who could send it back as their own cookie. Reading the bag at all now counts, whether you reach it through `getSession(c)` or `c.get("session")`.
 
@@ -191,8 +191,8 @@
 
   `RetryJobError` now rejects a non-finite `retryAfterMs`, such as an unparsable `Retry-After` header. Redis refused it as a score only after the retry script had already released the lease, which left the job outside every lifecycle index with nothing able to reserve it.
 
-- b15f448: The rate-limit subject is now a required option: `key` on `ratelimit` from `beni/hono`, and
-  `identify` on `rateLimit` from `beni/next`. Both previously defaulted to the first
+- b15f448: The rate-limit subject is now a required option: `key` on `ratelimit` from `benni/hono`, and
+  `identify` on `rateLimit` from `benni/next`. Both previously defaulted to the first
   `x-forwarded-for` hop (with `cf-connecting-ip` and `"anonymous"` behind it on Hono).
 
   That default was unsafe. There is no request property a limiter can trust without knowing the
@@ -204,39 +204,39 @@
   To keep the old behaviour where your platform genuinely overwrites the header, pass it yourself:
 
   ```ts
-  // beni/next
+  // benni/next
   identify: (request) =>
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     "anonymous";
 
-  // beni/hono
+  // benni/hono
   key: (c) =>
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous";
   ```
 
-- 72324a3: First Beni release: the end-to-end typed Redis client for TypeScript.
+- 72324a3: First Benni release: the end-to-end typed Redis client for TypeScript.
   Declare schemas once, bind a client, and replies come back as your types —
   across Node, Bun, Deno, and the edge. Ships typed data structures (KV, hashes,
   lists, sets, sorted sets, streams, geo, bitmaps, HyperLogLog), transactions,
   sessions, typed Lua scripts, Pub/Sub, scans, the `lock`/`ratelimit`/`cache`
   primitives, and Next.js/Hono/Zod integrations.
-- fa2a28c: Add `beni/ioredis` — a full adapter for [ioredis](https://www.npmjs.com/package/ioredis), the most widely deployed Redis client for Node.
+- fa2a28c: Add `benni/ioredis` — a full adapter for [ioredis](https://www.npmjs.com/package/ioredis), the most widely deployed Redis client for Node.
 
-  Until now Beni's Node story required node-redis, so trying it meant migrating your
+  Until now Benni's Node story required node-redis, so trying it meant migrating your
   data layer _and_ your Redis client. This removes the second migration. It accepts
   a URL, ioredis options, or — the point — an ioredis instance you already have:
 
   ```ts
   import Redis from "ioredis";
-  import { ioredis } from "beni/ioredis";
+  import { ioredis } from "benni/ioredis";
 
   const existing = new Redis(process.env.REDIS_URL); // yours, already tuned
   const client = await ioredis(existing);
   ```
 
   An adopted client is borrowed: `close()` reaps the sessions and subscriber
-  connections Beni leased from it and leaves the client itself open, because the
-  caller still owns its lifetime. Beni also attaches an `"error"` listener only to
+  connections Benni leased from it and leaves the client itself open, because the
+  caller still owns its lifetime. Benni also attaches an `"error"` listener only to
   clients it creates, so it never swallows errors on a client it does not own.
 
   The adapter passes the shared client-contract suite in full — sessions with
@@ -253,14 +253,14 @@
 
 - f40bdac: Make the root entry tree-shakable — a kv-only app drops from 13.9 kB to 4.2 kB gzip.
 
-  `beni()` used to dispatch with a `switch (schema.kind)` that named all twelve
+  `benni()` used to dispatch with a `switch (schema.kind)` that named all twelve
   store factories, and `createStoreAccessors` / the session facade named them
   again. Every one of those is a static reference, so a bundler had to retain
   sorted-set, stream, geo, bitmap and the rest even for an app that declares a
   single hash. The cost was flat: 13.9 kB gzip no matter what you used.
 
   Each schema now carries its own store factory on a non-enumerable symbol,
-  stamped by the `define*` builder in that kind's own module. `beni()` dispatches
+  stamped by the `define*` builder in that kind's own module. `benni()` dispatches
   through the schema and names no store at all, so the only store code a bundle
   retains is the kinds the app actually declares. The pub/sub hub and the script
   runner became lazy for the same reason — an app with no channel never pulls in
@@ -270,43 +270,43 @@
 
   | app                              | before  | after   |
   | -------------------------------- | ------- | ------- |
-  | `beni` + kv only                 | 13.9 kB | 4.2 kB  |
-  | `beni/upstash` + one hash schema | 15.2 kB | 7.0 kB  |
+  | `benni` + kv only                 | 13.9 kB | 4.2 kB  |
+  | `benni/upstash` + one hash schema | 15.2 kB | 7.0 kB  |
   | three kinds (hash + zset + list) | 15.2 kB | 10.2 kB |
 
   **The public API is unchanged.** `redis.query.<name>`, `redis.hash(schema)`,
-  the session accessors, `QueryResource`, `Beni<typeof schema>` — same
+  the session accessors, `QueryResource`, `Benni<typeof schema>` — same
   signatures, same inferred types, verified by the existing type-level tests.
 
   **One behavior change.** Schemas are no longer plain data: a copy that drops
   the symbol (object spread, `structuredClone`, a JSON round-trip) is no longer
   usable. Passing one now throws a `TypeError` naming the offending export, at
-  `beni()` bind time rather than at first call. Pass the schema object the
+  `benni()` bind time rather than at first call. Pass the schema object the
   builder returned.
 
 ### Patch Changes
 
 - f40bdac: Fix two key layouts that were broken or wasteful on a Redis Cluster.
 
-  **`beni/next`** — `revalidateTag` deleted cache entries and their tag sets in one `DEL`, but the keys carried no hash tag, so the command was `CROSSSLOT` and the handler simply did not work on a cluster. Every key is now tagged into one slot (`{next-cache}:entry:…`, `{next-cache}:tag:…`). That `DEL` was also unbounded: a popular tag naming tens of thousands of entries produced a multi-megabyte command that blocks the server, so it is now chunked at 500 keys, entries before tag sets (a crash midway then leaves a tag pointing at deleted entries, which is self-healing, rather than entries with no tag, which can never be revalidated).
+  **`benni/next`** — `revalidateTag` deleted cache entries and their tag sets in one `DEL`, but the keys carried no hash tag, so the command was `CROSSSLOT` and the handler simply did not work on a cluster. Every key is now tagged into one slot (`{next-cache}:entry:…`, `{next-cache}:tag:…`). That `DEL` was also unbounded: a popular tag naming tens of thousands of entries produced a multi-megabyte command that blocks the server, so it is now chunked at 500 keys, entries before tag sets (a crash midway then leaves a tag pointing at deleted entries, which is self-healing, rather than entries with no tag, which can never be revalidated).
 
-  **`beni/primitives`** — a cache entry and its own fill lock were `cache:<id>` and `cache:lock:<id>`, which hash to different slots: two nodes per miss, with the single-flight guarantee spread across them. The id now carries the tag (`cache:{<id>}` and `cache:lock:{<id>}`), so the pair is always co-located while the cache itself still spreads across the keyspace. Tagging the prefix instead would have pinned every entry to one node, which defeats the point of a cache.
+  **`benni/primitives`** — a cache entry and its own fill lock were `cache:<id>` and `cache:lock:<id>`, which hash to different slots: two nodes per miss, with the single-flight guarantee spread across them. The id now carries the tag (`cache:{<id>}` and `cache:lock:{<id>}`), so the pair is always co-located while the cache itself still spreads across the keyspace. Tagging the prefix instead would have pinned every entry to one node, which defeats the point of a cache.
 
   Both are key renames, so existing entries are orphaned on upgrade. Both are TTL'd, so the impact is one cold window.
 
 - 442ea9f: Fix five connection-lifetime bugs in the TCP adapters.
 
-  `beni/bun` no longer strands a reconnect loop when the very first connect fails: an unreachable server now rejects in milliseconds instead of after half a minute, and the process exits instead of being pinned forever by a client Bun gives you no way to cancel.
+  `benni/bun` no longer strands a reconnect loop when the very first connect fails: an unreachable server now rejects in milliseconds instead of after half a minute, and the process exits instead of being pinned forever by a client Bun gives you no way to cancel.
 
   All three TCP adapters now treat `close()` as final. A session or subscriber whose connect was still in flight when `close()` ran, or one leased after it, used to come back live and untracked, leaking a socket that in Node keeps the event loop alive through a "graceful" shutdown. Both cases now reject with "client is closed".
 
-  `beni/node`'s `close()` is idempotent, matching every other adapter, so a SIGTERM and a SIGINT handler that both close the client no longer produce an unhandled rejection mid-shutdown. It also force-releases the socket, which a graceful close during a reconnect could otherwise leave behind.
+  `benni/node`'s `close()` is idempotent, matching every other adapter, so a SIGTERM and a SIGINT handler that both close the client no longer produce an unhandled rejection mid-shutdown. It also force-releases the socket, which a graceful close during a reconnect could otherwise leave behind.
 
-  A `beni/node` subscriber now reports `closed` once its connection is terminally gone, so core drops the dead lease instead of reusing it for the next subscribe.
+  A `benni/node` subscriber now reports `closed` once its connection is terminally gone, so core drops the dead lease instead of reusing it for the next subscribe.
 
   A session leased from an adopted ioredis `Cluster` is finally fail-fast. Cluster takes different retry options than a standalone client, so the fail-fast settings were silently ignored and a dropped session reconnected with its `WATCH` state gone while still reporting itself open.
 
-  `beni/ioredis`'s `send()` now returns the same reply shape as the other adapters when you write a command name in lowercase. `send(["hgetall", key])` hit ioredis's reply transformers and came back as a plain object instead of the flat array everywhere else.
+  `benni/ioredis`'s `send()` now returns the same reply shape as the other adapters when you write a command name in lowercase. `send(["hgetall", key])` hit ioredis's reply transformers and came back as a plain object instead of the flat array everywhere else.
 
 - f9f76f1: Fix `cache` losing an invalidation to a load that was already running. A loader now publishes only while it still holds the fill lock, and `del()` drops the entry and that lock together, so the usual write-through order (update the row, then invalidate) can no longer be undone by a loader republishing its pre-invalidation snapshot for a full TTL. The same fence stops a loader whose lock has expired from overwriting a newer entry.
 
@@ -346,7 +346,7 @@
 
   `hsetex` now rejects a field whose value is `undefined` instead of storing `"undefined"` or `false`, and `hgetex` now rejects an expiry passed with an empty field list instead of dropping it silently.
 
-- b15f448: Fix `beni/next` cache-handler tag sets never getting an expiry. The handler
+- b15f448: Fix `benni/next` cache-handler tag sets never getting an expiry. The handler
   extended a tag set's TTL with `EXPIRE ... GT`, which Redis refuses to apply to
   a key that has no expiry yet, so the set the preceding `SADD` had just created
   stayed permanent: it accumulated every key ever written under that tag, kept
@@ -409,7 +409,7 @@
   non-nullable. The read now dispatches on the `after` value rather than the
   presence of the key: `undefined` reads `>`, an entry id reads history.
 
-- eb65011: Harden the `beni/zod` codecs so they fail at the write instead of storing something unrecoverable.
+- eb65011: Harden the `benni/zod` codecs so they fail at the write instead of storing something unrecoverable.
 
   `zodJson` now shares the same stringify guard as the plain `json()` codec. Previously a `NaN` or `Infinity` anywhere in the value was written as JSON `null`, which reads back as the exact sentinel a missing key returns, so a written key became indistinguishable from an absent one. Non-finite numbers, `BigInt` fields, and circular structures now throw `ValidationError` before anything is sent.
 
@@ -417,29 +417,29 @@
 
   `zodCodec` now checks that the schema actually encoded to a string. `z.any()` satisfies the "encoded side is a string" type constraint without checking anything, so writes through it landed in Redis as `[object Object]` with no error anywhere.
 
-  The async-schema docs are corrected too: an async refinement that rejects leaves an unhandled rejection zod discards internally, which Beni has no way to claim.
+  The async-schema docs are corrected too: an async refinement that rejects leaves an unhandled rejection zod discards internally, which Benni has no way to claim.
 
 - 68574b7: Fix a clock-skew bug in `ratelimit`, and add `retryAfterMs` to its result.
 
   The sliding-window script took `now` from the calling process. Two app servers whose clocks disagree therefore disagreed about where the window starts, and the same user got a different limit depending on which server answered: a server running fast expires entries early and admits too many, one running slow rejects requests that should pass. The script now reads `TIME` from Redis, so every caller shares one clock. Nothing about the API changes.
 
-  `RatelimitResult` gains `retryAfterMs`, a duration derived server-side from the same clock as `resetMs`. `resetMs` is an absolute server timestamp, so turning it into a `Retry-After` header meant differencing it against the local clock, reintroducing exactly the skew that was just removed. `beni/next` and `beni/hono` now use the new field for their `Retry-After` headers.
+  `RatelimitResult` gains `retryAfterMs`, a duration derived server-side from the same clock as `resetMs`. `resetMs` is an absolute server timestamp, so turning it into a `Retry-After` header meant differencing it against the local clock, reintroducing exactly the skew that was just removed. `benni/next` and `benni/hono` now use the new field for their `Retry-After` headers.
 
-Notable user-facing changes to Beni are documented here. This project uses
+Notable user-facing changes to Benni are documented here. This project uses
 [Changesets](https://github.com/changesets/changesets) to prepare releases.
 
 ## Unreleased
 
 - Schema-first typed Redis client: declare schemas as plain TypeScript values
-  (`beni/schema`), bind a client once with `beni(client, { schema })`,
+  (`benni/schema`), bind a client once with `benni(client, { schema })`,
   and every read decodes back to your declared type.
 - Typed data structures: strings/KV, counters, hashes (including Redis 8
   `hsetex`/`hgetex`/`hgetdel` and hash-field TTLs), lists, sets, sorted sets,
   streams and consumer groups, geo, bitmaps (with a typed `BITFIELD` builder),
   and HyperLogLog.
-- Runtime adapters: `beni/node` (node-redis, optional peer dependency),
-  `beni/bun` (Bun's built-in client), Deno via `npm:redis`, and
-  `beni/upstash`, a zero-dependency HTTP adapter for edge and serverless.
+- Runtime adapters: `benni/node` (node-redis, optional peer dependency),
+  `benni/bun` (Bun's built-in client), Deno via `npm:redis`, and
+  `benni/upstash`, a zero-dependency HTTP adapter for edge and serverless.
 - Transactions and sessions: typed `MULTI`/`EXEC` tuples via `redis.multi()`,
   connection-holding sessions with blocking commands, and `redis.watch()` for
   retrying optimistic transactions.
@@ -451,7 +451,7 @@ Notable user-facing changes to Beni are documented here. This project uses
   per name however many handlers you attach), and closes it when the last
   subscription is unsubscribed. `redis.pubsub.close()` drops everything at once.
   Publishing always rides the bound client, so it works on every adapter including
-  `beni/upstash` on the edge.
+  `benni/upstash` on the edge.
 - Pub/Sub subscriptions can also be consumed as async iterators:
   `redis.pubsub.channel(userEvents).stream({ signal })` yields decoded messages and
   `redis.pubsub.pattern(userEventPattern).stream({ signal })` yields `{ message, channel }`.
@@ -460,25 +460,25 @@ Notable user-facing changes to Beni are documented here. This project uses
 - Adapters advertise Pub/Sub support with a new optional `subscriber?()` method on the
   `RedisClient` contract, the counterpart to `session?()`; `RedisSubscriber` is
   exported from the root entrypoint alongside it. An adapter that cannot hold a
-  connection (`beni/upstash`) omits it, and subscribing throws `TypeError` at call
+  connection (`benni/upstash`) omits it, and subscribing throws `TypeError` at call
   time. `psubscribe`/`punsubscribe` are optional in turn: the Bun subscriber omits
   them because Bun 1.3.14's `psubscribe` hangs upstream, so pattern subscribes throw
   `TypeError` on Bun instead of deadlocking.
-- `BeniOptions` gained `onPubSubError(error)`, called when a Pub/Sub handler throws or
+- `BenniOptions` gained `onPubSubError(error)`, called when a Pub/Sub handler throws or
   rejects; delivery to the other handlers continues either way, and without the
   callback the error is rethrown asynchronously rather than swallowed.
-- **Breaking (pre-release):** the `pubsub` option on `beni(client, { ... })` is gone,
-  as are the standalone `pubsub()` factory from `beni/node` and `bun.pubsub` from
-  `beni/bun`. `bun` is now just the client function. Delete the adapter and its
+- **Breaking (pre-release):** the `pubsub` option on `benni(client, { ... })` is gone,
+  as are the standalone `pubsub()` factory from `benni/node` and `bun.pubsub` from
+  `benni/bun`. `bun` is now just the client function. Delete the adapter and its
   option; subscribing works off the bound client.
-- `beni/primitives`: a correct distributed lock, a sliding-window rate
+- `benni/primitives`: a correct distributed lock, a sliding-window rate
   limiter, and a stampede-proof read-through cache.
-- Integrations: `beni/next` (ISR `cacheHandler` and rate-limit helper),
-  `beni/hono` (rate-limit, cache, and session middleware), and
-  `beni/zod` (bidirectional Zod codecs); any Standard Schema validator
+- Integrations: `benni/next` (ISR `cacheHandler` and rate-limit helper),
+  `benni/hono` (rate-limit, cache, and session middleware), and
+  `benni/zod` (bidirectional Zod codecs); any Standard Schema validator
   works with `json(schema)`.
 - Server compatibility: Redis 7.2 through 8, Valkey 8, and Dragonfly, with the
   per-version surface documented in the README.
-- The Hono cache middleware reports hits on the `X-Beni-Cache` response header.
+- The Hono cache middleware reports hits on the `X-Benni-Cache` response header.
   If you tracked this during pre-release development it was previously
   `X-Redtype-Cache`.

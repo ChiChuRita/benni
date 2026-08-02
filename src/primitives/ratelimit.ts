@@ -97,7 +97,7 @@ export type RatelimitResult = {
 
 /**
  * A sliding-window rate limiter. Each `check(id)` is one atomic Lua round trip.
- * Works over any adapter, including `beni/upstash` on the edge.
+ * Works over any adapter, including `benni/upstash` on the edge.
  *
  * ```ts
  * const limiter = ratelimit(client, { limit: 10, windowMs: 60_000 });

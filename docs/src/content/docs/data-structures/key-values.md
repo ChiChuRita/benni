@@ -8,7 +8,7 @@ Use key-value schemas when one Redis key stores one scalar or serialized value.
 ## Define A Key-Value Schema
 
 ```ts
-import { json, kv } from "beni/schema";
+import { json, kv } from "benni/schema";
 
 type UserProfile = {
   name: string;

@@ -23,7 +23,7 @@ declare const scriptArgsBrand: unique symbol;
  * keys, and how to decode its reply. `TArgs` is a phantom brand, so a script
  * built for one argument tuple cannot be run with another.
  *
- * Most code should reach for `script()` from `beni/schema`, which adds named
+ * Most code should reach for `script()` from `benni/schema`, which adds named
  * keys and per-argument codecs on top of this.
  */
 export type RedisScript<
@@ -68,7 +68,7 @@ export type ScriptRunner = {
  * source on every call.
  *
  * This is the low-level primitive. Application code should prefer {@link script}
- * from `beni/schema`, which adds named keys and per-argument codecs and is run
+ * from `benni/schema`, which adds named keys and per-argument codecs and is run
  * with `redis.script(schema).run({ keys, args })`.
  *
  * @example
@@ -264,7 +264,7 @@ export function createScriptResource<
      * Run the script. Keys are named, so they are checked for a shared Cluster
      * hash tag wherever that is provable from their types; see
      * {@link SameSlotRecord}. Keys built from runtime ids are not provable and
-     * pass silently, which is what the `beni/cluster` runtime guard is for.
+     * pass silently, which is what the `benni/cluster` runtime guard is for.
      */
     run<
       const TKeyValues extends { readonly [K in TKeys[number]]: string }
