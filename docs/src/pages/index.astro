@@ -1,0 +1,903 @@
+---
+import { Code } from "astro:components";
+import "starlight-theme-next/fonts/geist-sans/index.css";
+import "starlight-theme-next/fonts/geist-mono/index.css";
+
+// Astro's BASE_URL carries the configured `base` ("/beni") with a trailing
+// slash. Strip it so the helper below never emits a doubled separator.
+const root = import.meta.env.BASE_URL.replace(/\/$/, "");
+const p = (slug: string) => `${root}/${slug}`;
+
+const title = "Beni, the end-to-end typed Redis client for TypeScript";
+const description =
+  "The end-to-end typed Redis client for TypeScript: one API across Node, Bun, Deno, and the edge. Your declared types travel from write to read.";
+
+const files = [
+  {
+    name: "schema.ts",
+    note: "Plain TypeScript values. They create no keys and run no migrations.",
+    code: `import { hash, json, kv, number, string } from "beni/schema";
+
+type UserProfile = {
+  name: string;
+  score: number;
+};
+
+export const users = hash("user", {
+  name: string(),
+  score: number()
+});
+
+export const profiles = kv("profile", json<UserProfile>());`
+  },
+  {
+    name: "redis.ts",
+    note: "Bind once, export the handle. Swap this one import to change runtime.",
+    code: `import { beni } from "beni";
+import { node } from "beni/node";
+import * as schema from "./schema";
+
+const client = await node({
+  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+});
+
+export const redis = beni(client, { schema });`
+  },
+  {
+    name: "app.ts",
+    note: "Each store is reachable by its export name through redis.query.",
+    code: `import { redis } from "./redis";
+
+await redis.query.users.hset("42", { name: "Ada", score: 10 });
+
+const user = await redis.query.users.hget("42");
+//    ^? { name: string; score: number } | null
+
+await redis.query.profiles.set("42", { name: "Ada", score: 10 }, {
+  ttlSeconds: 3600
+});
+
+const rawKey = redis.query.users.key("42"); // "user:42"`
+  }
+];
+
+const before = `const raw = await client.get("profile:42");
+//    ^? string | null
+
+const user = JSON.parse(raw!) as UserProfile;
+// hand-cast. the compiler never checked it.`;
+
+const after = `const user = await redis.query.profiles.get("42");
+//    ^? UserProfile | null
+
+// decoded by the declared codec.`;
+
+const principles = [
+  {
+    h: "Command names stay",
+    b: "<code>hgetall</code> runs <code>HGETALL</code>. A type layer, not a query language, so everything you know about Redis still applies."
+  },
+  {
+    h: "Schemas are values",
+    b: "No CLI, no codegen, no generated files. Declaring a schema creates no keys and runs nothing."
+  },
+  {
+    h: "One round trip",
+    b: "<code>hget</code> is a single <code>HMGET</code>, not a pipeline of <code>HGET</code>s. On the edge, one call never quietly becomes four."
+  },
+  {
+    h: "Nothing is hidden",
+    b: "No lazy loading, no identity map. The key is yours through <code>.key(id)</code>, and <code>redis.raw</code> is always there."
+  },
+  {
+    h: "Nothing is silent",
+    b: "An unexpected reply throws <code>ReplyShapeError</code> with the raw value attached. It never casts and moves on."
+  },
+  {
+    h: "Works with your validator",
+    b: "Any Standard Schema validator, so Zod, Valibot, or ArkType, with zero added dependencies."
+  }
+];
+
+const runtimes = [
+  ["Node.js", "beni/node", "node-redis, an optional peer dependency"],
+  ["Node.js", "beni/ioredis", "Adopts an ioredis client you already have"],
+  ["Bun", "beni/bun", "Bun's built-in Redis client, no extra package"],
+  ["Deno", "beni/node", "npm:redis through Deno's npm compatibility"],
+  ["Edge", "beni/upstash", "Zero-dependency HTTP adapter, nothing but fetch"]
+];
+
+const primitives = [
+  [
+    "queue()",
+    "Built for model calls. Heartbeat leases so a ten-minute generation is ordinary, a resumable output stream per job, and cancellation that aborts the provider call instead of marking a row.",
+    "primitives/queue/"
+  ],
+  [
+    "cache()",
+    "Read-through with stampede protection. Exactly one loader call per miss.",
+    "primitives/cache/"
+  ],
+  [
+    "ratelimit()",
+    "An accurate sliding window, not a fixed bucket approximation. One atomic round trip per check.",
+    "primitives/ratelimit/"
+  ],
+  [
+    "lock()",
+    "A correct distributed lock. Never frees a lock that expired and was re-acquired by another holder.",
+    "primitives/lock/"
+  ]
+];
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href={p("favicon.svg")} type="image/svg+xml" />
+    <link rel="alternate" type="text/plain" href={p("llms.txt")} title="LLMs.txt" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+  </head>
+
+  <body>
+    <header class="nav">
+      <div class="wrap nav-in">
+        <a
+          class="brand"
+          href={p("")}
+          title="A beni-choko, the small dish beni pigment was sold in"
+        >
+          {/* currentColor on purpose: this copy of the mark sits inside the page,
+              so it can follow the brand token instead of repeating the hex. */}
+          <svg class="mark" viewBox="0 0 64 64" width="19" height="19" aria-hidden="true">
+            <path
+              d="M13 29 a19 19 0 0 0 38 0"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="7"
+              stroke-linecap="round"></path>
+            <circle cx="32" cy="17" r="6" fill="currentColor"></circle>
+          </svg>
+          beni
+        </a>
+        <nav class="nav-links">
+          <a class="hide-sm" href="#why">Why</a>
+          <a class="hide-sm" href="#start">Quick start</a>
+          <a href="#runtimes">Runtimes</a>
+          <a href="#primitives">Primitives</a>
+          <a class="docs-link" href={p("getting-started/introduction/")}>Docs</a>
+          <a
+            class="gh"
+            href="https://github.com/ChiChuRita/beni"
+            aria-label="Beni on GitHub"
+          >
+            <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+              ></path>
+            </svg>
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <section class="hero">
+          <span class="tagline"
+            ><span class="d"></span> Node, Bun, Deno, and the edge</span
+          >
+          <h1>Typed Redis for TypeScript. <span>All the way back.</span></h1>
+          <p class="lede">
+            Declare your data model once with typed codecs, bind a client, and call
+            methods named after the Redis commands they run. Your declared types
+            travel from write to read, so replies come back as <b>your types</b>,
+            not <code>string | null</code>.
+          </p>
+          <div class="actions">
+            <a class="btn" href={p("getting-started/quick-start/")}>Quick start</a>
+            <a class="btn sec" href={p("getting-started/why-beni/")}>Why Beni?</a>
+            <span class="cmd">
+              <span><span class="p">$</span> npm install beni redis</span>
+              <button class="icb" type="button" data-copy="npm install beni redis"
+                >Copy</button
+              >
+            </span>
+          </div>
+        </section>
+      </div>
+
+      <div class="wrap">
+        <section id="start" class="flush">
+          <div class="panel">
+            <div class="panel-hd" role="tablist" aria-label="Quick start">
+              {
+                files.map((f, i) => (
+                  <button
+                    class="tab"
+                    role="tab"
+                    type="button"
+                    aria-selected={i === 0 ? "true" : "false"}
+                    aria-controls={`pane-${i}`}
+                    data-tab={i}
+                  >
+                    {f.name}
+                  </button>
+                ))
+              }
+            </div>
+            {
+              files.map((f, i) => (
+                <div
+                  class="pane"
+                  id={`pane-${i}`}
+                  data-pane={i}
+                  hidden={i !== 0}
+                >
+                  <Code code={f.code} lang="ts" theme="github-dark" />
+                  <p class="panel-ft">{f.note}</p>
+                </div>
+              ))
+            }
+          </div>
+        </section>
+
+        <section id="why">
+          <p class="eyebrow">Why</p>
+          <h2>They type the commands. Beni types your data.</h2>
+          <p class="sub">
+            <code>node-redis</code> and <code>ioredis</code> are already typed, but
+            only at the command surface. A reply arrives as Redis's generic wire
+            shape, so you re-parse it and hand it a cast that the compiler agrees
+            to without checking. <b>That cast is where the bugs live.</b>
+          </p>
+          <div class="pair">
+            <div class="panel">
+              <div class="pcap">
+                <span>Raw client</span><span class="bad">Type lost at the edge</span>
+              </div>
+              <Code code={before} lang="ts" theme="github-dark" />
+            </div>
+            <div class="panel">
+              <div class="pcap">
+                <span>Beni</span><span>Type carried through</span>
+              </div>
+              <Code code={after} lang="ts" theme="github-dark" />
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <p class="eyebrow">Design</p>
+          <h2>A typed client, not an ORM.</h2>
+          <p class="sub">
+            It competes with raw client usage plus hand-rolled casts, not with an
+            object mapper. The altitude is deliberate: command level, on purpose.
+          </p>
+          <div class="grid">
+            {
+              principles.map((c) => (
+                <div class="cell">
+                  <h3>{c.h}</h3>
+                  <p set:html={c.b} />
+                </div>
+              ))
+            }
+          </div>
+        </section>
+
+        <section id="runtimes">
+          <p class="eyebrow">Runtimes</p>
+          <h2>One core, thin adapters, the same typed API.</h2>
+          <p class="sub">
+            Redis in TypeScript is fragmented by runtime rather than by dialect.
+            The adapter contract is four methods wide, which is what makes one
+            portable API real. Already running ioredis? Hand Beni the instance you
+            have. It shares that connection and closes only what it leased.
+          </p>
+          <div class="tw">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Runtime</th>
+                  <th scope="col">Adapter</th>
+                  <th scope="col">Client</th>
+                </tr>
+              </thead>
+              <tbody>
+                {
+                  runtimes.map(([rt, adapter, note]) => (
+                    <tr>
+                      <td>{rt}</td>
+                      <td class="a">{adapter}</td>
+                      <td class="n">{note}</td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="sub foot-note">
+            Blocking commands, Pub/Sub subscribing, <code>WATCH</code> transactions,
+            and sessions need a persistent connection. The HTTP adapter declines
+            them rather than emulating them, and covers the whole typed surface
+            otherwise.
+          </p>
+        </section>
+
+        <section id="primitives">
+          <p class="eyebrow">beni/primitives</p>
+          <h2>Batteries only for what is easy to get wrong.</h2>
+          <p class="sub">
+            Built on any adapter, edge included. Not a search engine, not an index
+            manager.
+          </p>
+          <dl>
+            {
+              primitives.map(([name, body, slug]) => (
+                <div>
+                  <dt>
+                    <a href={p(slug)}>{name}</a>
+                  </dt>
+                  <dd>{body}</dd>
+                </div>
+              ))
+            }
+          </dl>
+        </section>
+
+        <section class="end">
+          <h2>Your types should survive the round trip.</h2>
+          <div class="actions">
+            <span class="cmd">
+              <span><span class="p">$</span> npm install beni redis</span>
+              <button class="icb" type="button" data-copy="npm install beni redis"
+                >Copy</button
+              >
+            </span>
+            <a class="btn sec" href={p("getting-started/quick-start/")}
+              >Read the quick start</a
+            >
+          </div>
+        </section>
+
+        <p class="gloss">
+          <span class="hd"><b>紅</b> &nbsp;<strong>beni</strong> <em>(n.)</em></span
+          > the deep crimson pigment pressed from safflower. Which makes this the
+          red Redis client. We named it twice, in two languages, and noticed far too
+          late.
+        </p>
+
+        <footer>
+          <span>Beni, the end-to-end typed Redis client for TypeScript</span>
+          <span>MIT licensed</span>
+        </footer>
+      </div>
+    </main>
+
+    <script>
+      // Quick-start file switcher.
+      const tabs = document.querySelectorAll<HTMLButtonElement>(".tab");
+      const panes = document.querySelectorAll<HTMLElement>(".pane");
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const i = tab.dataset.tab;
+          tabs.forEach((t) =>
+            t.setAttribute("aria-selected", String(t.dataset.tab === i))
+          );
+          panes.forEach((pane) => {
+            pane.hidden = pane.dataset.pane !== i;
+          });
+        });
+      });
+
+      // Copy buttons.
+      document
+        .querySelectorAll<HTMLButtonElement>("[data-copy]")
+        .forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            await navigator.clipboard.writeText(btn.dataset.copy ?? "");
+            btn.textContent = "Copied";
+            setTimeout(() => {
+              btn.textContent = "Copy";
+            }, 1600);
+          });
+        });
+    </script>
+
+    <style>
+      /* The landing page is deliberately standalone: Starlight's shell is what
+         the rest of the site uses, and this page is the one place that steps
+         outside it. Brand red is repeated here rather than imported because
+         custom.css only loads inside Starlight routes; test/brand.test.ts
+         guards the copies that matter (CSS token, logo, favicon). */
+      :root {
+        --bg: #0a0a0a;
+        --surface: #161616;
+        --ink: #ededed;
+        --ink-2: #a1a1a1;
+        --ink-3: #6e6e6e;
+        --border: #262626;
+        --border-2: #1c1c1c;
+        --brand: #e11d48;
+        --brand-text: color-mix(in oklab, #e11d48 55%, white);
+        --brand-fg: #fff5f7;
+        --sans: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
+        --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+        --r: 6px;
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 15.5px;
+        line-height: 1.62;
+        letter-spacing: -0.003em;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 0 clamp(20px, 4vw, 36px);
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      :focus-visible {
+        outline: 2px solid var(--brand-text);
+        outline-offset: 2px;
+        border-radius: 3px;
+      }
+
+      /* ---------- nav ---------- */
+      .nav {
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(8px);
+        z-index: 20;
+      }
+      .nav-in {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        height: 56px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+      }
+      .brand .mark {
+        color: var(--brand);
+        display: block;
+        flex: none;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: clamp(12px, 2.4vw, 24px);
+        font-size: 14px;
+        color: var(--ink-2);
+      }
+      .nav-links a:hover {
+        color: var(--ink);
+      }
+      .gh {
+        display: flex;
+        color: var(--ink-2);
+      }
+      @media (max-width: 660px) {
+        .nav-links .hide-sm {
+          display: none;
+        }
+      }
+
+      /* ---------- hero ---------- */
+      .hero {
+        padding: clamp(52px, 9vw, 96px) 0 clamp(38px, 6vw, 58px);
+      }
+      .tagline {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12.5px;
+        color: var(--ink-2);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 5px 12px 5px 8px;
+        margin-bottom: 26px;
+      }
+      .tagline .d {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--brand);
+      }
+      h1 {
+        font-size: clamp(32px, 5vw, 52px);
+        font-weight: 600;
+        line-height: 1.1;
+        letter-spacing: -0.032em;
+        margin: 0 0 20px;
+        max-width: 17ch;
+        text-wrap: balance;
+      }
+      h1 span {
+        color: var(--ink-3);
+      }
+      .lede {
+        font-size: clamp(16.5px, 1.8vw, 19px);
+        color: var(--ink-2);
+        max-width: 58ch;
+        margin: 0 0 30px;
+      }
+      .lede b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .btn {
+        font-size: 14.5px;
+        font-weight: 500;
+        border-radius: var(--r);
+        padding: 10px 17px;
+        border: 1px solid var(--brand);
+        background: var(--brand);
+        color: var(--brand-fg);
+        transition: filter 0.15s ease;
+      }
+      .btn:hover {
+        filter: brightness(1.1);
+      }
+      .btn.sec {
+        background: transparent;
+        color: var(--ink);
+        border-color: var(--border);
+      }
+      .btn.sec:hover {
+        border-color: var(--ink-3);
+        filter: none;
+      }
+      .cmd {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-family: var(--mono);
+        font-size: 13.5px;
+        color: var(--ink-2);
+        border: 1px solid var(--border);
+        border-radius: var(--r);
+        padding: 9px 9px 9px 14px;
+        background: var(--surface);
+      }
+      .cmd .p {
+        color: var(--ink-3);
+      }
+      .icb {
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        padding: 3px 5px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-3);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .icb:hover {
+        color: var(--ink);
+      }
+
+      /* ---------- panels and code ---------- */
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+      .panel-hd {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        border-bottom: 1px solid var(--border);
+        padding: 0 6px;
+        background: var(--surface);
+        overflow-x: auto;
+      }
+      .tab {
+        appearance: none;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--ink-3);
+        padding: 11px 12px 10px;
+        border-bottom: 2px solid transparent;
+        white-space: nowrap;
+        transition:
+          color 0.15s ease,
+          border-color 0.15s ease;
+      }
+      .tab:hover {
+        color: var(--ink-2);
+      }
+      .tab[aria-selected="true"] {
+        color: var(--ink);
+        border-bottom-color: var(--brand);
+      }
+      .panel-ft {
+        border-top: 1px solid var(--border);
+        padding: 10px 16px;
+        margin: 0;
+        font-size: 13px;
+        color: var(--ink-3);
+        background: var(--surface);
+      }
+      .panel :global(pre) {
+        margin: 0;
+        padding: 18px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.72;
+        background: var(--bg) !important;
+      }
+      .panel :global(code) {
+        font-family: var(--mono);
+      }
+      .pcap {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .pcap .bad {
+        color: var(--brand-text);
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      @media (max-width: 780px) {
+        .pair {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ---------- sections ---------- */
+      section {
+        padding: clamp(48px, 7vw, 82px) 0;
+        border-top: 1px solid var(--border);
+      }
+      section.flush {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: var(--brand-text);
+        margin: 0 0 14px;
+      }
+      h2 {
+        font-size: clamp(23px, 2.9vw, 31px);
+        font-weight: 600;
+        line-height: 1.18;
+        letter-spacing: -0.025em;
+        margin: 0 0 14px;
+        max-width: 22ch;
+        text-wrap: balance;
+      }
+      h3 {
+        font-size: 15.5px;
+        font-weight: 600;
+        margin: 0 0 8px;
+        letter-spacing: -0.012em;
+      }
+      .sub {
+        color: var(--ink-2);
+        max-width: 62ch;
+        margin: 0 0 34px;
+      }
+      .sub b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      .foot-note {
+        margin: 22px 0 0;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.87em;
+      }
+      p code,
+      td code,
+      dd code {
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        padding: 1px 5px;
+      }
+
+      /* ---------- feature grid ---------- */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        background: var(--border);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      @media (max-width: 880px) {
+        .grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      @media (max-width: 560px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .cell {
+        background: var(--bg);
+        padding: 24px 22px 26px;
+      }
+      .cell p {
+        margin: 0;
+        font-size: 14.5px;
+        color: var(--ink-2);
+        line-height: 1.58;
+      }
+
+      /* ---------- table ---------- */
+      .tw {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14.5px;
+        min-width: 520px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--border-2);
+        vertical-align: baseline;
+      }
+      thead th {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 400;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: var(--ink-3);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+      }
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      td.a {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--brand-text);
+        white-space: nowrap;
+      }
+      td.n {
+        color: var(--ink-2);
+      }
+
+      /* ---------- definition rows ---------- */
+      dl {
+        margin: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      dl div {
+        display: grid;
+        grid-template-columns: 150px minmax(0, 1fr);
+        gap: 18px;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border-2);
+      }
+      @media (max-width: 620px) {
+        dl div {
+          grid-template-columns: 1fr;
+          gap: 5px;
+        }
+      }
+      dl div:last-child {
+        border-bottom: 0;
+      }
+      dt {
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+      dt a {
+        color: var(--brand-text);
+      }
+      dt a:hover {
+        text-decoration: underline;
+      }
+      dd {
+        margin: 0;
+        color: var(--ink-2);
+        font-size: 14.5px;
+      }
+
+      /* ---------- closing ---------- */
+      .end h2 {
+        max-width: 18ch;
+        margin-bottom: 22px;
+      }
+      .gloss {
+        border-top: 1px solid var(--border);
+        padding: 22px 0 0;
+        margin: 0;
+        font-size: 14px;
+        color: var(--ink-3);
+        max-width: 66ch;
+      }
+      .gloss .hd {
+        color: var(--ink-2);
+      }
+      .gloss .hd b {
+        color: var(--brand-text);
+        font-weight: 400;
+        font-size: 16px;
+      }
+      .gloss em {
+        font-style: italic;
+      }
+      footer {
+        padding: 20px 0 46px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 24px;
+        font-size: 13.5px;
+        color: var(--ink-3);
+      }
+    </style>
+  </body>
+</html>
