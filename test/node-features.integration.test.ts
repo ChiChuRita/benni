@@ -151,7 +151,7 @@ describeRedis("node feature modules against real Redis", () => {
       );
       await expect(userStore.hget("main", "name")).resolves.toBe("benni");
 
-      await expect(userStore.hstrlen("main", "name")).resolves.toBe(4);
+      await expect(userStore.hstrlen("main", "name")).resolves.toBe(5);
 
       await expect(userStore.hincrbyfloat("main", "score", 2.5)).resolves.toBe(
         7.5
