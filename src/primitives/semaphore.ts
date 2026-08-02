@@ -4,6 +4,11 @@ import type { RedisClient } from "../core/types.js";
 
 const DEFAULT_PREFIX = "semaphore";
 const DEFAULT_LEASE_MS = 60_000;
+// `run()` renews on a quarter of the lease, the same ratio `lock` and the queue
+// use (leaseMs 60000 / heartbeatMs 15000, which is exactly this default): three
+// renewals in a row may fail outright before the slot could lapse, which is
+// what makes a transient blip survivable rather than fatal.
+const HEARTBEAT_DIVISOR = 4;
 
 /**
  * Take a slot if one is free.
@@ -105,10 +110,37 @@ export type SemaphoreOptions = {
 export type SemaphoreAcquireOptions = {
   /** Override the lease for this acquisition. */
   readonly leaseMs?: number;
-  /** Retries while every slot is taken. Default `0` (fail fast). */
+  /**
+   * How many times to retry while every slot is taken. Default `0`, which
+   * **fails fast**: a full semaphore makes `acquire()` resolve `null` and
+   * `run()` throw {@link SemaphoreNotAcquiredError} instead of waiting. Pass
+   * `retries` (and optionally `retryDelayMs`) to queue behind the current
+   * holders instead.
+   */
   readonly retries?: number;
   /** Delay between retries in milliseconds. Default `100`. */
   readonly retryDelayMs?: number;
+};
+
+export type SemaphoreRunOptions = SemaphoreAcquireOptions & {
+  /**
+   * How often `run()` renews the lease while `fn` is in flight, in
+   * milliseconds. Default: a quarter of the effective `leaseMs`. Keep it well
+   * under `leaseMs` so a renewal may fail a few times before the slot lapses.
+   *
+   * Pass `false` to opt out of renewal: the slot is then reclaimable `leaseMs`
+   * after it was taken, whatever `fn` is still doing.
+   */
+  readonly heartbeatMs?: number | false;
+  /**
+   * Called when a renewal round trip *fails* (a dropped connection, a timeout).
+   * That is not the same as losing the slot: the next tick retries, and the
+   * lease is only declared lost once Redis reports the slot is no longer ours,
+   * or the lease window has demonstrably passed with no successful renewal.
+   * Without this hook those errors are swallowed, exactly as a failed release
+   * is.
+   */
+  readonly onRenewError?: (error: unknown) => void;
 };
 
 /** Thrown by `semaphore().run()` when no slot came free. */
@@ -123,13 +155,83 @@ export class SemaphoreNotAcquiredError extends Error {
   }
 }
 
+/**
+ * Thrown by `semaphore().run()` when the slot was lost while `fn` was still
+ * running: renewal found the lease gone, so it had already been reclaimed and
+ * handed to someone else.
+ *
+ * This is where a semaphore differs from a
+ * [lock](./lock.js): a lost lock means two callers collided on one key, while a
+ * lost slot means the semaphore **over-admits**. The pool believes `limit`
+ * callers are inside the critical section and one more (this one) is in there
+ * too, so a `limit: 20` semaphore guarding a provider quota quietly runs 21 in
+ * flight, which is precisely the 429 it existed to prevent.
+ *
+ * `run()` rejects with this even when `fn` itself resolved: a body that
+ * completed without a slot did not complete under the bound it was written
+ * against, and reporting success would hide exactly that. The same error is the
+ * abort reason on {@link SemaphoreHandle.signal}, so a body that passes the
+ * signal to `fetch` or to the AI SDK stops as soon as its slot is gone rather
+ * than finishing work that is over the limit.
+ */
+export class SemaphoreLeaseLostError extends Error {
+  readonly key: string;
+  readonly limit: number;
+  constructor(key: string, limit: number) {
+    super(
+      `Lost the slot on "${key}" (limit ${limit}) before the critical section finished — the semaphore may now be over its limit. Raise leaseMs, lower heartbeatMs, or shorten the critical section if this recurs.`
+    );
+    this.name = "SemaphoreLeaseLostError";
+    this.key = key;
+    this.limit = limit;
+  }
+}
+
 export type SemaphoreHandle = {
   readonly key: string;
   readonly token: string;
+  /**
+   * Aborts with a {@link SemaphoreLeaseLostError} the moment this handle is
+   * known to have lost its slot: `run()`'s automatic renewal failed, or an
+   * `extend()` you made yourself resolved `false`. Pass it to `fetch`, the AI
+   * SDK, or any `AbortSignal`-aware call so work stops when the semaphore stops
+   * accounting for it.
+   *
+   * A handle from `acquire()` that you never `extend()` has nothing watching the
+   * lease on your behalf, so its signal cannot fire: renew it yourself, or use
+   * `run()`, which renews for you.
+   */
+  readonly signal: AbortSignal;
   /** Give the slot back; resolves `true` only if we still held it. */
   release(): Promise<boolean>;
-  /** Push our lease out; resolves `false` if the slot was already reclaimed. */
+  /**
+   * Push our lease out; resolves `false` if the slot was already reclaimed. A
+   * `false` result aborts {@link SemaphoreHandle.signal}.
+   */
   extend(leaseMs?: number): Promise<boolean>;
+};
+
+/**
+ * What we believe about our hold on a slot, tracked alongside the handle so
+ * `run()`'s renewal loop and the caller's own `extend()`/`release()` calls share
+ * one view of it.
+ */
+type Lease = {
+  /** The lease this acquisition uses, and that renewals re-apply. */
+  readonly leaseMs: number;
+  /**
+   * Local timestamp at which the slot is certainly reclaimable unless it is
+   * renewed. Measured from *before* each round trip, so it never overstates how
+   * long we hold the slot: the server stamps expiry from its own clock at some
+   * point during the call, which is never earlier than this.
+   */
+  expiresAt: number;
+  /** True once we know the slot is no longer ours. */
+  lost: boolean;
+  /** True once the caller gave the slot up deliberately. */
+  released: boolean;
+  /** Record the loss, once, and abort the handle's signal. */
+  lose(): void;
 };
 
 /**
@@ -142,19 +244,55 @@ export type SemaphoreHandle = {
  *
  * ```ts
  * const slots = semaphore(client, { limit: 20 });
- * const answer = await slots.run("openai", async (held) => {
- *   await held.extend();     // heartbeat a long call
- *   return callModel();
- * });
+ * const answer = await slots.run("openai", async () => callModel());
  * ```
  *
  * A holder that crashes frees its slot when its lease lapses, so a dead
  * process cannot wedge the pool. Works over any adapter, including
  * `benni/upstash` on the edge.
  *
+ * Two defaults are worth knowing before you reach for it.
+ *
+ * **Acquiring fails fast.** `retries` defaults to `0`, so a caller that finds
+ * every slot taken does not wait: `acquire()` resolves `null` and `run()` throws
+ * {@link SemaphoreNotAcquiredError} straight away. That is the right default for
+ * a request handler (shed load rather than pile up), and the wrong one if you
+ * meant to *queue* concurrent work:
+ *
+ * ```ts
+ * // Fail fast (default): 25 concurrent callers on a limit of 20 means 5 throw.
+ * try {
+ *   await slots.run("openai", () => callModel());
+ * } catch (error) {
+ *   if (error instanceof SemaphoreNotAcquiredError) return busy();
+ *   throw error;
+ * }
+ *
+ * // Queue instead: each caller waits for a slot to come free.
+ * await slots.run("openai", () => callModel(), {
+ *   retries: 100,
+ *   retryDelayMs: 50
+ * });
+ * ```
+ *
+ * **`run()` renews the lease while your body runs**, every `heartbeatMs` (a
+ * quarter of `leaseMs` by default), so a call that outlives `leaseMs` keeps its
+ * slot instead of silently losing it and pushing the semaphore over its limit.
+ * If renewal finds the slot gone, `held.signal` aborts and `run()` rejects
+ * with {@link SemaphoreLeaseLostError} rather than reporting a success that was
+ * never inside the bound:
+ *
+ * ```ts
+ * await slots.run("openai", async (held) => {
+ *   // Renewed in the background; pass the signal on so a reclaimed slot stops
+ *   // the work instead of letting it run over the limit.
+ *   await fetch(url, { signal: held.signal });
+ * });
+ * ```
+ *
  * This is [`lock`](./lock.js) with a number: same handle, same `run`, same
- * retry options. Reach for `lock` when the answer is one, and this when it is
- * a budget.
+ * retry options, same lease renewal. Reach for `lock` when the answer is one,
+ * and this when it is a budget.
  */
 export function semaphore(client: RedisClient, options: SemaphoreOptions) {
   const limit = positiveInt(options.limit, "limit");
@@ -165,24 +303,56 @@ export function semaphore(client: RedisClient, options: SemaphoreOptions) {
   );
   const scripts = createScriptRunner(client);
 
-  function handleFor(key: string, token: string): SemaphoreHandle {
-    return {
-      key,
-      token,
-      async release() {
-        return (await scripts.run(releaseScript, [key], [token])) === 1;
-      },
-      async extend(leaseMs = defaultLeaseMs) {
-        const ttl = String(positiveInt(leaseMs, "leaseMs"));
-        return (await scripts.run(extendScript, [key], [ttl, token])) === 1;
+  function handleFor(
+    key: string,
+    token: string,
+    acquiredAt: number,
+    leaseMs: number
+  ): { handle: SemaphoreHandle; lease: Lease } {
+    const controller = new AbortController();
+    const lease: Lease = {
+      leaseMs,
+      expiresAt: acquiredAt + leaseMs,
+      lost: false,
+      released: false,
+      lose() {
+        if (lease.lost) return;
+        lease.lost = true;
+        controller.abort(new SemaphoreLeaseLostError(key, limit));
       }
     };
+    const handle: SemaphoreHandle = {
+      key,
+      token,
+      signal: controller.signal,
+      async release() {
+        // Flagged before the round trip: giving the slot up is deliberate, so a
+        // renewal that overlaps this call must not report it as a loss.
+        lease.released = true;
+        return (await scripts.run(releaseScript, [key], [token])) === 1;
+      },
+      async extend(nextLeaseMs = defaultLeaseMs) {
+        const ms = positiveInt(nextLeaseMs, "leaseMs");
+        // Time the renewal from before the call, not after: the script stamps
+        // the new expiry from server time at some point during it, so
+        // `sentAt + ms` is the earliest the slot can be reclaimed. Anything
+        // later would let the deadline below claim we still hold a slot that
+        // has already been handed on.
+        const sentAt = Date.now();
+        const args = [String(ms), token] as const;
+        const held = (await scripts.run(extendScript, [key], args)) === 1;
+        if (held) lease.expiresAt = sentAt + ms;
+        else if (!lease.released) lease.lose();
+        return held;
+      }
+    };
+    return { handle, lease };
   }
 
-  async function acquire(
+  async function acquireLease(
     id: string,
     acquireOptions?: SemaphoreAcquireOptions
-  ): Promise<SemaphoreHandle | null> {
+  ): Promise<{ handle: SemaphoreHandle; lease: Lease } | null> {
     const leaseMs = positiveInt(
       acquireOptions?.leaseMs ?? defaultLeaseMs,
       "leaseMs"
@@ -193,8 +363,9 @@ export function semaphore(client: RedisClient, options: SemaphoreOptions) {
     for (let attempt = 0; ; attempt++) {
       const token = globalThis.crypto.randomUUID();
       const args = [String(limit), String(leaseMs), token] as const;
+      const sentAt = Date.now();
       if ((await scripts.run(acquireScript, [key], args)) === 1) {
-        return handleFor(key, token);
+        return handleFor(key, token, sentAt, leaseMs);
       }
       if (attempt >= retries) return null;
       await sleep(retryDelayMs);
@@ -202,28 +373,121 @@ export function semaphore(client: RedisClient, options: SemaphoreOptions) {
   }
 
   return {
-    acquire,
+    /**
+     * Take a slot, or resolve `null` if every slot is taken. **Fails fast by
+     * default** (`retries: 0`): pass `retries`/`retryDelayMs` to wait for a slot
+     * to come free instead of giving up on the first attempt.
+     *
+     * You own the returned handle: `release()` it in a `finally`, and `extend()`
+     * it yourself if the work can outlive `leaseMs`, because nothing renews an
+     * `acquire()`d lease in the background and its `signal` cannot fire unless
+     * you do. `run()` does both for you.
+     */
+    acquire(
+      id: string,
+      acquireOptions?: SemaphoreAcquireOptions
+    ): Promise<SemaphoreHandle | null> {
+      return acquireLease(id, acquireOptions).then(
+        (held) => held?.handle ?? null
+      );
+    },
     /** How many slots are currently held, ignoring lapsed leases. */
     async count(id: string): Promise<number> {
       return scripts.run(countScript, [`${prefix}:${id}`], []);
     },
     /**
      * Take a slot, run `fn`, and give the slot back even if `fn` throws.
-     * Throws {@link SemaphoreNotAcquiredError} if no slot came free (after any
+     *
+     * **Fails fast by default.** With `retries: 0` (the default) a call that
+     * finds every slot taken throws {@link SemaphoreNotAcquiredError}
+     * immediately rather than waiting; to queue callers instead, pass
+     * `{ retries, retryDelayMs }`.
+     *
+     * **The lease is renewed while `fn` runs**, every `heartbeatMs` (a quarter
+     * of `leaseMs` by default), so a body that outlives `leaseMs` keeps its
+     * slot. If a renewal finds the slot gone, `handle.signal` aborts with a
+     * {@link SemaphoreLeaseLostError} and `run()` rejects with it, even if `fn`
+     * resolved: the slot had already been handed to another caller, so the
+     * semaphore was over its limit for the rest of the body. Pass
+     * `heartbeatMs: false` to opt out of renewal.
+     *
+     * @throws SemaphoreNotAcquiredError if no slot came free (after any
      * configured retries).
+     * @throws SemaphoreLeaseLostError if the slot was lost while `fn` was
+     * running.
      */
     async run<T>(
       id: string,
       fn: (handle: SemaphoreHandle) => Promise<T> | T,
-      acquireOptions?: SemaphoreAcquireOptions
+      runOptions?: SemaphoreRunOptions
     ): Promise<T> {
-      const handle = await acquire(id, acquireOptions);
-      if (handle === null) {
+      // Validate the renewal settings *before* taking a slot. A throw between
+      // the acquire and the try/finally below would hold a slot until its lease
+      // lapsed, shrinking the pool over a typo.
+      const leaseMs = positiveInt(
+        runOptions?.leaseMs ?? defaultLeaseMs,
+        "leaseMs"
+      );
+      const heartbeatMs =
+        runOptions?.heartbeatMs === false
+          ? null
+          : positiveInt(
+              runOptions?.heartbeatMs ?? heartbeatFor(leaseMs),
+              "heartbeatMs"
+            );
+      const onRenewError = runOptions?.onRenewError;
+
+      const held = await acquireLease(id, runOptions);
+      if (held === null) {
         throw new SemaphoreNotAcquiredError(`${prefix}:${id}`, limit);
       }
+      const { handle, lease } = held;
+
+      let stopped = false;
+      let renewing = false;
+      const timer =
+        heartbeatMs === null
+          ? null
+          : setInterval(() => {
+              if (stopped || lease.lost || lease.released) return;
+              // The whole lease window has passed with no successful renewal, so
+              // the slot is reclaimable whatever the cause: renewals that keep
+              // rejecting, or one still hanging while the guard below skips
+              // ticks. Silence here is the bug this renewal exists to fix.
+              if (Date.now() >= lease.expiresAt) {
+                lease.lose();
+                return;
+              }
+              // One renewal at a time. A round trip slower than the interval
+              // would otherwise stack up calls that all re-apply the same lease.
+              if (renewing) return;
+              renewing = true;
+              void handle.extend(lease.leaseMs).then(
+                () => {
+                  renewing = false;
+                },
+                (error: unknown) => {
+                  renewing = false;
+                  // A failed round trip is not proof the slot is gone, so the
+                  // next tick retries; the deadline above is what eventually
+                  // calls it lost.
+                  onRenewError?.(error);
+                }
+              );
+            }, heartbeatMs);
+      // Never keep the process alive for a renewal alone: an un-unref'd interval
+      // is what makes `node script.js` hang after the work is done.
+      (timer as { unref?: () => void } | null)?.unref?.();
+
       try {
-        return await fn(handle);
+        const result = await fn(handle);
+        // `fn` finished, but not under the bound it asked for. Resolving here is
+        // what let a lost slot pass for a call inside the limit.
+        if (lease.lost) throw new SemaphoreLeaseLostError(handle.key, limit);
+        return result;
       } finally {
+        stopped = true;
+        if (timer !== null) clearInterval(timer);
         try {
           await handle.release();
         } catch {
@@ -233,6 +497,14 @@ export function semaphore(client: RedisClient, options: SemaphoreOptions) {
       }
     }
   };
+}
+
+/**
+ * The default renewal interval for a lease. Floored at 1ms so an absurdly short
+ * `leaseMs` still renews rather than dividing down to a zero-delay spin.
+ */
+function heartbeatFor(leaseMs: number): number {
+  return Math.max(1, Math.floor(leaseMs / HEARTBEAT_DIVISOR));
 }
 
 function positiveInt(value: number, name: string): number {

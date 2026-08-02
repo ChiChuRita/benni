@@ -72,11 +72,19 @@ function docsSnippets() {
   const slots = semaphore(client, { limit: 20, leaseMs: 60_000 });
 
   void (async () => {
+    // run() renews the lease on its own, so a body no longer heartbeats by
+    // hand; it watches `signal` instead, which aborts if the slot is lost.
     const answer = await slots.run("openai", async (held) => {
-      await held.extend();
+      void held.signal.aborted;
       return callModel(prompt);
     });
     void answer;
+
+    await slots.run("openai", doWork, {
+      heartbeatMs: 5_000,
+      onRenewError: (error) => void error
+    });
+    await slots.run("openai", doWork, { heartbeatMs: false });
 
     const held = await slots.acquire("openai");
     if (!held) return new Response("Busy, try again", { status: 503 });

@@ -1,0 +1,360 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ValidationError } from "../src/core/errors.js";
+import type {
+  RedisClient,
+  RedisCommand,
+  RedisReply
+} from "../src/core/types.js";
+import {
+  LockLeaseLostError,
+  LockNotAcquiredError,
+  lock
+} from "../src/primitives/index.js";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A fake that answers by command rather than from a fixed reply queue. How many
+ * renewals a timing-based test performs is not fixed, so a queued fake would
+ * make every test here a race against the interval.
+ */
+function lockFake(behavior?: {
+  /** Reply to the acquiring `SET`. Default `"OK"`. */
+  acquire?: () => RedisReply;
+  /** Reply to the extend script, given the 1-based call number. Default `1`. */
+  extend?: (call: number) => RedisReply | Promise<RedisReply>;
+  /** Reply to the release script. Default `1`. */
+  release?: () => RedisReply;
+}) {
+  const commands: RedisCommand[] = [];
+  let extendCalls = 0;
+  const client: RedisClient = {
+    async send(command) {
+      commands.push(command);
+      const verb = command[0];
+      // `?? "OK"` would turn a deliberate `null` (lock held) back into a win.
+      if (verb === "SET") {
+        return behavior?.acquire === undefined ? "OK" : behavior.acquire();
+      }
+      if (verb === "SCRIPT") {
+        // Two scripts, told apart by their source: extend PEXPIREs, release DELs.
+        return String(command[2]).includes("PEXPIRE")
+          ? "sha-extend"
+          : "sha-release";
+      }
+      if (verb === "EVALSHA") {
+        if (command[1] !== "sha-extend") return behavior?.release?.() ?? 1;
+        extendCalls += 1;
+        return behavior?.extend?.(extendCalls) ?? 1;
+      }
+      throw new Error(`Unexpected command ${String(verb)}`);
+    },
+    async pipeline() {
+      return [];
+    },
+    async transaction() {
+      return [];
+    },
+    async close() {}
+  };
+  return {
+    client,
+    commands,
+    get extendCount() {
+      return extendCalls;
+    },
+    of(verb: string) {
+      return commands.filter((command) => command[0] === verb);
+    },
+    renewals() {
+      return commands.filter(
+        (command) => command[0] === "EVALSHA" && command[1] === "sha-extend"
+      );
+    }
+  };
+}
+
+/**
+ * `lock().run()` used to acquire with a TTL and never renew it, so a critical
+ * section that outlived `ttlMs` silently lost the lock: the key expired, another
+ * caller took it, and the body kept running as though it were still exclusive.
+ * These pin the renewal, the loss report, and the timer hygiene that fixes it.
+ */
+describe("lock.run lease renewal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the lock while a critical section outlives ttlMs", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 60 });
+
+    const result = await locks.run(
+      "res",
+      async () => {
+        await sleep(150); // Two and a half TTLs.
+        return "done";
+      },
+      { heartbeatMs: 15 }
+    );
+
+    expect(result).toBe("done");
+    const renewals = fake.renewals();
+    expect(renewals.length).toBeGreaterThanOrEqual(3);
+    const token = fake.of("SET")[0]?.[2];
+    // Every renewal is the token-checked extend, re-applying the same TTL.
+    for (const renewal of renewals) {
+      expect(renewal.slice(0, 4)).toEqual([
+        "EVALSHA",
+        "sha-extend",
+        1,
+        "lock:res"
+      ]);
+      expect(renewal[4]).toBe(token);
+      expect(renewal[5]).toBe("60");
+    }
+  });
+
+  it("defaults the renewal interval to a quarter of ttlMs", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 100 }); // 25ms heartbeat.
+
+    await locks.run("res", () => sleep(120));
+
+    // Renewed several times over the body's life, and nowhere near spinning.
+    expect(fake.extendCount).toBeGreaterThanOrEqual(2);
+    expect(fake.extendCount).toBeLessThanOrEqual(20);
+  });
+
+  it("adds no round trips when the body finishes inside one interval", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client);
+
+    await expect(locks.run("res", async () => 7)).resolves.toBe(7);
+
+    // Unchanged from before renewal existed: acquire, load, release.
+    expect(fake.commands.map((command) => command[0])).toEqual([
+      "SET",
+      "SCRIPT",
+      "EVALSHA"
+    ]);
+  });
+
+  it("does not renew when renewal is switched off", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 20 });
+
+    await expect(
+      locks.run("res", async () => sleep(80).then(() => 1), {
+        heartbeatMs: false
+      })
+    ).resolves.toBe(1);
+    expect(fake.extendCount).toBe(0);
+  });
+
+  it("validates heartbeatMs before taking the lock", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client);
+
+    await expect(
+      locks.run("res", async () => 1, { heartbeatMs: 0 })
+    ).rejects.toBeInstanceOf(ValidationError);
+    // Nothing was acquired, so nothing is stranded until its TTL lapses.
+    expect(fake.commands).toHaveLength(0);
+  });
+});
+
+describe("lock.run lost lease", () => {
+  it("rejects with LockLeaseLostError even when the body resolves", async () => {
+    const fake = lockFake({ extend: () => 0 });
+    const locks = lock(fake.client, { ttlMs: 60 });
+
+    let abortReason: unknown;
+    const promise = locks.run(
+      "res",
+      async (handle) => {
+        handle.signal.addEventListener("abort", () => {
+          abortReason = handle.signal.reason;
+        });
+        await sleep(80);
+        return "finished anyway";
+      },
+      { heartbeatMs: 10 }
+    );
+
+    await expect(promise).rejects.toBeInstanceOf(LockLeaseLostError);
+    await expect(promise).rejects.toMatchObject({ key: "lock:res" });
+    expect(abortReason).toBeInstanceOf(LockLeaseLostError);
+  });
+
+  it("aborts the handle's signal so the body can stop early", async () => {
+    const fake = lockFake({ extend: () => 0 });
+    const locks = lock(fake.client, { ttlMs: 10_000 });
+
+    await expect(
+      locks.run(
+        "res",
+        (handle) =>
+          new Promise<never>((_resolve, reject) => {
+            handle.signal.addEventListener("abort", () =>
+              reject(handle.signal.reason)
+            );
+          }),
+        { heartbeatMs: 10 }
+      )
+    ).rejects.toBeInstanceOf(LockLeaseLostError);
+    // One failed renewal was enough; nothing kept renewing a lost lock.
+    expect(fake.extendCount).toBe(1);
+  });
+
+  it("aborts the signal when a manual extend finds the lock gone", async () => {
+    const fake = lockFake({ extend: () => 0 });
+    const locks = lock(fake.client);
+
+    const handle = await locks.acquire("res");
+    expect(handle?.signal.aborted).toBe(false);
+    await expect(handle?.extend()).resolves.toBe(false);
+    expect(handle?.signal.aborted).toBe(true);
+    expect(handle?.signal.reason).toBeInstanceOf(LockLeaseLostError);
+  });
+
+  it("reports a failed renewal round trip without declaring the lock lost", async () => {
+    const fake = lockFake({
+      extend: (call) => {
+        if (call === 1) throw new Error("connection reset");
+        return 1;
+      }
+    });
+    const locks = lock(fake.client, { ttlMs: 200 });
+    const errors: unknown[] = [];
+
+    await expect(
+      locks.run("res", () => sleep(120).then(() => "ok"), {
+        heartbeatMs: 20,
+        onRenewError: (error) => errors.push(error)
+      })
+    ).resolves.toBe("ok");
+
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("connection reset");
+  });
+
+  it("declares the lock lost once renewals keep failing past the TTL", async () => {
+    const fake = lockFake({
+      extend: () => {
+        throw new Error("unreachable");
+      }
+    });
+    const locks = lock(fake.client, { ttlMs: 40 });
+    const errors: unknown[] = [];
+
+    await expect(
+      locks.run("res", () => sleep(300).then(() => "ok"), {
+        heartbeatMs: 10,
+        onRenewError: (error) => errors.push(error)
+      })
+    ).rejects.toBeInstanceOf(LockLeaseLostError);
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("declares the lock lost when a renewal hangs past the TTL", async () => {
+    // A round trip that never comes back is the case the one-at-a-time guard
+    // hides: no further renewal is even attempted, so only the deadline can
+    // notice the lock has lapsed.
+    const fake = lockFake({ extend: () => new Promise<RedisReply>(() => {}) });
+    const locks = lock(fake.client, { ttlMs: 40 });
+
+    await expect(
+      locks.run("res", () => sleep(300).then(() => "ok"), { heartbeatMs: 10 })
+    ).rejects.toBeInstanceOf(LockLeaseLostError);
+    expect(fake.extendCount).toBe(1);
+  });
+
+  it("does not report a deliberate release as a lost lease", async () => {
+    const fake = lockFake({ extend: () => 0 });
+    const locks = lock(fake.client, { ttlMs: 60 });
+
+    await expect(
+      locks.run(
+        "res",
+        async (handle) => {
+          await handle.release();
+          // Renewals would find the key gone; giving it up was the point.
+          await sleep(80);
+          return "ok";
+        },
+        { heartbeatMs: 10 }
+      )
+    ).resolves.toBe("ok");
+    expect(fake.extendCount).toBe(0);
+  });
+});
+
+describe("lock.run timer hygiene", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("unrefs the renewal timer and clears it when run settles", async () => {
+    const created: NodeJS.Timeout[] = [];
+    const unreffed: NodeJS.Timeout[] = [];
+    const realSetInterval = globalThis.setInterval;
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      handler: () => void,
+      ms?: number
+    ) => {
+      const timer = realSetInterval(handler, ms);
+      created.push(timer);
+      const unref = timer.unref.bind(timer);
+      timer.unref = () => {
+        unreffed.push(timer);
+        return unref();
+      };
+      return timer;
+    }) as typeof globalThis.setInterval);
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 80 });
+
+    let refDuringBody: boolean | undefined;
+    await locks.run(
+      "res",
+      async () => {
+        await sleep(60);
+        // An interval that still holds a ref keeps `node script.js` alive.
+        refDuringBody = created[0]?.hasRef();
+      },
+      { heartbeatMs: 20 }
+    );
+
+    expect(created).toHaveLength(1);
+    expect(unreffed).toEqual(created);
+    expect(refDuringBody).toBe(false);
+    expect(clearIntervalSpy).toHaveBeenCalledWith(created[0]);
+    expect(fake.extendCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("starts no timer at all when renewal is switched off", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const fake = lockFake();
+    const locks = lock(fake.client);
+
+    await locks.run("res", async () => 1, { heartbeatMs: false });
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("lock contention defaults", () => {
+  it("still fails fast when the lock is held and retries are default", async () => {
+    const fake = lockFake({ acquire: () => null });
+    const locks = lock(fake.client);
+
+    await expect(locks.run("held", async () => 1)).rejects.toBeInstanceOf(
+      LockNotAcquiredError
+    );
+    // One attempt, no waiting, no renewal timer to clean up.
+    expect(fake.of("SET")).toHaveLength(1);
+  });
+});
