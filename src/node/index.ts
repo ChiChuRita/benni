@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { RedisArgument } from "redis";
-import { createClient, MultiErrorReply, WatchError } from "redis";
+import { createClient, ErrorReply, MultiErrorReply, WatchError } from "redis";
+import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -46,6 +47,35 @@ function unwrapMultiError(error: unknown): unknown {
 }
 
 /**
+ * The single normalization point for anything node-redis rejects with. A server
+ * error reply arrives as an `ErrorReply` (`SimpleError`, `BlobError`) whose
+ * `name` is only "Error" — see {@link RedisServerError} for why every adapter
+ * converts that to one shared type.
+ *
+ * Order matters. `MultiErrorReply` also extends `ErrorReply`, so the aggregate
+ * is unwrapped to the failing command's own error *first*; wrapping it as-is
+ * would normalize "N commands failed, see .replies and .errorIndexes" and lose
+ * the WRONGTYPE underneath. An aggregate that carried no inner `Error` is left
+ * alone rather than flattened, so `.replies` / `.errorIndexes` stay reachable.
+ *
+ * Everything else — `WatchError`, `ClientClosedError`, socket errors — passes
+ * through untouched: those are client-side, not the server's answer.
+ */
+function normalizeError(error: unknown, command?: string): unknown {
+  const unwrapped = unwrapMultiError(error);
+  if (unwrapped instanceof MultiErrorReply) return unwrapped;
+  if (unwrapped instanceof ErrorReply) {
+    return redisServerError(unwrapped, command);
+  }
+  return unwrapped;
+}
+
+/** The command name for error attribution, matching Redis's own casing. */
+function commandName(command: RedisCommand): string {
+  return String(command[0]).toUpperCase();
+}
+
+/**
  * The Node.js adapter: connects a [node-redis](https://www.npmjs.com/package/redis)
  * client and returns the `RedisClient` handle `benni()` binds to. Accepts
  * every node-redis option (`url`, `socket`, `username`/`password`, ...).
@@ -80,14 +110,24 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
 
   return {
     async send(command: RedisCommand) {
-      return client.sendCommand<RedisReply>(toRedisArguments(command));
+      try {
+        return await client.sendCommand<RedisReply>(toRedisArguments(command));
+      } catch (error) {
+        throw normalizeError(error, commandName(command));
+      }
     },
     async pipeline(commands: readonly RedisCommand[]) {
       const pipeline = client.multi();
       for (const command of commands) {
         pipeline.sendCommand(toRedisArguments(command));
       }
-      return pipeline.execAsPipeline() as unknown as Promise<RedisReply[]>;
+      try {
+        return (await pipeline.execAsPipeline()) as unknown as RedisReply[];
+      } catch (error) {
+        // node-redis rejects the whole pipeline with the first failing
+        // command's own error, so there is nothing to attribute it to.
+        throw normalizeError(error);
+      }
     },
     async transaction(commands: readonly RedisCommand[]) {
       const transaction = client.multi();
@@ -97,7 +137,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       try {
         return (await transaction.exec()) as unknown as RedisReply[];
       } catch (error) {
-        throw unwrapMultiError(error);
+        throw normalizeError(error);
       }
     },
     async session(): Promise<RedisSession> {
@@ -119,7 +159,13 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       });
       const session: RedisSession = {
         async send(command: RedisCommand) {
-          return duplicate.sendCommand<RedisReply>(toRedisArguments(command));
+          try {
+            return await duplicate.sendCommand<RedisReply>(
+              toRedisArguments(command)
+            );
+          } catch (error) {
+            throw normalizeError(error, commandName(command));
+          }
         },
         async watchedTransaction(commands: readonly RedisCommand[]) {
           const transaction = duplicate.multi();
@@ -133,7 +179,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
             // per-command runtime error inside a committed EXEC surfaces as
             // the failing command's own error, not node-redis's aggregate.
             if (error instanceof WatchError) return null;
-            throw unwrapMultiError(error);
+            throw normalizeError(error);
           }
         },
         get closed() {

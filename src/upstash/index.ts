@@ -1,3 +1,4 @@
+import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -72,7 +73,10 @@ export function upstash(options: UpstashOptions): RedisClient {
 
   return {
     async send(command: RedisCommand): Promise<RedisReply> {
-      return unwrapOne(await post("", command.map(toRestArgument)));
+      return unwrapOne(
+        await post("", command.map(toRestArgument)),
+        commandName(command)
+      );
     },
     async pipeline(commands: readonly RedisCommand[]): Promise<RedisReply[]> {
       if (commands.length === 0) return [];
@@ -80,7 +84,8 @@ export function upstash(options: UpstashOptions): RedisClient {
         await post(
           "/pipeline",
           commands.map((command) => command.map(toRestArgument))
-        )
+        ),
+        commands
       );
     },
     async transaction(
@@ -91,7 +96,8 @@ export function upstash(options: UpstashOptions): RedisClient {
         await post(
           "/multi-exec",
           commands.map((command) => command.map(toRestArgument))
-        )
+        ),
+        commands
       );
     },
     // session is intentionally omitted — HTTP has no persistent connection.
@@ -112,15 +118,26 @@ function toRestArgument(argument: RedisCommandArgument): string {
   return typeof argument === "string" ? argument : String(argument);
 }
 
+/** The command name for error attribution, matching Redis's own casing. */
+function commandName(command: RedisCommand): string {
+  return String(command[0]).toUpperCase();
+}
+
 /**
  * Unwrap one `{ result }` / `{ error }` REST reply. Upstash's default JSON mode
  * mirrors RESP2 flat shapes (integers as numbers, arrays not maps, nil as
  * null) — exactly what the Node adapter forces and the typed stores decode — so
  * no reply normalization beyond the result/error unwrap is needed.
+ *
+ * `{ error }` is the REST protocol's rendering of a Redis error reply, so it
+ * becomes a `RedisServerError` like every other adapter's server error, with the
+ * text kept verbatim (code included) and the raw payload string as `cause`.
+ * Transport failures — a 5xx, a non-JSON body — stay plain `Error`s: nothing
+ * about them came from Redis.
  */
-function unwrapOne(payload: unknown): RedisReply {
+function unwrapOne(payload: unknown, command?: string): RedisReply {
   if (isErrorPayload(payload) && payload.error) {
-    throw new Error(String(payload.error));
+    throw redisServerError(String(payload.error), command);
   }
   if (
     typeof payload !== "object" ||
@@ -132,16 +149,25 @@ function unwrapOne(payload: unknown): RedisReply {
   return ((payload as { result: RedisReply }).result ?? null) as RedisReply;
 }
 
-function unwrapMany(payload: unknown): RedisReply[] {
+function unwrapMany(
+  payload: unknown,
+  commands: readonly RedisCommand[]
+): RedisReply[] {
   // A failed transaction comes back as one top-level { error } object, not an
-  // array — surface the Redis error text instead of a shape complaint.
+  // array — surface the Redis error text instead of a shape complaint. Which
+  // command failed is not recoverable from that shape, so it goes unattributed.
   if (isErrorPayload(payload) && payload.error) {
-    throw new Error(String(payload.error));
+    throw redisServerError(String(payload.error));
   }
   if (!Array.isArray(payload)) {
     throw new TypeError(
       "Expected an array response from an Upstash pipeline/multi-exec"
     );
   }
-  return payload.map(unwrapOne);
+  // Element order matches the request, so a failing element can name its own
+  // command.
+  return payload.map((element, index) => {
+    const command = commands[index];
+    return unwrapOne(element, command && commandName(command));
+  });
 }

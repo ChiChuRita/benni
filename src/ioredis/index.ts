@@ -4,6 +4,7 @@ import IORedis, {
   type Redis as IORedisClient,
   type RedisOptions
 } from "ioredis";
+import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -125,6 +126,36 @@ function sessionOverrides(
 }
 
 /**
+ * ioredis reports a server error reply as a `ReplyError` and tags it with the
+ * command that drew it. Recognized by `name`, not `instanceof`: an adopted
+ * client can come from a different copy of ioredis in the tree — the same reason
+ * `AdoptableClient` is structural — and that copy's `ReplyError` is a different
+ * class identity, so an `instanceof` gate would silently stop normalizing for
+ * exactly the clients this adapter is proudest of adopting.
+ */
+function isReplyError(
+  error: unknown
+): error is Error & { readonly command?: { readonly name?: unknown } } {
+  return error instanceof Error && error.name === "ReplyError";
+}
+
+/**
+ * The single normalization point for anything ioredis reports. A server error
+ * reply becomes a `RedisServerError`, attributed to the command ioredis recorded
+ * on it (falling back to `command` for the rare reply that carries none).
+ * Everything else — connection errors, `MaxRetriesPerRequestError` — passes
+ * through untouched, because those are client-side, not the server's answer.
+ */
+function normalizeError(error: unknown, command?: string): unknown {
+  if (!isReplyError(error)) return error;
+  const attributed = error.command?.name;
+  return redisServerError(
+    error,
+    typeof attributed === "string" ? attributed.toUpperCase() : command
+  );
+}
+
+/**
  * ioredis rewrites key *arguments* with `keyPrefix` but leaves SCAN patterns
  * alone, so a prefixed client stores at `<prefix><key>` while `schema.key()`,
  * every `MATCH` pattern, and any key a Lua script builds from a prefix argument
@@ -191,7 +222,11 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
 
   return {
     async send(command: RedisCommand) {
-      return normalize(await client.call(name(command), args(command)));
+      try {
+        return normalize(await client.call(name(command), args(command)));
+      } catch (error) {
+        throw normalizeError(error, name(command));
+      }
     },
     async pipeline(commands: readonly RedisCommand[]) {
       if (commands.length === 0) return [];
@@ -199,7 +234,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       for (const command of commands) {
         pipeline.call(name(command), args(command));
       }
-      return unwrap(await pipeline.exec(), "pipeline");
+      return unwrap(await execOf(pipeline), "pipeline");
     },
     async transaction(commands: readonly RedisCommand[]) {
       if (commands.length === 0) return [];
@@ -207,7 +242,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       for (const command of commands) {
         transaction.call(name(command), args(command));
       }
-      return unwrap(await transaction.exec(), "transaction");
+      return unwrap(await execOf(transaction), "transaction");
     },
     async session(): Promise<RedisSession> {
       if (clientClosed) throw closedError();
@@ -225,14 +260,20 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
 
       const session: RedisSession = {
         async send(command: RedisCommand) {
-          return normalize(await duplicate.call(name(command), args(command)));
+          try {
+            return normalize(
+              await duplicate.call(name(command), args(command))
+            );
+          } catch (error) {
+            throw normalizeError(error, name(command));
+          }
         },
         async watchedTransaction(commands: readonly RedisCommand[]) {
           const transaction = duplicate.multi();
           for (const command of commands) {
             transaction.call(name(command), args(command));
           }
-          const replies = await transaction.exec();
+          const replies = await execOf(transaction);
           // ioredis resolves EXEC as null when a key watched on this
           // connection changed — the one cross-adapter abort signal.
           if (replies === null) return null;
@@ -439,10 +480,28 @@ function toArgument(argument: RedisCommandArgument): string | Buffer {
 }
 
 /**
+ * `exec()` itself rejects when the batch never ran — a queue-time error reply
+ * (`ERR unknown command`), a connection that dropped mid-flight. Normalize that
+ * rejection too, or a server error would still leak ioredis's `ReplyError` on
+ * the one path that skips the `[error, reply]` tuples.
+ */
+async function execOf(batch: {
+  exec(): Promise<Array<[Error | null, unknown]> | null>;
+}): Promise<Array<[Error | null, unknown]> | null> {
+  try {
+    return await batch.exec();
+  } catch (error) {
+    throw normalizeError(error);
+  }
+}
+
+/**
  * ioredis reports pipeline and transaction results as `[error, reply]` tuples.
  * Surface a per-command failure by throwing it, matching the other adapters:
  * handing back an `Error` where a reply belongs would push the failure into the
- * typed decoders, which report it as a reply-shape problem instead.
+ * typed decoders, which report it as a reply-shape problem instead. Each tuple
+ * error still carries the command that produced it, so normalization here keeps
+ * per-command attribution a whole-batch rejection cannot.
  */
 function unwrap(
   replies: Array<[Error | null, unknown]> | null,
@@ -454,7 +513,7 @@ function unwrap(
     );
   }
   return replies.map(([error, reply]) => {
-    if (error) throw error;
+    if (error) throw normalizeError(error);
     return normalize(reply);
   });
 }

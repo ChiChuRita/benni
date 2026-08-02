@@ -6,7 +6,13 @@ export { codecs } from "./core/codecs.js";
 // Errors.
 export {
   PartialRecordError,
+  RedisServerError,
+  type RedisServerErrorOptions,
   ReplyShapeError,
+  redisErrorCode,
+  // Named for custom adapters: the normalizer every built-in adapter runs a
+  // server error reply through.
+  redisServerError,
   ValidationError
 } from "./core/errors.js";
 export type { HashTagLayout, KeyOptions } from "./core/keys.js";

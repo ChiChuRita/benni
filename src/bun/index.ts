@@ -1,3 +1,4 @@
+import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -6,6 +7,26 @@ import type {
   RedisSession,
   RedisSubscriber
 } from "../core/index.js";
+
+/**
+ * Bun rejects with a `RedisError` for everything and tells the cases apart by
+ * `code`: a server error reply is `ERR_REDIS_INVALID_RESPONSE`, while its own
+ * client-side failures use codes of their own
+ * (`ERR_REDIS_CONNECTION_CLOSED`, ...) — verified on 1.3.14. So the code, not
+ * the class, is the signal for "the server answered with an error".
+ */
+const SERVER_REPLY_CODE = "ERR_REDIS_INVALID_RESPONSE";
+
+/**
+ * The single normalization point for anything Bun's client rejects with: a
+ * server error reply becomes a `RedisServerError`, everything else (connection
+ * closed, offline queue disabled, timeouts) passes through untouched.
+ */
+function normalizeError(error: unknown, command?: string): unknown {
+  if (!(error instanceof Error)) return error;
+  if ((error as { code?: unknown }).code !== SERVER_REPLY_CODE) return error;
+  return redisServerError(error, command);
+}
 
 export type BunOptions = {
   readonly url?: string;
@@ -63,7 +84,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       );
       const replies: RedisReply[] = [];
       for (const result of settled) {
-        if (result.status === "rejected") throw result.reason;
+        if (result.status === "rejected") throw normalizeError(result.reason);
         replies.push(result.value);
       }
       return replies;
@@ -80,15 +101,19 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       ];
       const settled = await Promise.allSettled(pending);
       const execResult = settled[settled.length - 1]!;
-      if (execResult.status === "rejected") throw execResult.reason;
+      if (execResult.status === "rejected") {
+        throw normalizeError(execResult.reason);
+      }
       const reply = execResult.value;
       if (Array.isArray(reply)) {
         // A per-command runtime error inside a committed EXEC (e.g.
         // WRONGTYPE) decodes as an Error element; reject with it instead of
         // handing the caller an Error where a reply belongs — matching the
-        // Node adapter's MultiErrorReply rejection.
+        // Node adapter's MultiErrorReply rejection. An Error where EXEC puts a
+        // reply can only be the server's own error, so it is normalized
+        // unconditionally rather than through the `code` gate.
         for (const element of reply) {
-          if (element instanceof Error) throw element;
+          if (element instanceof Error) throw redisServerError(element);
         }
       }
       return reply as RedisReply[];
@@ -123,7 +148,9 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
           ];
           const settled = await Promise.allSettled(pending);
           const execResult = settled[settled.length - 1]!;
-          if (execResult.status === "rejected") throw execResult.reason;
+          if (execResult.status === "rejected") {
+            throw normalizeError(execResult.reason);
+          }
           const reply = execResult.value;
           // RESP3 abort signal (verified on 1.3.14).
           if (reply === null || reply === undefined) return null;
@@ -136,9 +163,9 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
           if (reply.length === 0 && commands.length > 0) return null;
           // A per-command runtime error inside a committed EXEC (e.g.
           // WRONGTYPE) arrives as a plain Error element; reject with the
-          // first one before normalization can touch it.
+          // first one, normalized, before reply normalization can touch it.
           for (const element of reply) {
-            if (element instanceof Error) throw element;
+            if (element instanceof Error) throw redisServerError(element);
           }
           return reply.map(normalizeReply);
         },
@@ -237,12 +264,16 @@ async function sendCommand(
   return normalizeReply(await rawSend(client, command));
 }
 
-function rawSend(
+async function rawSend(
   client: Bun.RedisClient,
   command: RedisCommand
 ): Promise<unknown> {
   const [name, ...args] = command;
-  return client.send(name, args.map(toBunArgument));
+  try {
+    return await client.send(name, args.map(toBunArgument));
+  } catch (error) {
+    throw normalizeError(error, String(name).toUpperCase());
+  }
 }
 
 function toBunArgument(argument: RedisCommandArgument): string | Uint8Array {

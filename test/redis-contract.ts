@@ -13,7 +13,8 @@ import {
   defineList,
   defineSet,
   defineSortedSet,
-  type RedisClient
+  type RedisClient,
+  RedisServerError
 } from "../src/core/index.js";
 import {
   booleanNumberReply,
@@ -24,6 +25,20 @@ import {
 } from "../src/core/transaction.js";
 
 export type RedisClientFactory = () => Promise<RedisClient>;
+
+/**
+ * Resolve to whatever a promise rejected with. `expect(...).rejects` cannot
+ * hand the error back for property assertions, and this suite runs under two
+ * test runners, so it stays a plain helper.
+ */
+async function captureError(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected the operation to reject, but it resolved");
+}
 
 /**
  * Runner-agnostic poll: this contract suite executes under both Vitest and
@@ -89,6 +104,45 @@ export async function expectRedisClientContract(
         .exec();
       expect(transactionResults).toEqual([undefined, "transaction", true, 1]);
     }
+
+    // Server errors are normalized. Whatever taxonomy the underlying client
+    // uses — node-redis's SimpleError, ioredis's ReplyError, Bun's RedisError,
+    // an Upstash `{ error }` payload — what reaches the caller is one
+    // RedisServerError carrying the parsed code, so `catch` is portable.
+    const wrongTypeKey = `${rawKey}:wrongtype`;
+    await client.send(["DEL", wrongTypeKey]);
+    await client.send(["HSET", wrongTypeKey, "field", "1"]);
+    const sendError = await captureError(
+      client.send(["ZADD", wrongTypeKey, "1", "member"])
+    );
+    expect(sendError).toBeInstanceOf(RedisServerError);
+    const normalized = sendError as RedisServerError;
+    expect(normalized.code).toBe("WRONGTYPE");
+    // The message stays the server's verbatim, code first, which is what the
+    // NOSCRIPT and BUSYGROUP checks in core match on.
+    expect(normalized.message.startsWith("WRONGTYPE ")).toBe(true);
+    // Attribution is available on a single send, where the throw site knows it.
+    expect(normalized.command).toBe("ZADD");
+    // Nothing is discarded: the adapter-native error (or raw REST payload) is
+    // still reachable.
+    expect(normalized.cause).toBeDefined();
+
+    // The batch paths normalize too. Which entry failed is not recoverable on
+    // every adapter, so only the type and code are contractual here.
+    const pipelineError = await captureError(
+      client.pipeline([["PING"], ["ZADD", wrongTypeKey, "1", "member"]])
+    );
+    expect(pipelineError).toBeInstanceOf(RedisServerError);
+    expect((pipelineError as RedisServerError).code).toBe("WRONGTYPE");
+
+    if (client.transaction) {
+      const transactionError = await captureError(
+        client.transaction([["PING"], ["ZADD", wrongTypeKey, "1", "member"]])
+      );
+      expect(transactionError).toBeInstanceOf(RedisServerError);
+      expect((transactionError as RedisServerError).code).toBe("WRONGTYPE");
+    }
+    await client.send(["DEL", wrongTypeKey]);
 
     if (client.session) {
       const sessionKey = `${rawKey}:session`;
