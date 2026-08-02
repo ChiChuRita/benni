@@ -13,11 +13,11 @@
     "url": "https://github.com/ChiChuRita/beni/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public",
-    "provenance": true
+    "provenance": false
   },
   "type": "module",
   "main": "./dist/index.mjs",

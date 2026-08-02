@@ -19,7 +19,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22, 24]
+        # Matches the `engines.node` floor in package.json. Node 20 went EOL in
+        # April 2026 and the repo's pnpm needs >=22.13, so the toolchain cannot
+        # install or test on 20: claiming support for it would be untested.
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
