@@ -5,6 +5,11 @@
 // modules whose schemas the app actually declares. Turning any of these into
 // a value import silently re-pins every store to the root entry.
 import type { BitmapSchema, createBitmapResource } from "./core/bitmap.js";
+import {
+  type ClientSource,
+  clientArgs,
+  SESSION_UNSUPPORTED
+} from "./core/client-source.js";
 import { createCounterStore } from "./core/counter.js";
 import type { createGeoResource, GeoSetSchema } from "./core/geo.js";
 import type { createHashResource } from "./core/hash.js";
@@ -78,8 +83,54 @@ import type {
   SetSchema,
   SortedSetSchema
 } from "./core/types.js";
+// Type-only, like the store factories above: naming a primitive as a value
+// here would pin its module (and its Lua) into every bundle that binds a
+// client. The runtime path goes through each primitive schema's own store
+// binding, exactly as the data stores do.
+import type { BudgetStore } from "./primitives/budget.js";
+import type { CacheSchema, CacheStore } from "./primitives/cache.js";
+import type {
+  IdempotencySchema,
+  IdempotencyStore
+} from "./primitives/idempotency.js";
+import type { LockStore } from "./primitives/lock.js";
+import type { QueueSchema, QueueStore } from "./primitives/queue.js";
+import type { RatelimitStore } from "./primitives/ratelimit.js";
+import type { SemaphoreStore } from "./primitives/semaphore.js";
 
 export type BenniSchema = Record<string, unknown>;
+
+/**
+ * The schema module this app binds, declared once so every `Benni` type can
+ * find it without being handed `typeof schema` again at each call site.
+ *
+ * ```ts
+ * declare module "benni" {
+ *   interface Register {
+ *     schema: typeof import("./schema");
+ *   }
+ * }
+ * ```
+ *
+ * With that in place `Benni` alone is the fully typed handle, so a helper
+ * signature reads `function handlers(redis: Benni)`. Without it nothing
+ * changes: `Benni` stays generic and `Benni<typeof schema>` still works.
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: the augmentation target.
+export interface Register {}
+
+/**
+ * The registered schema module, or the open `BenniSchema` when the app has not
+ * declared one. Written as a conditional over {@link Register} so an empty
+ * interface (the unaugmented default) falls through to the open type.
+ */
+export type RegisteredSchema = Register extends {
+  readonly schema: infer TSchema;
+}
+  ? TSchema extends BenniSchema
+    ? TSchema
+    : BenniSchema
+  : BenniSchema;
 
 export type BenniOptions<TSchema extends BenniSchema = BenniSchema> = {
   readonly schema?: TSchema;
@@ -273,7 +324,16 @@ export type SchemaKind =
   | "hll"
   | "channel"
   | "pattern"
-  | "script";
+  | "script"
+  // The primitives declare themselves the same way, so a cache or a queue is
+  // reachable by name through `redis.query` like any other store.
+  | "cache"
+  | "ratelimit"
+  | "queue"
+  | "lock"
+  | "semaphore"
+  | "idempotency"
+  | "budget";
 
 /**
  * {@link SchemaKind} at runtime. `buildQuery` needs it to tell a benni schema
@@ -292,7 +352,14 @@ const SCHEMA_KINDS: ReadonlySet<unknown> = new Set<SchemaKind>([
   "hll",
   "channel",
   "pattern",
-  "script"
+  "script",
+  "cache",
+  "ratelimit",
+  "queue",
+  "lock",
+  "semaphore",
+  "idempotency",
+  "budget"
 ]);
 
 /**
@@ -455,7 +522,35 @@ export type QueryResource<T> = T extends { readonly kind: "hash" }
                               >
                             >
                           : never
-                        : never;
+                        : PrimitiveResource<T>;
+
+/**
+ * The {@link QueryResource} tail for the primitive kinds, split out so the
+ * data-store chain above stays readable. Same dispatch on the literal `kind`,
+ * and the same `never` for a kind this build does not know.
+ */
+export type PrimitiveResource<T> = T extends { readonly kind: "cache" }
+  ? T extends CacheSchema<infer TValue>
+    ? CacheStore<TValue>
+    : never
+  : T extends { readonly kind: "queue" }
+    ? T extends QueueSchema<infer TPayload, infer TResult>
+      ? QueueStore<TPayload, TResult>
+      : never
+    : T extends { readonly kind: "idempotency" }
+      ? T extends IdempotencySchema<infer TValue>
+        ? IdempotencyStore<TValue>
+        : never
+      : // The rest carry no value type, so the kind alone resolves the store.
+        T extends { readonly kind: "ratelimit" }
+        ? RatelimitStore
+        : T extends { readonly kind: "lock" }
+          ? LockStore
+          : T extends { readonly kind: "semaphore" }
+            ? SemaphoreStore
+            : T extends { readonly kind: "budget" }
+              ? BudgetStore
+              : never;
 
 /**
  * The `redis.query` registry: every schema exported from the bound schema module,
@@ -624,22 +719,7 @@ function createBenniSessionFacade(
   return accessors;
 }
 
-/**
- * Bind a Redis client to create the typed `redis` handle. Access data stores by
- * kind — `redis.hash(schema)`, `redis.zset(schema)`, `redis.scan.*`,
- * `redis.session()` —
- * or, when a `{ schema }` module is passed, reach every bound schema by its
- * export name through the `redis.query` registry (dispatched on each schema's
- * `kind`).
- * @example
- * ```ts
- * import * as schema from "./schema";
- * const redis = benni(client, { schema });
- * await redis.query.users.set("42", { name: "Ada", score: 10 });
- * await redis.hash(schema.users).hset("42", "score", 11);
- * ```
- */
-export function benni<TSchema extends BenniSchema = BenniSchema>(
+function createBenni<TSchema extends BenniSchema = BenniSchema>(
   client: RedisClient,
   options: BenniOptions<TSchema> = {}
 ) {
@@ -652,7 +732,7 @@ export function benni<TSchema extends BenniSchema = BenniSchema>(
 
   async function openSession(): Promise<BenniSession> {
     if (client.session === undefined) {
-      throw new TypeError("Redis client does not support sessions");
+      throw new TypeError(SESSION_UNSUPPORTED);
     }
     return createBenniSessionFacade(await client.session(), ctx);
   }
@@ -870,12 +950,64 @@ export function benni<TSchema extends BenniSchema = BenniSchema>(
 /**
  * The type of the bound handle `benni()` returns — name it in your own
  * signatures the way you would Drizzle's `NodePgDatabase`.
+ *
+ * The parameter defaults to whatever the app declared through
+ * {@link Register}, so with that augmentation in place the bare `Benni` is
+ * already the fully typed handle. Pass `typeof schema` explicitly when you
+ * have not registered one, or for a second handle on a different module.
  * @example
  * ```ts
  * import * as schema from "./schema";
  * export function makeHandlers(redis: Benni<typeof schema>) { ... }
  * ```
  */
-export type Benni<TSchema extends BenniSchema = BenniSchema> = ReturnType<
-  typeof benni<TSchema>
+export type Benni<TSchema extends BenniSchema = RegisteredSchema> = ReturnType<
+  typeof createBenni<TSchema>
 >;
+
+/** {@link BenniOptions} plus the client, for the single-argument form. */
+export type BenniConfig<TSchema extends BenniSchema = BenniSchema> =
+  BenniOptions<TSchema> & {
+    /**
+     * The client, a promise of one, or a factory. A promise or factory is
+     * resolved once on first use, so an adapter never has to be awaited at
+     * module scope.
+     */
+    readonly client: ClientSource;
+  };
+
+/**
+ * Bind a Redis client to create the typed `redis` handle. Reach every schema
+ * the bound `{ schema }` module exports by its export name through
+ * `redis.query` (dispatched on each schema's `kind`), or address a store
+ * directly by kind — `redis.hash(schema)`, `redis.zset(schema)`,
+ * `redis.scan.*`, `redis.session()`.
+ *
+ * Takes either shape. The single-argument form needs no top-level `await`,
+ * because the adapter's promise is resolved on first command:
+ * @example
+ * ```ts
+ * import * as schema from "./schema";
+ *
+ * export const redis = benni({ client: node({ url }), schema });
+ * // or, with a client you already awaited:
+ * export const redis = benni(client, { schema });
+ *
+ * await redis.query.users.hset("42", { name: "Ada", score: 10 });
+ * await redis.hash(schema.users).hset("42", "score", 11);
+ * ```
+ */
+export function benni<TSchema extends BenniSchema = BenniSchema>(
+  config: BenniConfig<TSchema>
+): Benni<TSchema>;
+export function benni<TSchema extends BenniSchema = BenniSchema>(
+  client: ClientSource,
+  options?: BenniOptions<TSchema>
+): Benni<TSchema>;
+export function benni<TSchema extends BenniSchema = BenniSchema>(
+  source: ClientSource | BenniConfig<TSchema>,
+  options?: BenniOptions<TSchema>
+): Benni<TSchema> {
+  const args = clientArgs<BenniOptions<TSchema>>(source, options);
+  return createBenni<TSchema>(args.client, args.options);
+}

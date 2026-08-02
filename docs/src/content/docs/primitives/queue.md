@@ -6,11 +6,23 @@ description: "Run model calls as background jobs that survive refreshes, deploys
 `queue` runs expensive model calls as background jobs, so a generation survives the user refreshing the page, your server deploying, and the request timing out.
 
 ```ts
+// schema.ts
+import { queue } from "benni/schema";
+
+export const generate = queue<{ prompt: string }, string>("generate");
+```
+
+```ts
+// app.ts
+const { id } = await redis.query.generate.enqueue({ prompt });
+```
+
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, `benni/primitives` exports the same queue in its client-taking form, over the same keys:
+
+```ts
 import { queue } from "benni/primitives";
 
-const jobs = queue<{ prompt: string }, string>(client, {
-  prefix: "generate"
-});
+const jobs = queue<{ prompt: string }, string>({ client, prefix: "generate" });
 ```
 
 ## The five bugs you hit in order

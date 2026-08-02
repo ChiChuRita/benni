@@ -12,14 +12,20 @@ One call with a 200k-token context costs what fifty 4k-token calls cost. "100 re
 When you know the cost before you spend it:
 
 ```ts
-import { budget } from "benni/primitives";
+// schema.ts
+import { budget } from "benni/schema";
 
-const budgets = budget(client, {
+export const tokens = budget("tokens", {
   limit: 2_000_000,       // tokens
   windowMs: 86_400_000    // per day
 });
+```
 
-const { ok, remaining, retryAfterMs } = await budgets.charge(userId, promptTokens);
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. `benni/primitives` exports the same budget in its client-taking form for code that holds a client but no handle: `budget({ client, limit, windowMs })`.
+
+```ts
+// app.ts
+const { ok, remaining, retryAfterMs } = await redis.query.tokens.charge(userId, promptTokens);
 if (!ok) {
   return Response.json(
     { error: "Daily token budget exhausted", remaining },

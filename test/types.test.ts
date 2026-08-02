@@ -41,7 +41,16 @@ type Equal<TLeft, TRight> =
 
 type Expect<T extends true> = T;
 
-const client = null as unknown as RedisClient;
+// A stub, not `null`: benni() now narrows the client source at bind time.
+const client: RedisClient = {
+  async send() {
+    return null;
+  },
+  async pipeline() {
+    return [];
+  },
+  async close() {}
+};
 
 const db = benni(client);
 

@@ -1,3 +1,4 @@
+import { TRANSACTION_UNSUPPORTED } from "./client-source.js";
 import { ReplyShapeError, replyShapeError, ValidationError } from "./errors.js";
 import { expectNumber } from "./helpers.js";
 import type { SameSlotList, SlotAnchor } from "./keys.js";
@@ -101,7 +102,7 @@ function buildTransaction<TResults extends readonly unknown[]>(
       }
       assertSameSlot?.("EXEC", declared);
       if (client.transaction === undefined) {
-        throw new TypeError("Redis client does not support transactions");
+        throw new TypeError(TRANSACTION_UNSUPPORTED);
       }
       const replies = await client.transaction(
         queued.map((entry) => entry.command)

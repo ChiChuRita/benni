@@ -66,8 +66,18 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-export const client = await node({ url: process.env.REDIS_URL });
-export const redis = benni(client, { schema });
+// The adapter's promise is taken unawaited: it resolves on the first command,
+// so this file needs no top-level await. `benni(client, { schema })` with an
+// already-awaited client is the same call.
+export const redis = benni({ client: node({ url: process.env.REDIS_URL }), schema });
+
+// Optional, once per app: the bare `Benni` type is then this handle, so no
+// signature has to repeat `typeof schema`.
+declare module "benni" {
+  interface Register {
+    schema: typeof schema;
+  }
+}
 ```
 
 ```ts
@@ -155,32 +165,47 @@ validating or converting too; `json(zodSchema)` validates reads only.
 
 ## Primitives
 
-`benni/primitives` ships the things that are easy to get subtly wrong. They take
-the **adapter client**, not the `benni()` handle:
+The things that are easy to get subtly wrong. They declare themselves the way
+the data structures do, so they live in the same schema module and land in the
+same `redis.query`:
 
 ```ts
-import { cache, lock, queue, ratelimit } from "benni/primitives";
+// schema.ts
+import { cache, lock, queue, ratelimit } from "benni/schema";
 
+export const orderLocks = lock("order", { ttlMs: 10_000 });
+export const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
+export const profiles = cache("profile", { ttlMs: 60_000, codec: json(profile) });
+export const generate = queue<{ prompt: string }, string>("generate");
+```
+
+```ts
+// app.ts
 // Acquisition is fail-fast: retries defaults to 0, so a caller that finds the
 // lock held throws LockNotAcquiredError at once (6 concurrent callers with the
 // default = 5 throws). Pass retries/retryDelayMs to serialize contenders.
-await lock(client).run("order:42", async () => { /* critical section */ }, {
+await redis.query.orderLocks.run("42", async () => { /* critical section */ }, {
   retries: 20,
   retryDelayMs: 100
 });
 
-const { success, remaining } = await ratelimit(client, {
-  limit: 10,
-  windowMs: 60_000
-}).check(userId);
+const { success, remaining } = await redis.query.apiLimit.check(userId);
 
-const profile = await cache<Profile>(client, { ttlMs: 60_000 })
-  .get(userId, () => db.loadProfile(userId));
+const profile = await redis.query.profiles.get(userId, () => db.loadProfile(userId));
 
 // Built for model calls: heartbeat leases, a resumable output stream per job,
 // and cancellation that aborts the provider call.
-const jobs = queue<{ prompt: string }, string>(client, { prefix: "generate" });
-const { id } = await jobs.enqueue({ prompt }, { idempotencyKey: requestId });
+const { id } = await redis.query.generate.enqueue({ prompt }, { idempotencyKey: requestId });
+```
+
+`benni/primitives` keeps a client-taking form for code that holds a client but no
+handle, such as a middleware factory. It is one options object, and `client`
+accepts a client, a promise of one, a factory, or a benni handle:
+
+```ts
+import { ratelimit } from "benni/primitives";
+
+const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
 ```
 
 The lock never frees a lock that expired and was re-acquired. The rate limiter is
@@ -217,10 +242,13 @@ client threw, because nothing about them came from Redis. See rule 8.
 1. **Never hand-cast a reply.** If you are writing `as T` on a Redis read, the
    schema is wrong or missing. That cast is the bug Benni exists to remove.
    `json<T>()` is the same cast with nicer syntax: prefer `json(validator)`.
-2. **Close the client.** `await client.close()`, otherwise Node never exits.
+2. **Close the client.** `await redis.raw.close()`, otherwise Node never exits.
    This matters in tests and scripts.
-3. **Primitives take `client`, not `redis`.** `cache(client, …)`, not
-   `cache(redis, …)`.
+3. **Prefer declaring primitives in the schema module** (`cache("profile", …)`
+   from `benni/schema`) and reaching them through `redis.query`. The
+   client-taking form in `benni/primitives` is one options object whose
+   `client` accepts a client, a promise, a factory, or the `benni()` handle:
+   `cache({ client, ttlMs })`.
 4. **Keys are derived, not written.** `redis.query.users.key("42")` returns
    `"user:42"`. Do not build key strings by hand.
 5. **Don't reach for `benni/core`** unless you are writing an adapter. The public

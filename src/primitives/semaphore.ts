@@ -1,5 +1,7 @@
+import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
+import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
 
 const DEFAULT_PREFIX = "semaphore";
@@ -294,7 +296,7 @@ type Lease = {
  * retry options, same lease renewal. Reach for `lock` when the answer is one,
  * and this when it is a budget.
  */
-export function semaphore(client: RedisClient, options: SemaphoreOptions) {
+function createSemaphore(client: RedisClient, options: SemaphoreOptions) {
   const limit = positiveInt(options.limit, "limit");
   const prefix = options.prefix ?? DEFAULT_PREFIX;
   const defaultLeaseMs = positiveInt(
@@ -505,6 +507,62 @@ export function semaphore(client: RedisClient, options: SemaphoreOptions) {
  */
 function heartbeatFor(leaseMs: number): number {
   return Math.max(1, Math.floor(leaseMs / HEARTBEAT_DIVISOR));
+}
+
+/** The semaphore {@link semaphore} returns. */
+export type SemaphoreStore = ReturnType<typeof createSemaphore>;
+
+/** {@link SemaphoreOptions} plus the client, for the single-argument form. */
+export type SemaphoreConfig = SemaphoreOptions & {
+  /** The client, a promise of one, a factory, or a benni handle. */
+  readonly client: ClientSource;
+};
+
+export function semaphore(config: SemaphoreConfig): SemaphoreStore;
+export function semaphore(
+  client: ClientSource,
+  options: SemaphoreOptions
+): SemaphoreStore;
+export function semaphore(
+  source: ClientSource | SemaphoreConfig,
+  options?: SemaphoreOptions
+): SemaphoreStore {
+  const args = clientArgs<SemaphoreOptions>(source, options);
+  return createSemaphore(args.client, args.options);
+}
+
+/**
+ * A semaphore declared as a schema value, so it lands in `redis.query` next to
+ * the data stores and needs no client of its own.
+ * @example
+ * ```ts
+ * // schema.ts
+ * export const gpuSlots = semaphore("gpu", { limit: 4 });
+ * // app.ts
+ * await redis.query.gpuSlots.run("pool", async () => { … });
+ * ```
+ */
+export type SemaphoreSchema = SemaphoreOptions & {
+  readonly kind: "semaphore";
+  readonly prefix: string;
+};
+
+const semaphoreBinding: StoreBinding = {
+  resource: (ctx, schema: SemaphoreSchema) =>
+    createSemaphore(ctx.client, schema)
+};
+
+/**
+ * Build a {@link SemaphoreSchema}. Exported as `semaphore` from `benni/schema`.
+ */
+export function defineSemaphore(
+  prefix: string,
+  options: SemaphoreOptions
+): SemaphoreSchema {
+  return withStore(
+    { ...options, kind: "semaphore", prefix } as SemaphoreSchema,
+    semaphoreBinding
+  );
 }
 
 function positiveInt(value: number, name: string): number {

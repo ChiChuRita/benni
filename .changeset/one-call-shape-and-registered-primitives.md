@@ -1,0 +1,13 @@
+---
+"benni": minor
+---
+
+One call shape everywhere, a client source that never needs a top-level `await`, and primitives that declare themselves like schemas.
+
+- **`benni()` takes a config object.** `benni({ client, schema })` is now the same call as `benni(client, { schema })`, and `client` accepts a connected client, a promise of one, a factory, or another Benni handle. A promise or factory resolves once on first use, so `benni({ client: node({ url }), schema })` binds without a top-level `await` and a failed connect is retried on the next command instead of remembered. The trade is that a bad URL surfaces at the first command rather than at construction, which is the trade `benni/hono` and `benni/next` already made.
+- **`Register` types the handle once.** Declare `interface Register { schema: typeof schema }` on the `benni` module and the bare `Benni` is the fully typed handle, so a helper signature reads `function handlers(redis: Benni)` instead of repeating `Benni<typeof schema>`. Without the augmentation nothing changes.
+- **Primitives are schema values.** `cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, and `budget` are exported from `benni/schema` as builders that take a prefix and their options, so they sit in the schema module next to the data stores and are reached through `redis.query.<name>` with the same inference. Each carries its own store binding, so a bundle only pulls in the primitives the module declares.
+- **The primitive constructors take one options object.** `cache({ client, ttlMs })` alongside the existing `cache(client, { ttlMs })`, with `client` accepting the same sources as `benni()`, including the handle itself. This removes the "primitives take `client`, not `redis`" papercut.
+- **The primitive store types are nameable.** `CacheStore<T>`, `QueueStore<TPayload, TResult>`, `RatelimitStore`, `LockStore`, `SemaphoreStore`, `IdempotencyStore<T>`, and `BudgetStore` are exported, so a helper can be typed against a primitive without `ReturnType<typeof ...>`.
+
+Everything above is additive: every existing call shape still compiles and behaves identically. The one behavior change is that `benni()` now rejects a client source that is neither a client, a promise, a factory, nor a handle, where it previously accepted it and failed at the first command.

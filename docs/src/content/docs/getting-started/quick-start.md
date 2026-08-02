@@ -56,25 +56,44 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+export const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
 });
+```
 
+`node()` returns a promise, and `benni()` takes it unawaited: the connection opens on the first command instead of at module scope, so this file needs no top-level `await` and drops into a Next.js route or an edge bundle unchanged. The trade is that a connection failure surfaces at the first command rather than at construction. Pass a client you already awaited when you would rather find out at startup:
+
+```ts
+const client = await node({ url: process.env.REDIS_URL });
 export const redis = benni(client, { schema });
 ```
 
-To pass the bound handle around, type it with the exported `Benni<TSchema>`:
+Both forms take the same options. `benni(client, options)` and `benni({ client, ...options })` are the same call.
+
+To pass the bound handle around, register the schema module once and the exported `Benni` type is already the fully typed handle:
+
+```ts
+// redis.ts, next to the code above
+declare module "benni" {
+  interface Register {
+    schema: typeof schema;
+  }
+}
+```
 
 ```ts
 import type { Benni } from "benni";
 
-export function makeHandlers(redis: Benni<typeof schema>) { /* ... */ }
+export function makeHandlers(redis: Benni) { /* ... */ }
 ```
 
-Every accessor the handle exposes is listed in the [Benni Client reference](/benni/api/benni-client/). The client owns a connection, so close it when your process or test finishes, otherwise Node never exits:
+Without the registration nothing breaks: `Benni` stays generic and `Benni<typeof schema>` still names the handle. Every accessor it exposes is listed in the [Benni Client reference](/benni/api/benni-client/).
+
+The client owns a connection, so close it when your process or test finishes, otherwise Node never exits:
 
 ```ts
-await client.close();
+await redis.raw.close();
 ```
 
 ## Read And Write

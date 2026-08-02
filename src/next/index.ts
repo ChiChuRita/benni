@@ -1,3 +1,4 @@
+import { type ClientSource, resolveClient } from "../core/client-source.js";
 import type { RedisClient, RedisCommand } from "../core/index.js";
 import { type RatelimitResult, ratelimit } from "../primitives/index.js";
 
@@ -37,15 +38,12 @@ end
 return 1`;
 
 /**
- * A connected {@link RedisClient}, a promise of one, or a lazy factory. A
- * factory is called (and awaited) once on first use and the client is cached —
- * handy in `cache-handler.mjs`, which Next.js loads at build time when no
- * Redis connection should be opened yet.
+ * A connected {@link RedisClient}, a promise of one, a lazy factory, or the
+ * handle `benni()` returned. A factory is called (and awaited) once on first
+ * use and the client is cached — handy in `cache-handler.mjs`, which Next.js
+ * loads at build time when no Redis connection should be opened yet.
  */
-export type RedisClientSource =
-  | RedisClient
-  | Promise<RedisClient>
-  | (() => RedisClient | Promise<RedisClient>);
+export type RedisClientSource = ClientSource;
 
 /**
  * The stored shape of one cache entry, mirroring what Next.js hands to
@@ -401,20 +399,14 @@ export function rateLimit(options: NextRateLimitOptions): NextRateLimitHandler {
   return Object.assign(handler, { check });
 }
 
+/**
+ * The source narrowed to a client. A promise or factory becomes the shared
+ * lazy facade, which resolves on first command and retries after a failed
+ * connect, so the call sites here can stay `await getClient()`.
+ */
 function createClientResolver(
   source: RedisClientSource
 ): () => Promise<RedisClient> {
-  let cached: Promise<RedisClient> | undefined;
-  return () => {
-    if (!cached) {
-      cached = Promise.resolve(
-        typeof source === "function" ? source() : source
-      );
-      // Do not cache a failed connection attempt; the next call retries.
-      cached.catch(() => {
-        cached = undefined;
-      });
-    }
-    return cached;
-  };
+  const client = resolveClient(source);
+  return () => Promise.resolve(client);
 }

@@ -6,12 +6,16 @@ description: "Exactly-once side effects keyed by a client-supplied Idempotency-K
 A retried POST must not charge the card twice, and it must return the *first* response rather than a fresh one. That is the [Stripe `Idempotency-Key`](https://docs.stripe.com/api/idempotent_requests) contract, and clients retry far more often than you would like: double-clicks, mobile reconnects, proxy timeouts, and every SDK with automatic retries.
 
 ```ts
-import { idempotency } from "benni/primitives";
+// schema.ts
+import { idempotency } from "benni/schema";
 
-const once = idempotency<Receipt>(client);
+export const charges = idempotency<Receipt>("charge");
+```
 
+```ts
+// app.ts
 export async function POST(request: Request) {
-  const { value, replayed } = await once.run(
+  const { value, replayed } = await redis.query.charges.run(
     request.headers.get("Idempotency-Key"),
     () => chargeCard(order)
   );
@@ -20,6 +24,8 @@ export async function POST(request: Request) {
 ```
 
 The first caller runs the handler and stores its result. Every later caller with that key gets the stored result back, without the handler running again.
+
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. `benni/primitives` exports the same runner in its client-taking form for code that holds a client but no handle: `idempotency<Receipt>({ client })`.
 
 ## Not A Cache
 

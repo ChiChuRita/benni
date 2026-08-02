@@ -6,17 +6,30 @@ description: "A correct distributed lock over Redis: acquire with SET NX PX, ren
 `lock` is a distributed lock built the correct way: acquire with `SET key token NX PX ttl`, and release with an atomic check-and-delete Lua so a caller can **never** delete a lock that already expired and was re-acquired by someone else, the classic footgun of a naive `DEL`.
 
 ```ts
-import { lock } from "benni/primitives";
+// schema.ts
+import { lock } from "benni/schema";
 
-const locks = lock(client, { ttlMs: 10_000 });
+export const orderLocks = lock("order", { ttlMs: 10_000 });
+```
 
-await locks.run("order:42", async () => {
+```ts
+// app.ts
+await redis.query.orderLocks.run("42", async () => {
   // critical section: the lock is renewed while this runs, and released
   // automatically, even if this throws
 });
 ```
 
-`lock` takes any `RedisClient`, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, `benni/primitives` exports the same lock in its client-taking form, over the same keys:
+
+```ts
+import { lock } from "benni/primitives";
+
+const locks = lock({ client, prefix: "order", ttlMs: 10_000 });
+await locks.run("42", async () => { /* ... */ });
+```
+
+`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
 
 Two defaults decide how it behaves under pressure, and both are worth reading before you ship: acquisition **fails fast**, and `run` **renews the lease** while your body is in flight.
 

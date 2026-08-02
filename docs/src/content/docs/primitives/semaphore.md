@@ -8,12 +8,18 @@ A lock lets one caller through. A semaphore lets `N` through. That number is usu
 Rate and concurrency are different constraints, and model providers impose both: a rate limit protects their billing, a concurrency limit protects their capacity, and exceeding either gets you 429s. `p-limit` solves this inside one process; the moment you run two instances, the limit is per-instance and the provider sees the sum.
 
 ```ts
-import { semaphore } from "benni/primitives";
+// schema.ts
+import { semaphore } from "benni/schema";
 
-const slots = semaphore(client, { limit: 20, leaseMs: 60_000 });
-
-const answer = await slots.run("openai", async () => callModel(prompt));
+export const slots = semaphore("provider", { limit: 20, leaseMs: 60_000 });
 ```
+
+```ts
+// app.ts
+const answer = await redis.query.slots.run("openai", async () => callModel(prompt));
+```
+
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. `benni/primitives` exports the same semaphore in its client-taking form for code that holds a client but no handle: `semaphore({ client, limit: 20 })`.
 
 At most 20 callers are inside that body at once, across every process pointed at the same Redis. The lease is renewed while the body runs, so a slow call keeps its slot rather than losing it mid-flight.
 

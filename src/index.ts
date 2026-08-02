@@ -1,6 +1,13 @@
 // Public API of the root entrypoint. The full low-level surface (store
 // builders, keyspace helpers, reply utilities) lives under `benni/core`.
 
+// How every entry point takes a client: connected, connecting, or not created
+// yet.
+export {
+  type ClientProvider,
+  type ClientSource,
+  resolveClient
+} from "./core/client-source.js";
 // Codecs.
 export { codecs } from "./core/codecs.js";
 // Errors.
@@ -61,12 +68,18 @@ export type {
 } from "./core/types.js";
 export {
   type Benni,
+  type BenniConfig,
   type BenniOptions,
   type BenniSchema,
   type BenniSession,
   type BenniWatchOptions,
   benni,
+  type PrimitiveResource,
   type QueryRegistry,
   type QueryResource,
+  // The module-augmentation target: declare `schema` on it once and every
+  // `Benni` in the app is typed without being handed `typeof schema` again.
+  type Register,
+  type RegisteredSchema,
   type SchemaKind
 } from "./database.js";

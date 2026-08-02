@@ -3,13 +3,20 @@ title: "Benni Client"
 description: "Create a Benni client by passing a Redis adapter to benni(), then reach every schema through typed data-structure accessors."
 ---
 
-Create a Benni client by passing a Redis adapter to `benni`.
+Create a Benni client by passing a Redis adapter to `benni`. It takes either shape, and they are the same call:
 
 ```ts
 import { benni } from "benni";
+import { node } from "benni/node";
 
+// One object, no top-level await: the promise resolves on the first command.
+const redis = benni({ client: node({ url }), schema });
+
+// Or a client you already have.
 const redis = benni(client, { schema });
 ```
+
+The `client` accepts a connected `RedisClient`, a promise of one, a factory returning either, or another Benni handle. A promise or factory is resolved once on first use and cached, and a failed connect is retried on the next command rather than remembered. The cost of the lazy form is that a bad `REDIS_URL` surfaces at the first command instead of at startup.
 
 `BenniOptions` has three fields, all optional:
 
@@ -23,16 +30,38 @@ Everything else a client can do follows from the adapter you pass in.
 
 Every data-structure accessor exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
 
-To type a function parameter that accepts the bound handle, use the exported `Benni<TSchema>` type:
+## Registering The Schema Module
+
+Declare the schema module once through the `Register` interface and the bare `Benni` type is the fully typed handle everywhere, so no signature has to repeat `typeof schema`:
+
+```ts
+// redis.ts
+import * as schema from "./schema";
+
+export const redis = benni({ client: node({ url }), schema });
+
+declare module "benni" {
+  interface Register {
+    schema: typeof schema;
+  }
+}
+```
 
 ```ts
 import type { Benni } from "benni";
-import * as schema from "./schema";
 
-export function makeHandlers(redis: Benni<typeof schema>) {
+export function makeHandlers(redis: Benni) {
   // redis.query.users, redis.hash(...), ... all fully typed
 }
 ```
+
+Registration is optional and changes nothing else. Without it, `Benni` stays generic over the open schema type and you name the module explicitly:
+
+```ts
+export function makeHandlers(redis: Benni<typeof schema>) { /* ... */ }
+```
+
+Pass the generic explicitly for a second handle bound to a different module, too: the registration sets the default, not a ceiling.
 
 ## `redis.query`
 
@@ -47,11 +76,14 @@ const user = await redis.query.users.hget("42");
 await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);
 ```
 
-`redis.query.<name>` returns the same resource as the matching `redis.<kind>(schema)` accessor. It covers all twelve kinds: the data stores (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`), pub/sub channels and patterns, and scripts:
+`redis.query.<name>` returns the same resource as the matching `redis.<kind>(schema)` accessor. It covers the twelve data kinds (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`, pub/sub channels and patterns, and scripts) and the seven primitives (`cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, `budget`):
 
 ```ts
 await redis.query.userEvents.publish({ id: "42", action: "created" });
 await redis.query.rateLimit.run({ keys: { counter: "user:42" }, args: { limit: 100 } });
+
+// A primitive declared in the same module, reached the same way.
+const profile = await redis.query.profiles.get(userId, () => db.load(userId));
 ```
 
 Counter and string stores are not separate kinds, so a `kv` schema always maps to the `kv` resource. `redis.query.<name>` on a `kv(prefix, number())` therefore has `get` / `set` / `del` but no `incr`: reach for `redis.counter(schema)` for the counter commands and `redis.string(schema)` for the string ones. Both work on the same keys as the `kv` resource, so mixing them on one schema is fine.

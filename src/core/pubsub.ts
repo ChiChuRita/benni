@@ -1,3 +1,4 @@
+import { SUBSCRIBER_UNSUPPORTED } from "./client-source.js";
 import { replyShapeError } from "./errors.js";
 import { expectNumber } from "./helpers.js";
 import { type KeyOptions, keyBuilder } from "./keys.js";
@@ -332,9 +333,7 @@ export function createPubSubHub(
     if (leased && !leased.closed) return leased;
     if (leasing) return leasing;
     if (!client.subscriber) {
-      throw new TypeError(
-        "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node or benni/bun."
-      );
+      throw new TypeError(SUBSCRIBER_UNSUPPORTED);
     }
     leasing = client
       .subscriber()

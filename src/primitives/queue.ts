@@ -1,9 +1,12 @@
+import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
+import { type StoreBinding, withStore } from "../core/store.js";
 import { xreadStreamPairs } from "../core/stream.js";
 import type {
   Codec,
+  InferAnchors,
   RedisClient,
   RedisReply,
   RedisSession
@@ -950,7 +953,7 @@ return 1
  * connection and blocks on a doorbell list when the adapter provides
  * `session()`, falling back to polling when it does not.
  */
-export function queue<TPayload, TResult = unknown>(
+function createQueue<TPayload, TResult = unknown>(
   client: RedisClient,
   options?: QueueOptions<TPayload, TResult>
 ) {
@@ -1829,6 +1832,68 @@ function toNumber(reply: RedisReply): number {
   if (typeof reply === "bigint") return Number(reply);
   if (typeof reply === "string") return Number(reply);
   return 0;
+}
+
+/** The queue {@link queue} returns. */
+export type QueueStore<TPayload, TResult = unknown> = ReturnType<
+  typeof createQueue<TPayload, TResult>
+>;
+
+/** {@link QueueOptions} plus the client, for the single-argument form. */
+export type QueueConfig<TPayload, TResult> = QueueOptions<TPayload, TResult> & {
+  /** The client, a promise of one, a factory, or a benni handle. */
+  readonly client: ClientSource;
+};
+
+export function queue<TPayload, TResult = unknown>(
+  config: QueueConfig<TPayload, TResult>
+): QueueStore<TPayload, TResult>;
+export function queue<TPayload, TResult = unknown>(
+  client: ClientSource,
+  options?: QueueOptions<TPayload, TResult>
+): QueueStore<TPayload, TResult>;
+export function queue<TPayload, TResult = unknown>(
+  source: ClientSource | QueueConfig<TPayload, TResult>,
+  options?: QueueOptions<TPayload, TResult>
+): QueueStore<TPayload, TResult> {
+  const args = clientArgs<QueueOptions<TPayload, TResult>>(source, options);
+  return createQueue<TPayload, TResult>(args.client, args.options);
+}
+
+/**
+ * A queue declared as a schema value, so it lands in `redis.query` next to the
+ * data stores and needs no client of its own.
+ * @example
+ * ```ts
+ * // schema.ts
+ * export const generate = queue<{ prompt: string }, string>("generate");
+ * // app.ts
+ * const { id } = await redis.query.generate.enqueue({ prompt });
+ * ```
+ */
+export type QueueSchema<TPayload, TResult> = InferAnchors<TPayload, TResult> &
+  QueueOptions<TPayload, TResult> & {
+    readonly kind: "queue";
+    readonly prefix: string;
+  };
+
+const queueBinding: StoreBinding = {
+  resource: (ctx, schema: QueueSchema<unknown, unknown>) =>
+    createQueue(ctx.client, schema)
+};
+
+/** Build a {@link QueueSchema}. Exported as `queue` from `benni/schema`. */
+export function defineQueue<TPayload, TResult = unknown>(
+  prefix: string,
+  options?: QueueOptions<TPayload, TResult>
+): QueueSchema<TPayload, TResult> {
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    ...options,
+    kind: "queue",
+    prefix
+  } as QueueSchema<TPayload, TResult>;
+  return withStore(schema, queueBinding);
 }
 
 function priorityOf(value: number): number {

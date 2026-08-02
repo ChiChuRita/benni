@@ -1,12 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RedisClient } from "../src/core/index.js";
+import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
 import {
   budget,
   cache,
+  defineCache as cacheSchema,
   idempotency,
   lock,
   ratelimit,
+  defineRatelimit as ratelimitSchema,
   semaphore
 } from "../src/primitives/index.js";
 
@@ -599,6 +602,54 @@ describeRedis("primitives (live)", () => {
     const other = await b.check(uid());
     expect(other.ok).toBe(true);
     expect(other.retryAfterMs).toBe(0);
+  });
+
+  it("resolves a primitive declared as a schema, over the handle's client", async () => {
+    // The registry path end to end: the schema's own store binding hands the
+    // bound client to the primitive, so redis.query.<name> talks to the same
+    // Redis the handle does and lands on the prefix the schema declared.
+    const prefix = `${run}:registry`;
+    const schema = {
+      profiles: cacheSchema<{ name: string }>(`${prefix}:cache`, {
+        ttlMs: 10_000
+      }),
+      apiLimit: ratelimitSchema(`${prefix}:limit`, {
+        limit: 2,
+        windowMs: 60_000
+      })
+    };
+    const redis = benni(client, { schema });
+    const id = uid();
+
+    let loads = 0;
+    const loader = () => {
+      loads += 1;
+      return { name: "Ada" };
+    };
+    await expect(redis.query.profiles.get(id, loader)).resolves.toEqual({
+      name: "Ada"
+    });
+    // The second read is a hit, so the entry really landed in Redis.
+    await expect(redis.query.profiles.get(id, loader)).resolves.toEqual({
+      name: "Ada"
+    });
+    expect(loads).toBe(1);
+    // And it landed under the declared prefix.
+    await expect(
+      client.send(["EXISTS", `${prefix}:cache:{${id}}`])
+    ).resolves.toBe(1);
+
+    await expect(redis.query.apiLimit.check(id)).resolves.toMatchObject({
+      success: true,
+      remaining: 1
+    });
+    await expect(redis.query.apiLimit.check(id)).resolves.toMatchObject({
+      success: true,
+      remaining: 0
+    });
+    await expect(redis.query.apiLimit.check(id)).resolves.toMatchObject({
+      success: false
+    });
   });
 
   it("budget: refuses an id that would build an empty hash tag", async () => {

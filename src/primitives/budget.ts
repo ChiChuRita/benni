@@ -1,5 +1,7 @@
+import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
+import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
 
 const DEFAULT_PREFIX = "budget";
@@ -412,7 +414,7 @@ export type BudgetHold = {
  * accounting: an exact log would keep one entry per request alive for the
  * whole window, which for a daily token budget is the wrong shape entirely.
  */
-export function budget(client: RedisClient, options: BudgetOptions) {
+function createBudget(client: RedisClient, options: BudgetOptions) {
   const limit = positiveInt(options.limit, "limit");
   const windowMs = positiveInt(options.windowMs, "windowMs");
   const prefix = options.prefix ?? DEFAULT_PREFIX;
@@ -645,6 +647,59 @@ function positiveInt(value: number, name: string): number {
     );
   }
   return value;
+}
+
+/** The budget {@link budget} returns. */
+export type BudgetStore = ReturnType<typeof createBudget>;
+
+/** {@link BudgetOptions} plus the client, for the single-argument form. */
+export type BudgetConfig = BudgetOptions & {
+  /** The client, a promise of one, a factory, or a benni handle. */
+  readonly client: ClientSource;
+};
+
+export function budget(config: BudgetConfig): BudgetStore;
+export function budget(
+  client: ClientSource,
+  options: BudgetOptions
+): BudgetStore;
+export function budget(
+  source: ClientSource | BudgetConfig,
+  options?: BudgetOptions
+): BudgetStore {
+  const args = clientArgs<BudgetOptions>(source, options);
+  return createBudget(args.client, args.options);
+}
+
+/**
+ * A budget declared as a schema value, so it lands in `redis.query` next to
+ * the data stores and needs no client of its own.
+ * @example
+ * ```ts
+ * // schema.ts
+ * export const tokens = budget("tokens", { limit: 1_000_000, windowMs: 86_400_000 });
+ * // app.ts
+ * const hold = await redis.query.tokens.reserve(userId, estimate);
+ * ```
+ */
+export type BudgetSchema = BudgetOptions & {
+  readonly kind: "budget";
+  readonly prefix: string;
+};
+
+const budgetBinding: StoreBinding = {
+  resource: (ctx, schema: BudgetSchema) => createBudget(ctx.client, schema)
+};
+
+/** Build a {@link BudgetSchema}. Exported as `budget` from `benni/schema`. */
+export function defineBudget(
+  prefix: string,
+  options: BudgetOptions
+): BudgetSchema {
+  return withStore(
+    { ...options, kind: "budget", prefix } as BudgetSchema,
+    budgetBinding
+  );
 }
 
 /**

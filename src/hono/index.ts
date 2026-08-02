@@ -1,45 +1,14 @@
 import type { Context, MiddlewareHandler } from "hono";
-import type { RedisClient } from "../core/types.js";
+import { type ClientSource, resolveClient } from "../core/client-source.js";
 import { ratelimit as createRatelimiter } from "../primitives/ratelimit.js";
 
 /**
  * A Redis client, however you have it: the client itself, a promise of one
- * (e.g. a top-level `connect()` call), or a factory that produces one. The
- * source is awaited once on first use and cached for every later request.
+ * (e.g. a top-level `connect()` call), a factory that produces one, or the
+ * handle `benni()` returned. The source is resolved once on first use and
+ * cached for every later request.
  */
-export type ClientSource =
-  | RedisClient
-  | Promise<RedisClient>
-  | (() => Promise<RedisClient>);
-
-function resolveOnce(source: ClientSource): () => Promise<RedisClient> {
-  let cached: Promise<RedisClient> | undefined;
-  return () => {
-    if (!cached) {
-      cached = Promise.resolve(
-        typeof source === "function" ? source() : source
-      );
-      // A failed resolution must not poison every later request.
-      cached.catch(() => {
-        cached = undefined;
-      });
-    }
-    return cached;
-  };
-}
-
-/**
- * A `RedisClient` facade over a lazily resolved source, so the primitives can
- * be constructed (and their options validated) eagerly while the underlying
- * client connects on first use.
- */
-function lazyClient(getClient: () => Promise<RedisClient>): RedisClient {
-  return {
-    send: async (command) => (await getClient()).send(command),
-    pipeline: async (commands) => (await getClient()).pipeline(commands),
-    close: async () => (await getClient()).close()
-  };
-}
+export type { ClientSource };
 
 export type RatelimitOptions = {
   /** The Redis client (or a promise/factory of one; awaited once, cached). */
@@ -99,8 +68,7 @@ export type RatelimitOptions = {
  * ```
  */
 export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
-  const getClient = resolveOnce(options.client);
-  const limiter = createRatelimiter(lazyClient(getClient), {
+  const limiter = createRatelimiter(resolveClient(options.client), {
     limit: options.limit,
     windowMs: options.windowMs,
     ...(options.prefix !== undefined && { prefix: options.prefix })
@@ -248,8 +216,7 @@ function sessionWasTouched(c: Context): boolean {
  * ```
  */
 export function cache(options: CacheOptions): MiddlewareHandler {
-  const getClient = resolveOnce(options.client);
-  const client = lazyClient(getClient);
+  const client = resolveClient(options.client);
   const prefix = options.prefix ?? "hono-cache";
   const key = options.key ?? defaultCacheKey;
   const vary = options.vary ?? [];
@@ -438,8 +405,7 @@ function readCookie(
  * ```
  */
 export function session(options: SessionOptions): MiddlewareHandler {
-  const getClient = resolveOnce(options.client);
-  const client = lazyClient(getClient);
+  const client = resolveClient(options.client);
   const ttlSeconds = options.ttlSeconds ?? 86_400;
   const prefix = options.prefix ?? "hono-session";
   const cookieName = options.cookieName ?? "sid";

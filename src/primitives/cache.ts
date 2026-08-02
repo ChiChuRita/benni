@@ -1,8 +1,10 @@
+import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
-import type { Codec, RedisClient } from "../core/types.js";
-import { lock } from "./lock.js";
+import { type StoreBinding, withStore } from "../core/store.js";
+import type { Codec, InferAnchors, RedisClient } from "../core/types.js";
+import { createLock } from "./lock.js";
 
 const DEFAULT_PREFIX = "cache";
 const DEFAULT_LOCK_TTL_MS = 10_000;
@@ -71,11 +73,11 @@ export type CacheOptions<T> = {
  * `GET`/`SET`/`DEL` and `SET NX`/`EVALSHA` for the fill lease).
  *
  * ```ts
- * const profiles = cache<Profile>(client, { ttlMs: 60_000 });
+ * const profiles = cache<Profile>({ client, ttlMs: 60_000 });
  * const profile = await profiles.get(userId, () => db.loadProfile(userId));
  * ```
  */
-export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
+function createCache<T>(client: RedisClient, options: CacheOptions<T>) {
   const ttlMs = positiveInt(options.ttlMs, "ttlMs");
   const prefix = options.prefix ?? DEFAULT_PREFIX;
   const codec = options.codec ?? codecs.json<T>();
@@ -86,7 +88,7 @@ export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
   const pollMs = positiveInt(options.pollMs ?? DEFAULT_POLL_MS, "pollMs");
   const scripts = createScriptRunner(client);
   // The fill lock lives next to the entries: <prefix>:lock:{<id>}.
-  const fillLocks = lock(client, {
+  const fillLocks = createLock(client, {
     prefix: `${prefix}:lock`,
     ttlMs: lockTtlMs
   });
@@ -223,6 +225,64 @@ export function cache<T>(client: RedisClient, options: CacheOptions<T>) {
       return scripts.run(invalidateScript, [key(id), lockKey(id)], []);
     }
   };
+}
+
+/** The read-through cache {@link cache} returns. */
+export type CacheStore<T> = ReturnType<typeof createCache<T>>;
+
+/** {@link CacheOptions} plus the client, for the single-argument form. */
+export type CacheConfig<T> = CacheOptions<T> & {
+  /** The client, a promise of one, a factory, or a benni handle. */
+  readonly client: ClientSource;
+};
+
+export function cache<T>(config: CacheConfig<T>): CacheStore<T>;
+export function cache<T>(
+  client: ClientSource,
+  options: CacheOptions<T>
+): CacheStore<T>;
+export function cache<T>(
+  source: ClientSource | CacheConfig<T>,
+  options?: CacheOptions<T>
+): CacheStore<T> {
+  const args = clientArgs<CacheOptions<T>>(source, options);
+  return createCache<T>(args.client, args.options);
+}
+
+/**
+ * A cache declared as a schema value, so it lands in `redis.query` next to the
+ * data stores and needs no client of its own.
+ * @example
+ * ```ts
+ * // schema.ts
+ * export const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+ * // app.ts
+ * const profile = await redis.query.profiles.get(id, () => db.load(id));
+ * ```
+ */
+export type CacheSchema<T> = InferAnchors<T, T> &
+  CacheOptions<T> & {
+    readonly kind: "cache";
+    readonly prefix: string;
+  };
+
+const cacheBinding: StoreBinding = {
+  resource: (ctx, schema: CacheSchema<unknown>) =>
+    createCache(ctx.client, schema)
+};
+
+/** Build a {@link CacheSchema}. Exported as `cache` from `benni/schema`. */
+export function defineCache<T>(
+  prefix: string,
+  options: CacheOptions<T>
+): CacheSchema<T> {
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    ...options,
+    kind: "cache",
+    prefix
+  } as CacheSchema<T>;
+  return withStore(schema, cacheBinding);
 }
 
 function positiveInt(value: number, name: string): number {

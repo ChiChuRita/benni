@@ -1,7 +1,9 @@
+import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
-import type { Codec, RedisClient } from "../core/types.js";
+import { type StoreBinding, withStore } from "../core/store.js";
+import type { Codec, InferAnchors, RedisClient } from "../core/types.js";
 
 const DEFAULT_PREFIX = "idem";
 const DEFAULT_TTL_MS = 86_400_000;
@@ -139,7 +141,7 @@ export type IdempotentResult<T> = {
  * whatever it produced.
  *
  * ```ts
- * const once = idempotency<Receipt>(client);
+ * const once = idempotency<Receipt>({ client });
  * const { value, replayed } = await once.run(
  *   request.headers.get("Idempotency-Key"),
  *   () => chargeCard(order)
@@ -156,7 +158,7 @@ export type IdempotentResult<T> = {
  * that part again. This is an idempotency key, not a transaction: make the
  * effect itself safe to repeat, or record progress inside it.
  */
-export function idempotency<T>(
+function createIdempotency<T>(
   client: RedisClient,
   options?: IdempotencyOptions<T>
 ) {
@@ -281,6 +283,69 @@ export function idempotency<T>(
       return reply === 1;
     }
   };
+}
+
+/** The keyed once-only runner {@link idempotency} returns. */
+export type IdempotencyStore<T> = ReturnType<typeof createIdempotency<T>>;
+
+/** {@link IdempotencyOptions} plus the client, for the single-argument form. */
+export type IdempotencyConfig<T> = IdempotencyOptions<T> & {
+  /** The client, a promise of one, a factory, or a benni handle. */
+  readonly client: ClientSource;
+};
+
+export function idempotency<T>(
+  config: IdempotencyConfig<T>
+): IdempotencyStore<T>;
+export function idempotency<T>(
+  client: ClientSource,
+  options?: IdempotencyOptions<T>
+): IdempotencyStore<T>;
+export function idempotency<T>(
+  source: ClientSource | IdempotencyConfig<T>,
+  options?: IdempotencyOptions<T>
+): IdempotencyStore<T> {
+  const args = clientArgs<IdempotencyOptions<T>>(source, options);
+  return createIdempotency<T>(args.client, args.options);
+}
+
+/**
+ * A once-only runner declared as a schema value, so it lands in `redis.query`
+ * next to the data stores and needs no client of its own.
+ * @example
+ * ```ts
+ * // schema.ts
+ * export const charges = idempotency("charge", { codec: json(Receipt) });
+ * // app.ts
+ * const { value, replayed } = await redis.query.charges.run(key, () => charge(order));
+ * ```
+ */
+export type IdempotencySchema<T> = InferAnchors<T, T> &
+  IdempotencyOptions<T> & {
+    readonly kind: "idempotency";
+    readonly prefix: string;
+  };
+
+const idempotencyBinding: StoreBinding = {
+  resource: (ctx, schema: IdempotencySchema<unknown>) =>
+    createIdempotency(ctx.client, schema)
+};
+
+/**
+ * Build an {@link IdempotencySchema}. Exported as `idempotency` from
+ * `benni/schema`.
+ */
+export function defineIdempotency<T>(
+  prefix: string,
+  options?: IdempotencyOptions<T>
+): IdempotencySchema<T> {
+  // The $infer* anchors are type-only phantoms — cast the literal.
+  const schema = {
+    ...options,
+    kind: "idempotency",
+    prefix
+  } as IdempotencySchema<T>;
+  return withStore(schema, idempotencyBinding);
 }
 
 function positiveInt(value: number, name: string): number {

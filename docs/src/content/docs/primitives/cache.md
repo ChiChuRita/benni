@@ -6,21 +6,34 @@ description: "A read-through cache with stampede protection: one loader call per
 `cache` is a read-through cache with **stampede protection**: on a miss, exactly one caller runs the loader (single-flight via the [distributed lock](/benni/primitives/lock/)); every other concurrent reader waits for the filled value instead of hammering your backend.
 
 ```ts
-import { cache } from "benni/primitives";
+// schema.ts
+import { cache, json } from "benni/schema";
 
-const profiles = cache<Profile>(client, { ttlMs: 60_000 });
+export const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+```
 
-const profile = await profiles.get(userId, () => db.loadProfile(userId));
+```ts
+// app.ts
+const profile = await redis.query.profiles.get(userId, () => db.loadProfile(userId));
 ```
 
 The classic failure this prevents: a hot key expires, 500 requests miss at once, and all 500 hit the database together. With `cache`, one of them loads; the other 499 poll Redis for the filled entry.
 
-`cache` takes any `RedisClient`, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge.
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, `benni/primitives` exports the same cache in its client-taking form, over the same keys:
+
+```ts
+import { cache } from "benni/primitives";
+
+const profiles = cache<Profile>({ client, ttlMs: 60_000 });
+const profile = await profiles.get(userId, () => db.loadProfile(userId));
+```
+
+`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge.
 
 ## API
 
 ```ts
-const store = cache<T>(client, options);
+const store = cache<T>({ client, ...options });
 
 await store.get(id, loader); // read; run loader once on a miss
 await store.peek(id);        // read without loading (T | null)

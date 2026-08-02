@@ -1,5 +1,7 @@
+import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
+import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
 
 const DEFAULT_PREFIX = "lock";
@@ -195,7 +197,7 @@ type Lease = {
  * });
  * ```
  */
-export function lock(client: RedisClient, options?: LockOptions) {
+export function createLock(client: RedisClient, options?: LockOptions) {
   const prefix = options?.prefix ?? DEFAULT_PREFIX;
   const defaultTtlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const scripts = createScriptRunner(client);
@@ -378,6 +380,53 @@ export function lock(client: RedisClient, options?: LockOptions) {
       }
     }
   };
+}
+
+/** The lock set {@link lock} returns. */
+export type LockStore = ReturnType<typeof createLock>;
+
+/** {@link LockOptions} plus the client, for the single-argument form. */
+export type LockConfig = LockOptions & {
+  /** The client, a promise of one, a factory, or a benni handle. */
+  readonly client: ClientSource;
+};
+
+export function lock(config: LockConfig): LockStore;
+export function lock(client: ClientSource, options?: LockOptions): LockStore;
+export function lock(
+  source: ClientSource | LockConfig,
+  options?: LockOptions
+): LockStore {
+  const args = clientArgs<LockOptions>(source, options);
+  return createLock(args.client, args.options);
+}
+
+/**
+ * A lock set declared as a schema value, so it lands in `redis.query` next to
+ * the data stores and needs no client of its own.
+ * @example
+ * ```ts
+ * // schema.ts
+ * export const orderLocks = lock("order", { ttlMs: 10_000 });
+ * // app.ts
+ * await redis.query.orderLocks.run("42", async () => { … });
+ * ```
+ */
+export type LockSchema = LockOptions & {
+  readonly kind: "lock";
+  readonly prefix: string;
+};
+
+const lockBinding: StoreBinding = {
+  resource: (ctx, schema: LockSchema) => createLock(ctx.client, schema)
+};
+
+/** Build a {@link LockSchema}. Exported as `lock` from `benni/schema`. */
+export function defineLock(prefix: string, options?: LockOptions): LockSchema {
+  return withStore(
+    { ...options, kind: "lock", prefix } as LockSchema,
+    lockBinding
+  );
 }
 
 /**

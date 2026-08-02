@@ -1,52 +1,39 @@
 # Benni
 
-**The end-to-end typed Redis client for TypeScript.** One typed API across
+**The end-to-end typed Redis client for TypeScript.** Declare your data model
+once, and replies come back as *your* types, not `string | null`. One API across
 Node, Bun, Deno, and the edge.
 
-Declare your Redis data model once with typed codecs, bind a client, and call
-methods named after the Redis commands they run, with full input **and output**
-type inference and typed key prefixing. Your declared types travel from write to
-read, so replies come back as *your* types, not `string | null`.
+[![npm](https://img.shields.io/npm/v/benni?color=%23c14444)](https://www.npmjs.com/package/benni)
+[![CI](https://github.com/ChiChuRita/benni/actions/workflows/ci.yml/badge.svg)](https://github.com/ChiChuRita/benni/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/benni)](LICENSE)
 
 **[Documentation](https://chichurita.github.io/benni/)** ·
 **[llms.txt](llms.txt)** (condensed reference for coding agents)
-
-## Install
 
 ```sh
 pnpm add benni redis
 ```
 
-[`redis`](https://www.npmjs.com/package/redis) (node-redis) is an optional peer
-dependency used only by the Node adapter. On Bun, install just `benni`; the Bun
-adapter uses Bun's built-in Redis client. On the edge, install just `benni`; the
-HTTP adapter needs nothing but `fetch`.
-
-The quick start below stores a JSON value through a validator, so it also uses
-[`zod`](https://zod.dev). Any [Standard Schema](https://standardschema.dev)
-validator works (Zod, Valibot, ArkType) and Benni depends on none of them; the
-validator you already use is the one it will use.
+`redis` (node-redis) is an optional peer used only by the Node adapter. Bun uses
+its built-in client and the edge adapter needs nothing but `fetch`, so both
+install just `benni`.
 
 ## Quick Start
 
 Three files: declare schemas, bind a client, use it.
 
 ```ts
-// schema.ts: plain TypeScript values; they create no keys and run no migrations
+// schema.ts: plain TypeScript values. They create no keys and run no migrations.
 import { hash, json, kv, number, string } from "benni/schema";
 import { z } from "zod";
 
-export const users = hash("user", {
-  name: string(),
-  score: number()
-});
+export const users = hash("user", { name: string(), score: number() });
 
 // json(validator) infers the type from the validator and checks every read
-// against it at runtime. Prefer this form for JSON values.
-const profile = z.object({
-  name: z.string(),
-  score: z.number()
-});
+// against it at runtime. Any Standard Schema validator works (Zod, Valibot,
+// ArkType); Benni depends on none of them.
+const profile = z.object({ name: z.string(), score: z.number() });
 
 export type Profile = z.infer<typeof profile>;
 export const profiles = kv("profile", json(profile));
@@ -58,12 +45,24 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+export const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
 });
 
-export const redis = benni(client, { schema });
+// Optional, once per app: now the bare `Benni` type is this handle, so no
+// signature has to repeat `typeof schema`.
+declare module "benni" {
+  interface Register {
+    schema: typeof schema;
+  }
+}
 ```
+
+`benni()` takes the adapter's promise unawaited and connects on the first
+command, so this file needs no top-level `await`. Pass a client you already
+awaited (`benni(client, { schema })`) when you would rather find out about a bad
+`REDIS_URL` at startup than at first use.
 
 ```ts
 // app.ts: methods are named after the Redis commands they run
@@ -82,45 +81,21 @@ const rawKey = redis.query.users.key("42"); // "user:42"
 const pong = await redis.raw.send(["PING"]);
 ```
 
-Because the schema module is bound to the client, each store is reachable by its
-export name through `redis.query`. The explicit `redis.hash(users)` /
-`redis.kv(profiles)` accessors return the same store; see the
-[Schema Registry](https://chichurita.github.io/benni/core-concepts/schema-registry/).
+Binding the schema module makes every store reachable by its export name through
+`redis.query`. The explicit `redis.hash(users)` / `redis.kv(profiles)` accessors
+return the same store, and a few operations only exist there: a `kv` schema is a
+string keyspace, so counters live on `redis.counter(x)` (`incr`, `incrby`, …).
 
-One exception worth knowing up front: `redis.query.x` gives you the store for the
-schema's kind, and a `kv(prefix, number())` is a string keyspace, so it has `get`
-and `set` but no `incr`. Counters are an alternate view over the same keys, so
-reach for `redis.counter(x)` (`incr`, `incrby`, `decr`, …) and `redis.string(x)`
-when you want those.
-
-```ts
-export const views = kv("views", number()); // schema.ts
-
-await redis.counter(views).incr("post-1"); // 1, typed as number
-const total = await redis.query.views.get("post-1"); // number | null, no incr here
-```
-
-### `json(validator)` checks; `json<T>()` does not
-
-`json(validator)` validates every read: if the stored JSON does not match, the
-read throws `ReplyShapeError` with the offending value attached instead of
-handing back a value that lies about its type.
-
-`json<T>()` is the escape hatch for "I wrote this, I trust it, skip the check".
-It is a pure cast: `JSON.parse` plus an assertion that the result is `T`, with no
-runtime validation at all. A record written by an older version of your code, by
-another service, or by hand in `redis-cli` comes back typed as a complete `T`
-even when fields are missing, and nothing throws. Use it when the value has no
-shape worth checking or when you own every writer; use `json(validator)`
-everywhere else, and especially anywhere the data outlives the code that wrote
-it.
+Prefer `json(validator)` over `json<T>()`. The first validates every read and
+throws `ReplyShapeError` with the offending value attached. The second is a pure
+cast with no runtime check, so a record written by older code, another service,
+or `redis-cli` comes back typed as a complete `T` even when fields are missing.
 
 ## They type the commands; Benni types your data
 
 `node-redis` and `ioredis` are already typed, but only at the *command surface*.
-A reply comes back as Redis's generic wire shape, and the type is gone the moment
-your data crosses the Redis edge; you re-parse and cast it by hand, and that cast
-is where the bugs live:
+Your type is gone the moment data crosses the Redis edge, and the cast you write
+to get it back is where the bugs live:
 
 ```ts
 // raw node-redis: typed… as a string
@@ -128,74 +103,57 @@ const raw = await nodeRedis.get("profile:42"); // string | null
 // hand-cast; the compiler never checked it, and neither did anything else
 const cast = JSON.parse(raw!) as { name: string; score: number };
 
-// Benni: your declared type, decoded (and validated) for you
+// Benni: your declared type, decoded and validated for you
 const user = await redis.query.profiles.get("42");
 //    ^? { name: string; score: number } | null
 ```
 
-Your Redis client types the commands; Benni types your data. Benni is a typed
-**client**, not an ORM or object mapper:
-schemas are plain TypeScript values that don't create keys, run migrations, or
-block raw Redis access (`redis.raw.send([...])` is always there).
+Benni is a typed **client**, not an ORM: schemas are plain TypeScript values that
+don't create keys, run migrations, or block raw access (`redis.raw.send([...])`
+is always there).
 
-### The same amount of code, checked by the compiler
+### Not less code. The same code, checked.
 
-Benni is not a way to write less Redis code, and we would rather say so than have
-you find out. We built the same URL shortener twice against Redis 8, once through
-Benni and once on raw `node-redis`: **164 lines with Benni, 177 lines raw.** Call
-that a rounding error.
+We built the same URL shortener twice against Redis 8: **164 lines with Benni,
+177 lines raw.** Call that a rounding error, and we would rather say so than have
+you find out.
 
-What changes is what the compiler catches. We then planted the same nine ordinary
-Redis bugs in both versions:
-
-1. a typo in a hash field name
-2. a wrong value type for a declared field
-3. a missing required field
-4. a read of a field that is not on the schema
-5. a nullable read treated as non-null
-6. a counter reply assumed to be a string
-7. the wrong shape pushed into a typed list
-8. the wrong store kind for the schema
-9. two schemas' key spaces mixed up
+What changes is what the compiler catches. We planted the same nine ordinary
+Redis bugs in both versions: a typo'd hash field, a wrong value type, a missing
+required field, a read of a field that isn't on the schema, a nullable read
+treated as non-null, a counter reply assumed to be a string, the wrong shape
+pushed into a typed list, the wrong store kind, and two schemas' key spaces mixed
+up.
 
 **Benni caught 9 of 9 at compile time** (11 type errors; nothing ran).
 **Raw `node-redis` caught 0 of 9.** All nine compiled clean and reached the
-server.
-
-A raw failure is also rarely a crash. It is silent corruption:
+server, where the failure is not a crash but silent corruption:
 
 ```text
-link:a  as stored: { ur: 'https://x.example', owner: 'ada',
-                     createdAt: '2026-08-02', url: 'https://x.example' }
+link:a  as stored: { ur: 'https://x.example', owner: 'ada', url: '…' }
 link:a2 as stored: { url: 'https://x.example' }
 Number(createdAt) => NaN
 ```
 
 The typo added a second field instead of replacing one; the date string in a
 number slot reads back as `NaN`; the incomplete write left a partial record.
-Nothing threw, so nothing pages you. That is the trade Benni is offering: not
-fewer lines, the same lines with the compiler reading them.
+Nothing threw, so nothing pages you.
 
 ## Philosophy
 
-- **Command names stay.** `hgetall` runs `HGETALL`. Benni adds a type layer, not
-  a query language, so everything you know about Redis still applies.
-- **Schemas are values, not migrations.** No CLI, no codegen, no generated
-  files. Declaring a schema creates no keys and runs nothing.
-- **One round trip whenever Redis allows one.** `hget` is a single `HMGET`, not
-  a pipeline of `HGET`s; `ratelimit.check()` is one atomic Lua call. On the edge
-  every command is an HTTP request, so Benni never quietly turns one call into
-  four.
+- **Command names stay.** `hgetall` runs `HGETALL`. A type layer, not a query
+  language, so everything you know about Redis still applies.
+- **Schemas are values, not migrations.** No CLI, no codegen, no generated files.
+- **One round trip whenever Redis allows one.** `hget` is a single `HMGET`;
+  `ratelimit.check()` is one atomic Lua call. Benni never quietly turns one call
+  into four, which matters most on the edge.
 - **Nothing is hidden.** No lazy loading, no identity map. The key is always
   yours (`.key(id)`), and `redis.raw` is always there.
-- **Nothing is silent.** An unexpected reply throws `ReplyShapeError` with the
-  raw value attached; it never casts and moves on. A Redis error reply throws
-  `RedisServerError` on every adapter, with the error code parsed onto `.code`,
-  so a `WRONGTYPE` handler written on Node still matches on the edge. Adapters
-  that can't do something say so instead of emulating it.
+- **Nothing is silent.** Unexpected replies throw `ReplyShapeError` with the raw
+  value attached; Redis error replies throw `RedisServerError` with `.code`
+  parsed, so a `WRONGTYPE` handler written on Node still matches on the edge.
 - **Batteries only for what's easy to get wrong.** A correct lock, an accurate
-  sliding window, a stampede-proof cache. Not a search engine or an index
-  manager.
+  sliding window, a stampede-proof cache. Not a search engine.
 
 [Read the full philosophy →](https://chichurita.github.io/benni/getting-started/philosophy/)
 
@@ -205,96 +163,97 @@ One runtime-agnostic core, thin client adapters, the same typed API everywhere.
 
 | Runtime | Adapter | Client |
 |---|---|---|
-| Node.js | `benni/node` | [`redis`](https://www.npmjs.com/package/redis) (node-redis), optional peer dependency |
-| Node.js | `benni/ioredis` | [`ioredis`](https://www.npmjs.com/package/ioredis), optional peer dependency. **Can adopt a client you already have** |
+| Node.js | `benni/node` | [`redis`](https://www.npmjs.com/package/redis) (node-redis), optional peer |
+| Node.js | `benni/ioredis` | [`ioredis`](https://www.npmjs.com/package/ioredis), optional peer. **Can adopt a client you already have** |
 | Bun | `benni/bun` | Bun's built-in Redis client, no extra package |
 | Deno | `benni/node` | `npm:redis` via Deno's npm compatibility |
-| Edge / serverless | `benni/upstash` | HTTP adapter over the Upstash REST protocol (or any compatible server), zero deps |
+| Edge / serverless | `benni/upstash` | HTTP over the Upstash REST protocol (or any compatible server), zero deps |
 
-Already running ioredis? You don't have to switch clients to use Benni: hand your
-existing instance to `benni/ioredis` and it shares that connection. Benni closes only
-what it leased from it; the client stays yours.
+Already on ioredis? You don't have to switch clients. Hand your instance to
+`benni/ioredis` and it shares that connection; Benni closes only what it leased.
 
 ```ts
-import Redis from "ioredis";
 import { ioredis } from "benni/ioredis";
 
 const client = await ioredis(myExistingRedis); // or a URL, or options
 ```
 
-`redis` and `ioredis` are optional peer dependencies, so non-Node runtimes stay dependency-free.
-Blocking commands, sessions, `WATCH` transactions, and Pub/Sub *subscribing* need a
-persistent connection (Node/Bun/Deno); the HTTP/edge adapter (`benni/upstash`) covers
-the stateless command surface, the whole typed API minus those connection-bound
-features. Pub/Sub *publishing* is one stateless `PUBLISH`, so it works everywhere,
-edge included.
+Blocking commands, sessions, `WATCH`, and Pub/Sub *subscribing* need a persistent
+connection (Node/Bun/Deno). The edge adapter covers the stateless surface, which
+is the whole typed API minus those. Publishing is one stateless `PUBLISH`, so it
+works everywhere.
 
-Subscribing takes no setup: the first subscription leases one subscriber connection
-from the client you already bound, multiplexes every channel and pattern onto it, and
-closes it when the last subscription goes away.
+Subscribing takes no setup: the first subscription leases one subscriber
+connection from the client you already bound, multiplexes every channel and
+pattern onto it, and closes it when the last subscription goes away.
 
 ```ts
 import { channel, json } from "benni/schema";
 
-const userEvents = channel(
-  "events:user",
-  json<{ id: string; action: "created" | "deleted" }>()
-);
+const userEvents = channel("events:user", json<{ action: "created" | "deleted" }>());
 
-const subscription = await redis.pubsub.channel(userEvents).subscribe((message) => {
+await redis.pubsub.channel(userEvents).subscribe((message) => {
   console.log(message.action);
   //          ^? "created" | "deleted"
 });
-
-await redis.pubsub.channel(userEvents).publish({ id: "42", action: "created" });
-await subscription.unsubscribe();
 ```
 
 Pattern subscriptions are Node-only for now; Bun 1.3.14's `psubscribe` hangs
-upstream, so the Bun adapter reports patterns as unsupported instead of deadlocking.
+upstream, so the Bun adapter reports patterns as unsupported instead of
+deadlocking.
 
-**Server compatibility** (CI runs the integration suite against Redis 8 and an
-Upstash-REST-compatible endpoint; the other rows are verified manually):
+**Server compatibility.** CI runs the integration suite against Redis 8 and an
+Upstash-REST-compatible endpoint; the other rows are verified manually.
 
 | Server | Result |
 |---|---|
 | Redis 8 | Full surface. |
 | Redis 7.4 | All but `hsetex`/`hgetex`/`hgetdel` (Redis 8 commands). |
-| Redis 7.2 | Additionally no hash field TTLs (`hexpire`/`httl`/…, introduced in 7.4). |
+| Redis 7.2 | Additionally no hash field TTLs (`hexpire`/`httl`/…, added in 7.4). |
 | Valkey 8 | Same profile as Redis 7.2 (Valkey forked pre-7.4). |
-| Dragonfly | Common surface works (kv/hash/set/list/zset/stream/geo/hll/bitmap/pub-sub/tx/scripts); no `LCS`, `GEOSEARCHSTORE`, or hash field TTLs. |
-
-Everything else (streams, sorted sets, `lmpop`, `sintercard`, geo, bitfields)
-works from Redis 7.2 up.
+| Dragonfly | Common surface works; no `LCS`, `GEOSEARCHSTORE`, or hash field TTLs. |
 
 ## Primitives
 
-`benni/primitives` ships the batteries you'd otherwise hand-roll (and get subtly
-wrong), built on any adapter, including the edge:
+The batteries you'd otherwise hand-roll and get subtly wrong, on any adapter
+including the edge. They declare themselves the way the data structures do, so
+they live in the same schema module and land in the same `redis.query`:
 
 ```ts
-import { cache, lock, queue, ratelimit } from "benni/primitives";
+// schema.ts
+import { cache, json, lock, queue, ratelimit } from "benni/schema";
 
-// A distributed lock that never frees a lock that expired and was re-acquired.
-// Acquisition is fail-fast by default (retries: 0): a caller that finds the lock
-// held throws LockNotAcquiredError immediately. Pass retries when callers
-// legitimately contend for the same id and should queue up behind it instead.
-await lock(client).run("order:42", async () => { /* critical section */ }, {
+export const orderLocks = lock("order", { ttlMs: 10_000 });
+export const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
+export const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+export const generate = queue<{ prompt: string }, string>("generate");
+```
+
+```ts
+// app.ts
+// Never frees a lock that expired and was re-acquired. Fail-fast by default;
+// pass retries when callers legitimately contend for the same id.
+await redis.query.orderLocks.run("42", async () => { /* critical section */ }, {
   retries: 20,
   retryDelayMs: 100
 });
 
-// A sliding-window rate limiter: one atomic round trip per check.
-const { success } = await ratelimit(client, { limit: 10, windowMs: 60_000 }).check(userId);
+// A sliding window: one atomic round trip per check.
+const { success } = await redis.query.apiLimit.check(userId);
 
-// A read-through cache with stampede protection: one loader call per miss.
-const profile = await cache<Profile>(client, { ttlMs: 60_000 })
-  .get(userId, () => db.loadProfile(userId));
+// Read-through with stampede protection: one loader call per miss.
+const profile = await redis.query.profiles.get(userId, () => db.loadProfile(userId));
+```
 
-// A job queue built for model calls: heartbeat leases so a ten-minute
-// generation is ordinary, a resumable output stream per job, and cancellation
-// that aborts the provider call instead of just marking a row.
-const jobs = queue<{ prompt: string }, string>(client, { prefix: "generate" });
+`benni/primitives` keeps the client-taking form for code that holds a client but
+no handle, such as a middleware factory: `ratelimit({ client, limit, windowMs })`.
+
+The queue is built for model calls: heartbeat leases so a ten-minute generation
+is ordinary, a resumable output stream per job, and cancellation that aborts the
+provider call instead of just marking a row.
+
+```ts
+const jobs = redis.query.generate;
 const { id } = await jobs.enqueue({ prompt }, { idempotencyKey: requestId });
 
 jobs.worker(async (job) => {
@@ -304,69 +263,41 @@ jobs.worker(async (job) => {
   return text;
 }, { concurrency: 8 });
 
-// Reconnecting client replays from where it left off, no second generation.
+// A reconnecting client replays from where it left off, no second generation.
 for await (const event of jobs.watch(id, { after: lastSeenEventId })) {
   if (event.type === "chunk") write(event.data);
 }
 ```
 
-## Docs
+## Docs And Development
 
-The full documentation is at
-**[chichurita.github.io/benni](https://chichurita.github.io/benni/)**. For LLMs and
-coding agents, the same content is served flattened at
+Full documentation lives at
+**[chichurita.github.io/benni](https://chichurita.github.io/benni/)**, built with
+[Astro Starlight](https://starlight.astro.build/) from [docs/](docs/). For coding
+agents, the same content is served flattened at
 [`/llms.txt`](https://chichurita.github.io/benni/llms.txt) and
-[`/llms-full.txt`](https://chichurita.github.io/benni/llms-full.txt); the
-[`llms.txt`](llms.txt) shipped inside the package is the condensed version.
+[`/llms-full.txt`](https://chichurita.github.io/benni/llms-full.txt).
 
-The site is built with [Astro Starlight](https://starlight.astro.build/) and
-lives in [docs/](docs/). Content pages start at
-[docs/src/content/docs/getting-started/introduction.md](docs/src/content/docs/getting-started/introduction.md).
-Run it locally with `pnpm docs:dev`, or build and preview the static site with
-`pnpm docs:build` and `pnpm docs:preview`.
+```sh
+pnpm docs:dev     # docs site with live reload
+pnpm check        # lint, typecheck, coverage, build, publint, attw
+```
 
-## More
-
-This repository contains ESM package exports, runtime entrypoints, `tsdown`
-builds with declaration files, Vitest tests, typed Redis data-structure stores,
-scans, Pub/Sub, transactions, scripts, TTL options, and the runtime adapters.
-
-See [docs/src/content/docs/getting-started/quick-start.md](docs/src/content/docs/getting-started/quick-start.md)
-for the main guide and
+Worked examples: [examples/node-basic.md](examples/node-basic.md) for a
+walkthrough, [examples/benni-use-cases.md](examples/benni-use-cases.md) for
+sessions, queues, leaderboards, and rate limiting end to end, and
 [docs/src/content/docs/examples.md](docs/src/content/docs/examples.md) for a
 copy-pasteable example of every data structure.
 
-Run the Node example against Redis:
-
 ```sh
+pnpm redis:build && pnpm redis:run          # Redis in Docker
 REDIS_URL=redis://127.0.0.1:6379 pnpm example:node
 ```
 
-The walkthrough is in [examples/node-basic.md](examples/node-basic.md), and
-[examples/benni-use-cases.md](examples/benni-use-cases.md) works through
-common application workloads (sessions, queues, leaderboards, rate limiting)
-end to end.
-
-## Redis benchmark
-
-Start Redis in Docker:
-
-```sh
-pnpm redis:build
-pnpm redis:run
-```
-
-Run the benchmark in another shell:
+The benchmark compares a tiny dependency-free RESP client baseline against the
+Benni Node adapter:
 
 ```sh
 pnpm bench
+BENCH_ITERATIONS=10000 BENCH_PIPELINE=64 pnpm bench   # options
 ```
-
-Options:
-
-```sh
-REDIS_URL=redis://127.0.0.1:6379 BENCH_ITERATIONS=10000 BENCH_PIPELINE=64 pnpm bench
-```
-
-The benchmark compares a tiny dependency-free RESP client baseline against the
-Benni Node adapter.

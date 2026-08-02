@@ -182,6 +182,51 @@ export type { ScriptOptions, ScriptSchema } from "./core/script.js";
  * script once and executes cached `EVALSHA`.
  */
 export { script } from "./core/script.js";
+/**
+ * A spend budget schema: units per sliding window, with reservations.
+ * @example
+ * ```ts
+ * const tokens = budget("tokens", { limit: 1_000_000, windowMs: 86_400_000 });
+ * ```
+ */
+export { defineBudget as budget } from "./primitives/budget.js";
+/**
+ * A read-through cache schema with stampede protection.
+ * @example
+ * ```ts
+ * const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+ * ```
+ */
+export { defineCache as cache } from "./primitives/cache.js";
+/** An idempotency schema: run an effect once per key, replay its result. */
+export { defineIdempotency as idempotency } from "./primitives/idempotency.js";
+// The primitives declare themselves the same way the data structures do, so a
+// cache or a queue is reachable by name through `redis.query` and needs no
+// client of its own. `benni/primitives` keeps the client-taking form
+// (`cache(client, options)`) for code that holds no handle.
+export type {
+  BudgetSchema,
+  CacheSchema,
+  IdempotencySchema,
+  LockSchema,
+  QueueSchema,
+  RatelimitSchema,
+  SemaphoreSchema
+} from "./primitives/index.js";
+/** A distributed lock schema: one holder per id, with lease renewal. */
+export { defineLock as lock } from "./primitives/lock.js";
+/** A job queue schema: typed payloads, leases, and a resumable output stream. */
+export { defineQueue as queue } from "./primitives/queue.js";
+/**
+ * A sliding-window rate-limit schema.
+ * @example
+ * ```ts
+ * const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
+ * ```
+ */
+export { defineRatelimit as ratelimit } from "./primitives/ratelimit.js";
+/** A semaphore schema: `lock` with a number, for N concurrent holders. */
+export { defineSemaphore as semaphore } from "./primitives/semaphore.js";
 
 export type Ids<TIds extends readonly RedisKeyPart[]> = {
   readonly ids: TIds;

@@ -607,7 +607,8 @@ type Equal<TLeft, TRight> =
 
 type Expect<T extends true> = T;
 
-const typeClient = null as unknown as RedisClient;
+// A stub, not `null`: benni() now narrows the client source at bind time.
+const typeClient: RedisClient = fakeClient([], []);
 const typeDb = benni(typeClient);
 
 const typeProfiles = kv("type-profile", json<{ name: string }>());

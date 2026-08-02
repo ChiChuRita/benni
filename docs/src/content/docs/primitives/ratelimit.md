@@ -6,11 +6,15 @@ description: "A sliding-window rate limiter over Redis: one atomic round trip pe
 `ratelimit` is a sliding-window rate limiter. Each `check(id)` is a single atomic Lua round trip that drops expired entries, counts the window, and admits the request if it is under the limit.
 
 ```ts
-import { ratelimit } from "benni/primitives";
+// schema.ts
+import { ratelimit } from "benni/schema";
 
-const limiter = ratelimit(client, { limit: 10, windowMs: 60_000 });
+export const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
+```
 
-const { success, remaining, resetMs } = await limiter.check(userId);
+```ts
+// app.ts
+const { success, remaining, resetMs } = await redis.query.apiLimit.check(userId);
 if (!success) {
   throw new Response("Too Many Requests", {
     status: 429,
@@ -19,7 +23,16 @@ if (!success) {
 }
 ```
 
-`ratelimit` takes any `RedisClient`, so it runs over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, such as inside a middleware factory, `benni/primitives` exports the same limiter in its client-taking form, over the same keys:
+
+```ts
+import { ratelimit } from "benni/primitives";
+
+const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
+const { success } = await limiter.check(userId);
+```
+
+`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it runs over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
 
 ## The result
 
