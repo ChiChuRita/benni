@@ -83,6 +83,87 @@ await subscription.unsubscribe();
 
 Patterns share the same leased connection and the same ref-counting as channels.
 
+## One channel per entity
+
+Most Pub/Sub is per something: one channel per chat room, per user, per job. Pass an id to `channel()` and Benni derives `name:<id>` the same way a keyspace derives `prefix:<id>`:
+
+```ts
+import { channel, json } from "benni/schema";
+
+export const roomEvents = channel(
+  "chat:room",
+  json<{ from: string; text: string }>()
+);
+```
+
+```ts
+// PUBLISH chat:room:42
+await redis.pubsub
+  .channel(roomEvents, "42")
+  .publish({ from: "ada", text: "hi" });
+
+// SUBSCRIBE chat:room:42
+const subscription = await redis.pubsub
+  .channel(roomEvents, "42")
+  .subscribe((message) => {
+    console.log(message.text);
+  });
+```
+
+The id is optional, and leaving it off is unchanged: `redis.pubsub.channel(roomEvents)` still addresses `chat:room` itself and nothing else. So one schema can carry both a per-room feed and a channel for everyone.
+
+Ids are typed like keyspace ids (a string, a number, or a bigint), and `ids` narrows them to a known set for autocomplete and a compile-time check:
+
+```ts
+export const jobEvents = channel(
+  "jobs",
+  json<{ state: "queued" | "running" | "done" }>(),
+  { ids: ["import", "export"] }
+);
+
+await redis.pubsub.channel(jobEvents, "import").publish({ state: "done" });
+// redis.pubsub.channel(jobEvents, "nope") does not compile
+```
+
+You never have to build the channel string yourself. `channelName` resolves it, on the schema and on the resource, the way `key` does for a keyspace:
+
+```ts
+roomEvents.channelName("42"); // "chat:room:42"
+roomEvents.channelName(); // "chat:room"
+redis.pubsub.channel(roomEvents, "42").channelName(); // "chat:room:42"
+```
+
+A schema reached through the [registry](/benni/core-concepts/schema-registry/) scopes with `at(id)`, which is what `redis.pubsub.channel(schema, id)` calls underneath:
+
+```ts
+await redis.query.roomEvents.at("42").publish({ from: "ada", text: "hi" });
+```
+
+There is no `hashTag` option on a channel, because a channel is not a key: plain Pub/Sub is broadcast across a cluster rather than routed by slot, so there is no co-location to arrange.
+
+### Pairing with a pattern
+
+Per-entity channels and patterns are two halves of the same shape: publish to one room, subscribe to all of them. The id is derived by exactly the rule a keyspace uses, so a pattern over the prefix matches every channel the schema can produce:
+
+```ts
+import { json, pattern } from "benni/schema";
+
+export const anyRoom = pattern(
+  "chat:room:*",
+  json<{ from: string; text: string }>()
+);
+
+await redis.pubsub.pattern(anyRoom).subscribe((message, channelName) => {
+  console.log(channelName, message.text); // "chat:room:42 hi"
+});
+
+await redis.pubsub
+  .channel(roomEvents, "42")
+  .publish({ from: "ada", text: "hi" });
+```
+
+Ids are joined on verbatim, exactly as a keyspace joins them, so nothing about an id is interpreted: a channel subscribe is a literal name, never a glob, and only `pattern()` reads `*`, `?`, and `[...]` as wildcards. An id containing a colon simply nests one level further, and `chat:room:*` still matches it, because a Redis glob `*` spans colons too.
+
 ## Consuming as an async iterator
 
 Callbacks are awkward when the consumer is a loop: an SSE response, a worker that processes one message at a time. `stream()` gives you the same subscription as an async iterable, and releases it when iteration ends:

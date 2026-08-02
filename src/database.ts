@@ -19,9 +19,11 @@ import type {
   createListSessionAccessor
 } from "./core/list.js";
 import type {
+  ChannelName,
   createChannelResource,
   createPatternResource,
   PubSubChannel,
+  PubSubChannelResource,
   PubSubPattern
 } from "./core/pubsub.js";
 import {
@@ -421,10 +423,16 @@ export type QueryResource<T> = T extends { readonly kind: "hash" }
                     ? T extends PubSubChannel<
                         infer TInput,
                         infer TOutput,
-                        string
+                        infer TName extends string,
+                        infer TId extends RedisKeyPart
                       >
                       ? ReturnType<
-                          typeof createChannelResource<TInput, TOutput>
+                          typeof createChannelResource<
+                            TInput,
+                            TOutput,
+                            TName,
+                            TId
+                          >
                         >
                       : never
                     : T extends { readonly kind: "pattern" }
@@ -664,6 +672,52 @@ export function benni<TSchema extends BenniSchema = BenniSchema>(
     });
   }
 
+  /**
+   * `redis.pubsub.channel(schema)` addresses the channel the schema names;
+   * `redis.pubsub.channel(schema, id)` addresses the per-entity channel
+   * `name:id` — one channel per room, per user, per job.
+   *
+   * Declared as overloads (rather than one optional-id signature) so the
+   * resolved channel stays visible in the type: with an id the resource is
+   * typed `events:room:42`, without one it is still `events:room`.
+   *
+   * The id is applied by the resource's own `at()` rather than being passed
+   * into the store factory, because a schema's store binding is invoked with
+   * `(ctx, schema)` and nothing else. Reaching past that would mean naming the
+   * pub/sub resource factory here as a value, which is exactly what the binding
+   * indirection exists to avoid — it would pin the whole pub/sub module into
+   * every bundle that imports `benni()`.
+   */
+  function pubsubChannel<
+    TInput,
+    TOutput,
+    TName extends string,
+    TId extends RedisKeyPart
+  >(
+    channel: PubSubChannel<TInput, TOutput, TName, TId>
+  ): PubSubChannelResource<TInput, TOutput, TName, TId>;
+  function pubsubChannel<
+    TInput,
+    TOutput,
+    TName extends string,
+    TId extends RedisKeyPart,
+    TActualId extends TId
+  >(
+    channel: PubSubChannel<TInput, TOutput, TName, TId>,
+    id: TActualId
+  ): PubSubChannelResource<TInput, TOutput, ChannelName<TName, TActualId>, TId>;
+  function pubsubChannel(
+    channel: PubSubChannel<unknown, unknown, string, RedisKeyPart>,
+    id?: RedisKeyPart
+  ): PubSubChannelResource<unknown, unknown> {
+    const resource = resolveStore(
+      channel,
+      ctx,
+      "channel schema"
+    ) as PubSubChannelResource<unknown, unknown>;
+    return id === undefined ? resource : resource.at(id);
+  }
+
   function buildQuery(): QueryRegistry<TSchema> {
     const registry: Record<string, unknown> = {};
     const schema = options.schema;
@@ -742,11 +796,7 @@ export function benni<TSchema extends BenniSchema = BenniSchema>(
       }
     },
     pubsub: {
-      channel<TInput, TOutput>(channel: PubSubChannel<TInput, TOutput>) {
-        return resolveStore(channel, ctx, "channel schema") as ReturnType<
-          typeof createChannelResource<TInput, TOutput>
-        >;
-      },
+      channel: pubsubChannel,
       pattern<TOutput>(pattern: PubSubPattern<TOutput>) {
         return resolveStore(pattern, ctx, "pattern schema") as ReturnType<
           typeof createPatternResource<TOutput>

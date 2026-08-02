@@ -1,23 +1,66 @@
 import { replyShapeError } from "./errors.js";
 import { expectNumber } from "./helpers.js";
+import { type KeyOptions, keyBuilder } from "./keys.js";
 import {
   PUBSUB_HUB_KEY,
   type StoreBinding,
   type StoreContext,
   withStore
 } from "./store.js";
-import type { Codec, RedisClient, RedisSubscriber } from "./types.js";
+import type {
+  Codec,
+  RedisClient,
+  RedisKeyPart,
+  RedisSubscriber
+} from "./types.js";
 
+/**
+ * The concrete channel a schema builds for an id: the schema's name, then the
+ * id, joined the way every keyspace joins a prefix and an id. Spelled as its
+ * own alias so `events:room:42` shows up in hovers rather than `string`.
+ */
+export type ChannelName<
+  TName extends string,
+  TId extends RedisKeyPart
+> = `${TName}:${TId}`;
+
+/**
+ * A pub/sub channel schema.
+ *
+ * `name` is the channel on its own — `channel("events:user", …)` publishes to
+ * `events:user` and nothing else. Pass an id to get the per-entity channel
+ * `name:id` (`events:room:42`), which is the same derivation, and therefore the
+ * same string, a keyspace with that prefix would build for that id.
+ */
 export type PubSubChannel<
   TInput,
   TOutput = TInput,
-  TName extends string = string
+  TName extends string = string,
+  TId extends RedisKeyPart = RedisKeyPart
 > = {
   readonly kind: "channel";
   readonly name: TName;
+  /** The channel itself, with no id: exactly `name`. */
+  channelName(): TName;
+  /** The per-entity channel for `id`: `name:id`. */
+  channelName<TActualId extends TId>(
+    id: TActualId
+  ): ChannelName<TName, TActualId>;
   encode(message: TInput): string;
   decode(message: string): TOutput;
 };
+
+/**
+ * The options bag `channel()` accepts: known ids, for autocomplete and a
+ * narrowed id parameter, exactly as a keyspace takes them.
+ *
+ * There is deliberately no `hashTag`. A channel is not a key: plain Pub/Sub is
+ * broadcast across a cluster rather than routed by slot, so a hash tag would
+ * only add braces to the channel name and buy nothing.
+ */
+export type PubSubChannelOptions<
+  TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[]
+> = Pick<KeyOptions<TIds>, "ids">;
 
 export type PubSubHandler<TMessage> = (
   message: TMessage
@@ -39,27 +82,94 @@ export type PubSubSubscription = {
 };
 
 export type InferPubSubInput<TChannel> =
-  TChannel extends PubSubChannel<infer TInput> ? TInput : never;
+  TChannel extends PubSubChannel<infer TInput, any, string, any>
+    ? TInput
+    : never;
+
+/** The id type a channel schema accepts, narrowed by its `ids` option. */
+export type InferPubSubId<TChannel> =
+  TChannel extends PubSubChannel<any, any, string, infer TId> ? TId : never;
+
+/**
+ * The one channel-schema constructor, shared by `channel()` and by the
+ * id-scoped channels the resource derives. The name is fixed here and the id
+ * derivation is baked into the closure, the way `keyBuilder` bakes a keyspace's
+ * layout in at definition time.
+ */
+function buildChannel<
+  TInput,
+  TOutput,
+  TName extends string,
+  TId extends RedisKeyPart
+>(
+  name: TName,
+  codec: Codec<TInput, TOutput>
+): PubSubChannel<TInput, TOutput, TName, TId> {
+  // The keyspace builder in its default (untagged) layout, rather than a local
+  // template string: `events:room` plus 42 has to become `events:room:42` by
+  // exactly the rule `kv("events:room").key(42)` follows, or a
+  // `pattern("events:room:*")` subscriber would stop matching what this
+  // publishes the moment the two derivations drifted.
+  const build = keyBuilder(name, undefined);
+  // channelName is one implementation behind two overloads, so cast the
+  // literal — the same shape every keyed schema factory uses.
+  const schema = {
+    kind: "channel",
+    name,
+    channelName(id?: RedisKeyPart) {
+      return id === undefined ? name : build(id);
+    },
+    encode(message: TInput) {
+      return codec.encode(message);
+    },
+    decode(message: string) {
+      return codec.decode(message);
+    }
+  } as PubSubChannel<TInput, TOutput, TName, TId>;
+  return schema;
+}
 
 export function definePubSubChannel<
   TName extends string,
   TInput,
-  TOutput = TInput
+  TOutput = TInput,
+  const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[]
 >(
   name: TName,
-  codec: Codec<TInput, TOutput>
-): PubSubChannel<TInput, TOutput, TName> {
-  const schema: PubSubChannel<TInput, TOutput, TName> = {
-    kind: "channel",
-    name,
-    encode(message) {
-      return codec.encode(message);
-    },
-    decode(message) {
-      return codec.decode(message);
-    }
-  };
-  return withStore(schema, channelBinding);
+  codec: Codec<TInput, TOutput>,
+  // Read for its type and never for its value: `ids` narrows the id parameter
+  // and nothing about it is needed at runtime, exactly as with a keyspace,
+  // whose builder also only ever looks at `hashTag`.
+  options?: PubSubChannelOptions<TIds>
+): PubSubChannel<TInput, TOutput, TName, TIds[number]> {
+  void options;
+  return withStore(
+    buildChannel<TInput, TOutput, TName, TIds[number]>(name, codec),
+    channelBinding
+  );
+}
+
+/**
+ * The channel `name:id`, as a schema in its own right: same codec, same id
+ * type, so `.at()` can nest and the hub can treat it like any other channel.
+ *
+ * The parent doubles as the codec, so a scoped channel cannot drift from the
+ * schema it came from.
+ */
+function scopedChannel<
+  TInput,
+  TOutput,
+  TName extends string,
+  TId extends RedisKeyPart,
+  TActualId extends TId
+>(
+  channel: PubSubChannel<TInput, TOutput, TName, TId>,
+  id: TActualId
+): PubSubChannel<TInput, TOutput, ChannelName<TName, TActualId>, TId> {
+  return buildChannel<TInput, TOutput, ChannelName<TName, TActualId>, TId>(
+    channel.channelName(id),
+    channel
+  );
 }
 
 export function definePubSubPattern<
@@ -444,14 +554,32 @@ export function createPubSubHub(
 
 export type PubSubHub = ReturnType<typeof createPubSubHub>;
 
+/**
+ * The channel a call actually addresses: the schema's own name when no id is
+ * given, the per-entity channel when one is. One helper, so publish and
+ * subscribe can never disagree about where an id lands.
+ */
+function resolveChannelName(
+  channel: PubSubChannel<any, any, string, any>,
+  id: RedisKeyPart | undefined
+): string {
+  return id === undefined ? channel.name : channel.channelName(id);
+}
+
 export function createPubSubPublisher(client: RedisClient) {
   return {
-    async publish<TChannel extends PubSubChannel<any>>(
+    async publish<TChannel extends PubSubChannel<any, any, string, any>>(
       channel: TChannel,
-      message: InferPubSubInput<TChannel>
+      message: InferPubSubInput<TChannel>,
+      /** Publish to the per-entity channel `name:id` instead of `name`. */
+      id?: InferPubSubId<TChannel>
     ): Promise<number> {
       return expectNumber(
-        await client.send(["PUBLISH", channel.name, channel.encode(message)]),
+        await client.send([
+          "PUBLISH",
+          resolveChannelName(channel, id),
+          channel.encode(message)
+        ]),
         "PUBLISH"
       );
     }
@@ -470,17 +598,59 @@ export function hubFor(ctx: StoreContext): PubSubHub {
 }
 
 /**
+ * A pub/sub channel resource, bound to one concrete channel: publish through
+ * the bound client and subscribe through the leased subscriber connection.
+ *
+ * Spelled out as a named type rather than inferred, because `at()` returns one
+ * of these and TypeScript cannot infer a type that refers to itself.
+ */
+export type PubSubChannelResource<
+  TInput,
+  TOutput,
+  TName extends string = string,
+  TId extends RedisKeyPart = RedisKeyPart
+> = {
+  /** PUBLISH — a stateless command, so it rides the bound client. */
+  publish(message: TInput): Promise<number>;
+  subscribe(
+    handler: (message: TOutput) => void | Promise<void>
+  ): Promise<PubSubSubscription>;
+  /** Consume as an async iterable; abort the signal to stop and release. */
+  stream(
+    options?: PubSubStreamOptions
+  ): AsyncGenerator<TOutput, void, undefined>;
+  /** This resource's own channel, with no id: `name`. */
+  channelName(): TName;
+  /** The per-entity channel for `id`: `name:id`. */
+  channelName<TActualId extends TId>(
+    id: TActualId
+  ): ChannelName<TName, TActualId>;
+  /**
+   * The same resource for the per-entity channel `name:id` — one channel per
+   * room, per user, per job.
+   * @example redis.query.roomEvents.at(42).publish({ text: "hi" })
+   */
+  at<TActualId extends TId>(
+    id: TActualId
+  ): PubSubChannelResource<TInput, TOutput, ChannelName<TName, TActualId>, TId>;
+};
+
+/**
  * A pub/sub channel resource: publish through the adapter (or the raw client
  * when no adapter is configured) and subscribe through the adapter's dedicated
  * subscriber connection.
  */
-export function createChannelResource<TInput, TOutput>(
+export function createChannelResource<
+  TInput,
+  TOutput,
+  TName extends string = string,
+  TId extends RedisKeyPart = RedisKeyPart
+>(
   ctx: StoreContext,
-  channel: PubSubChannel<TInput, TOutput>
-) {
+  channel: PubSubChannel<TInput, TOutput, TName, TId>
+): PubSubChannelResource<TInput, TOutput, TName, TId> {
   const { client } = ctx;
   return {
-    /** PUBLISH — a stateless command, so it rides the bound client. */
     publish(message: TInput): Promise<number> {
       return client
         .send(["PUBLISH", channel.name, channel.encode(message)])
@@ -494,9 +664,29 @@ export function createChannelResource<TInput, TOutput>(
     subscribe(handler: (message: TOutput) => void | Promise<void>) {
       return hubFor(ctx).subscribeChannel(channel, handler);
     },
-    /** Consume as an async iterable; abort the signal to stop and release. */
     stream(options?: PubSubStreamOptions) {
       return hubFor(ctx).streamChannel(channel, options);
+    },
+    // Carried the way every keyspace resource carries `key()`, so a caller who
+    // reached this through `redis.query.<name>` can resolve a concrete channel
+    // without holding the schema.
+    channelName: channel.channelName.bind(channel) as PubSubChannel<
+      TInput,
+      TOutput,
+      TName,
+      TId
+    >["channelName"],
+    at<TActualId extends TId>(id: TActualId) {
+      // A derived schema rather than an id threaded through publish/subscribe:
+      // the hub keys its multiplexing on `channel.name`, so handing it the
+      // resolved channel is what makes two `.at(42)` resources share one
+      // SUBSCRIBE and makes an id-scoped unsubscribe find its own entry.
+      return createChannelResource<
+        TInput,
+        TOutput,
+        ChannelName<TName, TActualId>,
+        TId
+      >(ctx, scopedChannel(channel, id));
     }
   };
 }

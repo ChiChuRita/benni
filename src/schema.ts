@@ -158,7 +158,19 @@ export const stream = defineStream;
 export const bitmap = defineBitmap;
 /** A geo schema: members with longitude/latitude, queryable by radius or box. */
 export const geo = defineGeoSet;
-/** A pub/sub channel schema: publish/subscribe with a message codec. */
+/**
+ * A pub/sub channel schema: publish/subscribe with a message codec.
+ *
+ * Reach the channel itself with `redis.pubsub.channel(schema)`, or the
+ * per-entity channel `prefix:<id>` with `redis.pubsub.channel(schema, id)` —
+ * derived exactly the way a keyspace derives a key, so it pairs with a
+ * `pattern("chat:room:*")` subscriber.
+ * @example
+ * ```ts
+ * const roomEvents = channel("chat:room", json<{ text: string }>());
+ * await redis.pubsub.channel(roomEvents, "42").publish({ text: "hi" });
+ * ```
+ */
 export const channel = definePubSubChannel;
 /** A pub/sub pattern schema: subscribe to channels matching a glob pattern. */
 export const pattern = definePubSubPattern;

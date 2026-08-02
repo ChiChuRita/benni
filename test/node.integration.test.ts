@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   codecs,
   definePubSubChannel,
@@ -141,6 +141,88 @@ describeRedis("node pubsub", () => {
       ).resolves.toBe(1);
       await first;
       expect(seen).toEqual([{ id: "42", channel: `${prefix}:created` }]);
+    } finally {
+      await redis.pubsub.close();
+      await client.close();
+    }
+  });
+
+  it("delivers an id-scoped publish to a pattern subscriber", async () => {
+    // The per-entity shape end to end: one channel per room, published by id,
+    // consumed by a single pattern subscription. The two derivations have to
+    // agree on the wire, which is the whole reason the id goes through the
+    // keyspace key builder.
+    const client = await node({ url: redisUrl });
+    const redis = benni(client);
+    const prefix = unique("room");
+    const roomEvents = definePubSubChannel(
+      prefix,
+      codecs.json<{ text: string }>()
+    );
+    const anyRoom = definePubSubPattern(
+      `${prefix}:*`,
+      codecs.json<{ text: string }>()
+    );
+    const seen: Array<{ text: string; channel: string }> = [];
+
+    try {
+      const subscription = await redis.pubsub
+        .pattern(anyRoom)
+        .subscribe((message, name) => {
+          seen.push({ text: message.text, channel: name });
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(redis.pubsub.channel(roomEvents, 42).channelName()).toBe(
+        `${prefix}:42`
+      );
+      await expect(
+        redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" })
+      ).resolves.toBe(1);
+      await vi.waitUntil(() => seen.length === 1);
+      expect(seen).toEqual([{ text: "hi", channel: `${prefix}:42` }]);
+
+      // The bare channel is a different channel, so the pattern sees it only
+      // if it also matches; `prefix` itself does not.
+      await expect(
+        redis.pubsub.channel(roomEvents).publish({ text: "all" })
+      ).resolves.toBe(0);
+
+      await subscription.unsubscribe();
+    } finally {
+      await redis.pubsub.close();
+      await client.close();
+    }
+  });
+
+  it("subscribes to an id-scoped channel and ignores the others", async () => {
+    const client = await node({ url: redisUrl });
+    const redis = benni(client);
+    const roomEvents = definePubSubChannel(
+      unique("scoped"),
+      codecs.json<{ text: string }>()
+    );
+    const seen: string[] = [];
+
+    try {
+      await redis.pubsub.channel(roomEvents, "42").subscribe((message) => {
+        seen.push(message.text);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Nobody is listening on room 7 or on the bare channel.
+      await expect(
+        redis.pubsub.channel(roomEvents, "7").publish({ text: "elsewhere" })
+      ).resolves.toBe(0);
+      await expect(
+        redis.pubsub.channel(roomEvents).publish({ text: "bare" })
+      ).resolves.toBe(0);
+      await expect(
+        redis.pubsub.channel(roomEvents, "42").publish({ text: "here" })
+      ).resolves.toBe(1);
+
+      await vi.waitUntil(() => seen.length === 1);
+      expect(seen).toEqual(["here"]);
     } finally {
       await redis.pubsub.close();
       await client.close();
