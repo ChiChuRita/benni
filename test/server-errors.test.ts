@@ -227,4 +227,42 @@ describe("upstash server errors", () => {
     expect(error).not.toBeInstanceOf(RedisServerError);
     expect((error as Error).message).toContain("Upstash HTTP 502");
   });
+
+  it("leaves a 5xx a plain Error even when it carries an { error } envelope", async () => {
+    // Gateways in front of Redis reply with the same `{ "error": ... }` shape.
+    // Wrapping one would report an upstream outage as a Redis error reply, and
+    // would put a nonsense `.code` on it read from the gateway's own prose.
+    const redis = client(() => ({
+      status: 502,
+      body: { error: "upstream unavailable" }
+    }));
+
+    const error = await redis.send(["GET", "k"]).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(RedisServerError);
+    expect((error as Error).message).toContain("Upstash HTTP 502");
+    // The gateway's own text is kept, so the failure stays debuggable.
+    expect((error as Error).message).toContain("upstream unavailable");
+  });
+
+  it("still treats a 4xx { error } payload as a real server reply", async () => {
+    // Upstash returns 4xx for a genuine single-command Redis error, so the
+    // 5xx carve-out above must not swallow this case.
+    const redis = client(() => ({
+      status: 400,
+      body: { error: "NOSCRIPT No matching script" }
+    }));
+
+    const error = await redis.send(["EVALSHA", "abc", "0"]).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+
+    expect(error).toBeInstanceOf(RedisServerError);
+    expect((error as RedisServerError).code).toBe("NOSCRIPT");
+  });
 });

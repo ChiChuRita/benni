@@ -65,8 +65,20 @@ export function upstash(options: UpstashOptions): RedisClient {
     }
     // A Redis-level error arrives as `{ "error": "..." }` (with 200 in a
     // pipeline element, or 4xx for a single command); surface it as thrown.
-    if (!response.ok && !isErrorPayload(payload)) {
-      throw new Error(`Upstash HTTP ${response.status}`);
+    //
+    // A 5xx is the service failing in front of Redis, not Redis forming an
+    // error reply, and gateways send that same `{ "error": ... }` envelope.
+    // Letting one through would hand the caller a `RedisServerError` for an
+    // upstream outage and put a bogus `.code` on it (`redisErrorCode` reads the
+    // leading token of whatever prose the gateway chose), so keep 5xx a plain
+    // transport error. That is the boundary the errors reference documents:
+    // `RedisServerError` means Redis said no.
+    if (!response.ok && (response.status >= 500 || !isErrorPayload(payload))) {
+      const detail =
+        isErrorPayload(payload) && payload.error !== undefined
+          ? `: ${String(payload.error)}`
+          : "";
+      throw new Error(`Upstash HTTP ${response.status}${detail}`);
     }
     return payload;
   }

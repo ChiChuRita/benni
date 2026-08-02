@@ -127,7 +127,7 @@ await redis
   .exec();
 ```
 
-Keys accumulate across calls, and the declared set is checked at compile time and, under `benni(client, { cluster: true })`, again before `EXEC` is sent. This is a declaration rather than a derivation: a key you queue but never declare is not checked. On a single-node Redis you can skip it entirely. See [Redis Cluster](/benni/advanced/cluster/).
+Keys accumulate across calls, and the declared set is checked at compile time and, under a cluster guard such as `benni(client, { cluster: assertSameSlot })`, again before `EXEC` is sent. This is a declaration rather than a derivation: a key you queue but never declare is not checked. On a single-node Redis you can skip it entirely. See [Redis Cluster](/benni/advanced/cluster/).
 
 ## Requirements And Limits
 
