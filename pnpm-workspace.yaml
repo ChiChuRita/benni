@@ -1,4 +1,8 @@
+# The library itself lives at the repo root. It has to be listed as a workspace
+# package, not just the workspace root, or changesets cannot resolve the `beni`
+# package named by every changeset file and the release job fails.
 packages:
+  - "."
   - "docs"
 allowBuilds:
   esbuild: true
