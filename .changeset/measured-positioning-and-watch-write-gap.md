@@ -1,0 +1,12 @@
+---
+"benni": patch
+---
+
+Docs: replace the positioning numbers with measured ones, advertise the compile-time cost, and state the `redis.watch()` write-side gap plainly.
+
+A second DX evaluation built three apps twice, once through Benni and once through raw `node-redis` v6, and two claims in the public copy did not survive it.
+
+- **"Expect the same amount of code, not less" was only true for CRUD.** The app behind that line had no primitive in it. Measured across three apps: a URL shortener 97 lines against 171, an AI generation service on `queue` 45 against 437, a realtime presence and payout service 103 against 197. README, `llms.txt`, and [Why Benni?](https://chichurita.github.io/benni/getting-started/why-benni/) now claim the same code for typed CRUD and much less once a primitive replaces hand-written Lua, with the caveat that the raw column hand-rolls what a team would otherwise install.
+- **"Raw `node-redis` caught 0 of 9 planted bugs" was measured against a straw man.** A raw version with an ordinary hand-written typed edge catches 4 of 9. The public figure is now 9 against 4, and it names the five misses, all of which are silent: a typo adds a second field instead of replacing one, a date string in a `number()` slot reads back `NaN`, a partial write leaves a partial record, and an undeclared field reads `undefined`. Only the wrong store kind throws.
+- **The compile-time cost profile is now published**, because "a schema layer will slow my editor down" is the first objection raised. The same three apps cost 13,774 type instantiations through Benni against 198,061 through raw `node-redis`, whose own command generics are the expensive part. Runtime overhead measured 3 to 6 percent on sequential ops, inside the run-to-run spread.
+- **[Optimistic Transactions](https://chichurita.github.io/benni/advanced/optimistic-transactions/) gains "The Write Side Is Not Typed The Way Stores Are"**, and `llms.txt` gains a matching rule 10. Reads inside a watched transaction go through typed stores, writes are hand-built command arrays, and nothing checks the command against the schema's kind, the decoder against the command, or arity and option order. The page now says so where balance-changing code will read it, names `schema.key(id)` and `schema.encode(value)` as the discipline that keeps it honest, and points at a typed `script()` for check-and-set logic that deserves a real guarantee.

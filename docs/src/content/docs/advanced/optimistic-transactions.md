@@ -98,6 +98,27 @@ if (outcome === null) {
 }
 ```
 
+## The Write Side Is Not Typed The Way Stores Are
+
+Say it plainly, because this is where balance-changing code lives: inside a watched transaction the **reads** go through the typed stores (`s.kv(balances).get(from)` hands back `number | null`), and the **writes** are hand-built command arrays. There is no `s.kv(balances).set(...)` that enrolls in the transaction. The schema still helps on both halves of every argument, and that is the whole of the help you get:
+
+- `balances.key(from)` derives the key, so no key text is written by hand.
+- `balances.encode(value)` encodes it with the same codec the typed store reads back, and `users.fields.score.encode(value)` does it per hash field.
+
+What nothing checks:
+
+- **The command string against the schema's kind.** `["LPUSH", balances.key(from), …]` on a string keyspace compiles, and fails at `EXEC` with `WRONGTYPE`.
+- **The decoder against the command.** `numberReply` on a `SET` compiles and throws only when `exec()` decodes the reply. See [Transactions](/benni/advanced/transactions/#the-decoder-is-not-checked-against-the-command).
+- **Arity and option order.** `["SET", key, value, "EX"]` with no seconds is a runtime error reply, not a type error.
+
+So the compile-time guarantee you get elsewhere in Benni stops at `.add(...)`. Three habits keep the rest honest, and they are worth making review rules for any transaction that moves money:
+
+1. Never write a key string; always `schema.key(id)`.
+2. Never `String(value)`; always `schema.encode(value)` or `schema.fields.<name>.encode(value)`. A wrong type then fails at the encode call, above Redis, instead of landing a bad value that reads back as `NaN`.
+3. Keep the body short enough to read in one screen, and pair each command with its decoder as you add it rather than afterwards.
+
+When a check-and-set is hot enough or important enough that you want the whole thing checked and atomic in one place, a [typed Lua script](/benni/advanced/scripts/) is the alternative: `script()` names its keys and types its args, so the call site is checked even though the body is Lua.
+
 ## Options
 
 ```ts

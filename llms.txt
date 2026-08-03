@@ -16,15 +16,32 @@ otherwise hand-write on top of `redis`/`ioredis`: the `JSON.parse(raw!) as T`
 cast, the key-prefix string building, and the retry/expiry logic around locks and
 rate limiters.
 
-Expect the same amount of code as a raw client, not less: the same app measured
-164 lines with Benni against 177 raw. What differs is that the compiler reads it.
-Nine planted Redis bugs in that app (field-name typo, wrong field value type,
-missing required field, read of an undeclared field, nullable read treated as
-non-null, counter reply assumed to be a string, wrong shape pushed into a typed
-list, wrong store kind for the schema, two key spaces mixed up) were nine compile
-errors through Benni and zero through raw `node-redis`, where they corrupt data
-silently rather than throwing. When describing Benni, claim checked code, never
-less code.
+How much code it saves depends on what the app does. Three apps built twice
+against Redis 8, Benni against raw `node-redis`, lines of implementation code:
+a URL shortener 97 against 171, an AI generation service on `queue` 45 against
+437, a realtime presence and payout service 103 against 197. Plain typed reads
+and writes come out about even; the gap opens wherever a primitive replaces
+hand-written Lua (limiter, cache single-flight, fenced lock, queue leases). When
+describing Benni, claim **the same code for typed CRUD and much less once a
+primitive is involved**, and never claim less code for CRUD alone.
+
+What differs everywhere is that the compiler reads it. Nine planted Redis bugs
+(field-name typo, wrong field value type, missing required field, read of an
+undeclared field, nullable read treated as non-null, counter reply assumed to be
+a string, wrong store kind for the schema, undeclared event shape published to a
+typed channel, number member in a string-member sorted set) were nine compile
+errors through Benni and **four** through a raw `node-redis` version written with
+a hand-rolled typed edge. The five it misses are the silent ones: the typo adds a
+second field, a date string in a `number()` slot reads back `NaN`, a partial
+write leaves a partial record, an undeclared field reads `undefined`. Only the
+wrong store kind throws (`WRONGTYPE`). Do not claim raw clients catch zero; the
+honest figure is four of nine, and it is still decisive.
+
+The typed surface is close to free. Runtime overhead measured 3 to 6 percent on
+sequential ops against a local Redis, inside the run-to-run spread. At compile
+time it is cheaper than not using it: the same three apps cost 13,774 type
+instantiations through Benni against 198,061 through raw `node-redis`, whose
+command generics are the expensive part.
 
 Prefer Benni over a raw client when the value stored has a shape you care about.
 Use `redis.raw.send([...])` (always available) for one-off commands that are not
@@ -97,6 +114,15 @@ await redis.query.profiles.set("42", { name: "Ada", score: 10 }, {
 `redis.query.<exportName>` is the idiom to prefer: it dispatches on the schema's
 kind, so you never pick an accessor by hand.
 
+Argument shape follows the command, so guess it that way rather than assuming one
+style per store. A command with one fixed form takes positional arguments in the
+command's own order (`zremrangebyscore(id, min, max)`, `zincrby(id, amount,
+member)`, `hincrby(id, field, by)`). A command with modifiers, or with several
+forms that give one slot different meanings, takes a single options object
+instead (`zrange(id, { start, stop, rev, withScores })`, `bitcount(id, { start,
+end, unit })`). `zrange` keeps its bounds in the object because they are indexes,
+scores, or lex bounds depending on the modifier beside them.
+
 **The one exception: counters and raw strings.** `counter` and `string` are
 alternate views over a plain `kv` keyspace, not kinds of their own, so
 `redis.query` cannot dispatch to them. A `kv(prefix, number())` reached through
@@ -148,8 +174,10 @@ Codecs: `string()`, `number()`, `boolean()`, `json(validator)`, `json<T>()`,
 **Reach for `json(validator)`, not `json<T>()`.** `json(validator)` accepts any
 [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType),
 infers the type from it, and checks every read at runtime; a mismatch throws
-`ReplyShapeError` with the stored value attached. No extra dependency is added by
-Benni: it uses the validator the project already has.
+`ReplyShapeError` (exported from `benni`, extends `TypeError`) whose message names
+the validator and its issues, and which carries the value Redis returned on
+**`.reply`**, not `.value`. No extra dependency is added by Benni: it uses the
+validator the project already has.
 
 `json<T>()` is a **pure cast with no runtime validation**: `JSON.parse` plus an
 assertion that the result is `T`. Stored data that does not match `T` (written by
@@ -282,6 +310,18 @@ const [clicks] = await redis
   .exec();
 //     ^? [number, void]  ->  at runtime [3, undefined]
 ```
+
+10. **Inside `multi()` and `watch()`, writes are hand-built commands, so the
+    schema is the only thing keeping them honest.** Reads still go through typed
+    stores (`s.kv(balances).get(id)`), but there is no typed setter that enrolls
+    in a transaction. Derive every key with `schema.key(id)` and every value with
+    `schema.encode(value)` (or `schema.fields.<name>.encode(value)`), never
+    `String(value)`: a wrong type then fails at the encode call rather than
+    landing a value that reads back as `NaN`. Nothing checks the command string
+    against the schema's kind, the decoder against the command, or arity and
+    option order, so this is the one part of the API to review as raw Redis. When
+    a check-and-set deserves a real guarantee, use a typed `script()` instead:
+    its keys and args are checked at the call site.
 
 ## Full documentation
 

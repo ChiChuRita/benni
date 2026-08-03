@@ -116,32 +116,70 @@ Benni is a typed **client**, not an ORM: schemas are plain TypeScript values tha
 don't create keys, run migrations, or block raw access (`redis.raw.send([...])`
 is always there).
 
-### Not less code. The same code, checked.
+### Same code for typed CRUD. Much less once a primitive is involved.
 
-We built the same URL shortener twice against Redis 8: **164 lines with Benni,
-177 lines raw.** Call that a rounding error, and we would rather say so than have
-you find out.
+We built three apps twice against Redis 8, once with Benni and once with raw
+`node-redis`, matching feature for feature:
 
-What changes is what the compiler catches. We planted the same nine ordinary
-Redis bugs in both versions: a typo'd hash field, a wrong value type, a missing
-required field, a read of a field that isn't on the schema, a nullable read
-treated as non-null, a counter reply assumed to be a string, the wrong shape
-pushed into a typed list, the wrong store kind, and two schemas' key spaces mixed
-up.
+| App | Benni | Raw | Delta |
+|---|---|---|---|
+| URL shortener (hash, counter, zset, stream, cache, rate limit) | 97 | 171 | −43% |
+| AI generation service (queue: resumable stream, cancel, retries) | 45 | 437 | −90% |
+| Realtime presence and payouts (sessions, leaderboard, pub/sub, `WATCH`, lock) | 103 | 197 | −48% |
 
-**Benni caught 9 of 9 at compile time** (11 type errors; nothing ran).
-**Raw `node-redis` caught 0 of 9.** All nine compiled clean and reached the
-server, where the failure is not a crash but silent corruption:
+Lines of implementation code, blank lines excluded. For plain typed reads and
+writes the two are within a rounding error of each other, and we would rather
+say so than have you find out. The gap opens where an app needs a *primitive*:
+the raw column includes a sliding-window limiter, a read-through cache with
+single-flight, a token-fenced lock, and a job queue with heartbeat leases, which
+is six hand-written Lua scripts we would rather you did not maintain. Install
+BullMQ and a limiter package instead and the line count comes back down, at the
+price of four more dependencies that still hand you `string | null`.
+
+### What the compiler catches
+
+We planted the same nine ordinary Redis bugs in both versions: a typo'd hash
+field, a wrong value type, a missing required field, a read of a field that isn't
+on the schema, a nullable read treated as non-null, a counter reply assumed to be
+a string, the wrong store kind, an undeclared event shape published to a typed
+channel, and a number member pushed into a string-member sorted set.
+
+**Benni caught 9 of 9 at compile time.** Raw `node-redis` caught 4 of 9, given a
+raw version written the way real code is written, with a hand-rolled typed edge
+(a `getLink(): Link | null` helper, a `publish(event: ArenaEvent)` wrapper). Drop
+that edge and it catches fewer. The five it misses are the five that matter:
 
 ```text
-link:a  as stored: { ur: 'https://x.example', owner: 'ada', url: '…' }
-link:a2 as stored: { url: 'https://x.example' }
+after typo'd write: { url: 'https://good.example', owner: 'ada',
+                     createdAt: '1785752669179', ur: 'https://typo.example' }
 Number(createdAt) => NaN
+partial record: { url: 'https://good.example' }
+raw.clicks => undefined
+GET on a hash threw: WRONGTYPE Operation against a key holding the wrong kind of value
 ```
 
 The typo added a second field instead of replacing one; the date string in a
-number slot reads back as `NaN`; the incomplete write left a partial record.
-Nothing threw, so nothing pages you.
+number slot reads back as `NaN`; the incomplete write left a partial record; the
+field nobody writes reads as `undefined`. Four of the five are silent. Only
+`WRONGTYPE` pages you.
+
+### The types are free at runtime, and cheaper than you think at compile time
+
+2,000 sequential ops against a local Redis, seven interleaved reps, medians:
+Benni `hset` 166 ms against `node-redis` `hSet` 162 ms, Benni `hget` 171 ms
+against `hGetAll` 161 ms. Roughly 3 to 6 percent with overlapping spreads, on a
+loopback where there is no real round trip to hide behind.
+
+Typechecking is the surprise. The same three apps, `tsc --extendedDiagnostics`:
+
+| | Types | Instantiations | Check time |
+|---|---|---|---|
+| Benni versions | 8,766 | 13,774 | 0.15s |
+| Raw `node-redis` versions | 33,695 | 198,061 | 0.54s |
+
+`node-redis`'s own command generics cost roughly 14 times the type
+instantiations of Benni's typed surface, so the schema layer does not slow your
+editor down. It speeds it up.
 
 ## Philosophy
 
@@ -154,7 +192,7 @@ Nothing threw, so nothing pages you.
 - **Nothing is hidden.** No lazy loading, no identity map. The key is always
   yours (`.key(id)`), and `redis.raw` is always there.
 - **Nothing is silent.** Unexpected replies throw `ReplyShapeError` with the raw
-  value attached; Redis error replies throw `RedisServerError` with `.code`
+  value on `.reply`; Redis error replies throw `RedisServerError` with `.code`
   parsed, so a `WRONGTYPE` handler written on Node still matches on the edge.
 - **Batteries only for what's easy to get wrong.** A correct lock, an accurate
   sliding window, a stampede-proof cache. Not a search engine.
