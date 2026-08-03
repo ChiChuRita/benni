@@ -61,8 +61,24 @@ export const TRANSACTION_UNSUPPORTED =
 export const SUBSCRIBER_UNSUPPORTED =
   "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node or benni/bun.";
 
+/**
+ * Both required halves of the client contract, not just `send`.
+ *
+ * A `RedisSession` also has `send`, so a `send`-only check accepted one (or a
+ * handle's `session.raw`) as a client and handed back something whose
+ * `pipeline` was undefined — the failure then surfaced commands later as
+ * "pipeline is not a function" rather than here, where the message can say what
+ * was expected. TypeScript already rejects a session, since `RedisSession` is
+ * not assignable to `RedisClient`; this is what makes the runtime guard agree
+ * with the type for callers who are not type-checked. Every adapter provides
+ * both, and the contract has `pipeline` non-optional, so nothing legitimate is
+ * excluded.
+ */
 function isClient(value: object): value is RedisClient {
-  return typeof (value as RedisClient).send === "function";
+  return (
+    typeof (value as RedisClient).send === "function" &&
+    typeof (value as RedisClient).pipeline === "function"
+  );
 }
 
 function isProvider(value: object): value is ClientProvider {

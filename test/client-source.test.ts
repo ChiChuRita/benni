@@ -141,6 +141,30 @@ describe("resolveClient", () => {
       /neither a client/
     );
   });
+
+  it("refuses a session, which has send() but cannot pipeline", () => {
+    // A RedisSession is not a RedisClient (no pipeline), and TypeScript says
+    // so. A send-only guard let one through anyway and produced a client that
+    // failed commands later with "pipeline is not a function"; the refusal
+    // belongs here, where it can name what was expected.
+    const session = {
+      async send() {
+        return null;
+      },
+      async watchedTransaction() {
+        return null;
+      },
+      closed: false,
+      async close() {}
+    };
+
+    expect(() => resolveClient(session as unknown as RedisClient)).toThrow(
+      /neither a client/
+    );
+    expect(() =>
+      resolveClient({ raw: session } as unknown as RedisClient)
+    ).toThrow(/neither a client/);
+  });
 });
 
 describe("benni() call shapes", () => {
