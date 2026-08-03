@@ -66,6 +66,22 @@ The reply is well formed here, so this is not a protocol or adapter fault. It me
 
 It extends `ReplyShapeError` so code that already catches that keeps working. Catch `PartialRecordError` specifically to tell an ordinary incomplete record apart from a genuine shape violation, and reach for `hgetall` (which types its result as `Partial`) when incompleteness is expected. See [Hashes](/benni/data-structures/hashes/).
 
+### `UnsupportedCapabilityError`
+
+Extends `TypeError`. Thrown when the client behind the call does not implement the optional capability the call needed: `transaction` (MULTI/EXEC), `session` (a borrowed connection, for `WATCH` and blocking reads), or `subscriber` (Pub/Sub).
+
+| Property | Type | Meaning |
+|---|---|---|
+| `capability` | `"transaction" \| "session" \| "subscriber"` | Which one the client turned out to lack |
+
+Every built-in adapter implements all three except `benni/upstash`, which is stateless HTTP and so has no `session` or `subscriber`. In practice you meet this class with a hand-written client, or when you `subscribe` over Upstash.
+
+A connected client advertises its optional methods by having them defined, so Benni feature-detects and picks a fallback before calling. A client passed as a **promise or a factory** cannot be interrogated at bind time, so the facade over it defines all three and reports the gap from inside the call with this error instead. That is what the class is for: it keeps `benni(node({ url }))` and `benni(await node({ url }))` behaving identically on a client that is missing a capability, because a caller with a legitimate fallback can catch it and take that fallback either way.
+
+The message is the same text a connected client's own guard uses, and `TypeError` is still the base class, so `instanceof TypeError` and message matching that predate this class keep working.
+
+What it never does is downgrade something silently. `redis.multi()` exists for MULTI/EXEC atomicity, so on a client without `transaction` it throws rather than quietly becoming a pipeline. Only a call site that is correct without the atomicity falls back, and `hset(id, value, { ttlSeconds })` is the one that does: it prefers `HSET` plus `EXPIRE` in a transaction and settles for a pipeline.
+
 ### `RedisServerError`
 
 Extends `Error`. Thrown when the Redis **server** answered with an error reply: `WRONGTYPE` on a key holding another type, `NOSCRIPT`, `OOM`, `READONLY`, `NOAUTH`, or a Lua script's own `redis.error_reply(...)`.
@@ -239,6 +255,7 @@ That takes a process stalled for longer than `windowMs` between building the key
 TypeError
 ├── ValidationError
 │   └── CrossSlotError
+├── UnsupportedCapabilityError
 └── ReplyShapeError
     └── PartialRecordError
 

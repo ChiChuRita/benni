@@ -1,5 +1,5 @@
 import { SUBSCRIBER_UNSUPPORTED } from "./client-source.js";
-import { replyShapeError } from "./errors.js";
+import { replyShapeError, UnsupportedCapabilityError } from "./errors.js";
 import { expectNumber } from "./helpers.js";
 import { type KeyOptions, keyBuilder } from "./keys.js";
 import {
@@ -333,7 +333,12 @@ export function createPubSubHub(
     if (leased && !leased.closed) return leased;
     if (leasing) return leasing;
     if (!client.subscriber) {
-      throw new TypeError(SUBSCRIBER_UNSUPPORTED);
+      // Same class the lazy facade throws, so the capability error is one type
+      // whether the client arrived connected or behind a promise or factory.
+      throw new UnsupportedCapabilityError(
+        SUBSCRIBER_UNSUPPORTED,
+        "subscriber"
+      );
     }
     leasing = client
       .subscriber()

@@ -11,6 +11,9 @@ import {
   SESSION_UNSUPPORTED
 } from "./core/client-source.js";
 import { createCounterStore } from "./core/counter.js";
+// A value import, but errors.js is a leaf the root entry already pulls in for
+// the exported error classes, so this pins nothing new into the bundle.
+import { UnsupportedCapabilityError } from "./core/errors.js";
 import type { createGeoResource, GeoSetSchema } from "./core/geo.js";
 import type { createHashResource } from "./core/hash.js";
 import type {
@@ -732,7 +735,9 @@ function createBenni<TSchema extends BenniSchema = BenniSchema>(
 
   async function openSession(): Promise<BenniSession> {
     if (client.session === undefined) {
-      throw new TypeError(SESSION_UNSUPPORTED);
+      // Same class the lazy facade throws, so the capability error is one type
+      // whether the client arrived connected or behind a promise or factory.
+      throw new UnsupportedCapabilityError(SESSION_UNSUPPORTED, "session");
     }
     return createBenniSessionFacade(await client.session(), ctx);
   }

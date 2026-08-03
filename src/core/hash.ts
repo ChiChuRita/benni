@@ -1,3 +1,4 @@
+import { transactionOrPipeline } from "./client-source.js";
 import {
   describeReply,
   PartialRecordError,
@@ -394,13 +395,15 @@ export function createHashStore<
     // sees a record with no expiry, and a connection lost in the same window
     // leaves one that never expires at all. MULTI/EXEC closes both. Every
     // adapter implements transaction(); the fallback is for a custom client
-    // that does not, which is no worse off than before. On a session holding
-    // a WATCH the facade degrades this back to a pipeline rather than let an
-    // EXEC clear the caller's watch set (see createBenniSession).
+    // that does not, which is no worse off than before, and it has to cover
+    // that client behind a promise or factory too (see transactionOrPipeline).
+    // On a session holding a WATCH the facade degrades this back to a pipeline
+    // rather than let an EXEC clear the caller's watch set (see
+    // createBenniSession).
     const replies =
       options.ttlSeconds === undefined
         ? await client.pipeline(commands)
-        : await (client.transaction?.(commands) ?? client.pipeline(commands));
+        : await transactionOrPipeline(client, commands);
 
     for (const reply of replies) {
       if (typeof reply !== "number") {

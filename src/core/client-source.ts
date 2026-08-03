@@ -1,4 +1,5 @@
-import type { RedisClient } from "./types.js";
+import { UnsupportedCapabilityError } from "./errors.js";
+import type { RedisClient, RedisCommand, RedisReply } from "./types.js";
 
 /**
  * Anything that carries a bound client on `raw` — in practice the handle
@@ -60,6 +61,15 @@ export const TRANSACTION_UNSUPPORTED =
   "Redis client does not support transactions";
 export const SUBSCRIBER_UNSUPPORTED =
   "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node or benni/bun.";
+
+/**
+ * Refused because `close()` already ran. Matches the shape the adapters use for
+ * the same situation (`benni/node client is closed`, node-redis's own
+ * `ClientClosedError`): once a client is closed it stays closed, and a command
+ * that lands afterwards is a bug in the caller's shutdown ordering, not a
+ * reason to open a fresh connection.
+ */
+export const CLIENT_CLOSED = "Redis client is closed";
 
 /**
  * Both required halves of the client contract, not just `send`.
@@ -137,47 +147,110 @@ function resolveOnce(
  * while the connection opens on first use.
  */
 function lazyClient(resolver: Resolver): RedisClient {
+  // The in-flight or finished teardown, and by being set at all the record that
+  // close() has happened. That record is what makes close() terminal, which for
+  // a factory is the whole point: the resolver has started nothing, so without
+  // it a command landing after shutdown calls the factory and opens a socket
+  // past the point anything will close it — and in Node a live socket pins the
+  // event loop, so a request racing shutdown turns a "graceful" exit into a
+  // hang. The adapters' own close() is final (see `benni/node`'s clientClosed);
+  // a facade over them has to be too.
+  let closing: Promise<void> | undefined;
+
+  /** The resolved client, or a refusal if this facade is already closed. */
+  const live = async (): Promise<RedisClient> => {
+    if (closing !== undefined) throw new Error(CLIENT_CLOSED);
+    return resolver.get();
+  };
+
   return {
     async send(command) {
-      return (await resolver.get()).send(command);
+      return (await live()).send(command);
     },
     async pipeline(commands) {
-      return (await resolver.get()).pipeline(commands);
+      return (await live()).pipeline(commands);
     },
     async transaction(commands) {
-      const client = await resolver.get();
+      const client = await live();
       if (client.transaction === undefined) {
-        throw new TypeError(TRANSACTION_UNSUPPORTED);
+        throw new UnsupportedCapabilityError(
+          TRANSACTION_UNSUPPORTED,
+          "transaction"
+        );
       }
       return client.transaction(commands);
     },
     async session() {
-      const client = await resolver.get();
+      const client = await live();
       if (client.session === undefined) {
-        throw new TypeError(SESSION_UNSUPPORTED);
+        throw new UnsupportedCapabilityError(SESSION_UNSUPPORTED, "session");
       }
       return client.session();
     },
     async subscriber() {
-      const client = await resolver.get();
+      const client = await live();
       if (client.subscriber === undefined) {
-        throw new TypeError(SUBSCRIBER_UNSUPPORTED);
+        throw new UnsupportedCapabilityError(
+          SUBSCRIBER_UNSUPPORTED,
+          "subscriber"
+        );
       }
       return client.subscriber();
     },
-    async close() {
-      // Closing a client that was never used must not open one, which is why
-      // this peeks rather than resolves: an unused factory stays uncalled. A
-      // promise was adopted at bind time, so it is peekable here and the
-      // client it opened gets closed even though no command was ever sent.
-      // A resolution that failed left nothing to close, so its rejection is
-      // not an error here either.
-      const pending = resolver.peek();
-      if (pending === undefined) return;
-      const client = await pending.catch(() => undefined);
-      await client?.close();
+    close() {
+      // Memoized rather than merely flagged, which buys two things over an
+      // `if (closed) return`: the underlying client is closed exactly once (the
+      // adapters tolerate a repeat, a hand-written client need not), and a
+      // second close() awaits the first one's teardown instead of resolving
+      // while the socket is still going down. Assigned before the first await,
+      // so a command issued in the same tick as close() is already barred.
+      closing ??= (async () => {
+        // Closing a client that was never used must not open one, which is why
+        // this peeks rather than resolves: an unused factory stays uncalled. A
+        // promise was adopted at bind time, so it is peekable here and the
+        // client it opened gets closed even though no command was ever sent.
+        // A resolution that failed left nothing to close, so its rejection is
+        // not an error here either.
+        const pending = resolver.peek();
+        if (pending === undefined) return;
+        const client = await pending.catch(() => undefined);
+        await client?.close();
+      })();
+      return closing;
     }
   };
+}
+
+/**
+ * MULTI/EXEC when the client has it, one pipeline when it does not.
+ *
+ * For a caller that only wants the atomicity as an upgrade, and is correct
+ * (just weaker) without it. `client.transaction?.(…) ?? client.pipeline(…)`
+ * looks like it does this, but only for a *connected* client: over a promise or
+ * factory the facade defines `transaction` unconditionally, so the optional call
+ * finds a method, the `??` branch never runs, and the same custom client behaves
+ * differently depending on how it was handed to `benni()`. Catching the
+ * capability error is what closes that gap.
+ *
+ * Deliberately narrow: only {@link UnsupportedCapabilityError} falls back. A
+ * MULTI that reached Redis and failed still throws, and callers whose whole
+ * point is atomicity (`redis.multi()`, via `core/transaction.ts`) must not use
+ * this — degrading those to a pipeline would drop the atomicity silently, which
+ * is worse than refusing.
+ */
+export async function transactionOrPipeline(
+  client: RedisClient,
+  commands: readonly RedisCommand[]
+): Promise<RedisReply[]> {
+  if (client.transaction === undefined) return client.pipeline(commands);
+  try {
+    return await client.transaction(commands);
+  } catch (error) {
+    if (error instanceof UnsupportedCapabilityError) {
+      return client.pipeline(commands);
+    }
+    throw error;
+  }
 }
 
 /**

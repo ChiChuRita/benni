@@ -27,6 +27,8 @@ The two lazy forms differ in one way worth knowing:
 
 Reach for the factory when a module is loaded in a context that must not connect at all, which is why `benni/next`'s `cacheHandler` documents one: Next.js loads `cache-handler.mjs` at build time.
 
+`close()` is final for both, and for the factory that is the point: a request that lands after shutdown rejects with `Redis client is closed` instead of calling the factory and opening a connection nothing is left to close. Calling `close()` more than once is a no-op.
+
 `BenniOptions` has three fields, all optional:
 
 | Option | Effect |

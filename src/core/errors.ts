@@ -12,6 +12,49 @@ export class ValidationError extends TypeError {
   }
 }
 
+/** The optional halves of the `RedisClient` contract, named. */
+export type RedisClientCapability = "transaction" | "session" | "subscriber";
+
+/**
+ * Thrown when the Redis client behind the call does not implement the optional
+ * capability the call needed: `transaction` (MULTI/EXEC), `session` (a borrowed
+ * connection, for WATCH and blocking reads), or `subscriber` (Pub/Sub).
+ *
+ * A *connected* client advertises those by having the method defined, so a
+ * caller can feature-detect and pick a fallback before calling. A client passed
+ * as a promise or a factory cannot: the facade over it has to define all three
+ * up front, because at bind time there is nothing yet to interrogate, and so it
+ * reports the gap from inside the call with this error instead. Catching it is
+ * what lets a caller with a legitimate fallback take that fallback on the lazy
+ * path too, while a caller that needs the real capability still fails loudly.
+ * {@link capability} says which one was missing without parsing the message.
+ *
+ * Extends `TypeError`, and keeps the message the connected-client guards use
+ * verbatim, so existing `catch` / `instanceof TypeError` / message-matching
+ * handling keeps working unchanged.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await redis.multi().add(["INCR", "n"], numberReply).exec();
+ * } catch (error) {
+ *   if (error instanceof UnsupportedCapabilityError) {
+ *     // this adapter has no MULTI; do not silently pipeline it
+ *   }
+ * }
+ * ```
+ */
+export class UnsupportedCapabilityError extends TypeError {
+  /** Which optional capability the resolved client turned out to lack. */
+  readonly capability: RedisClientCapability;
+
+  constructor(message: string, capability: RedisClientCapability) {
+    super(message);
+    this.name = "UnsupportedCapabilityError";
+    this.capability = capability;
+  }
+}
+
 /**
  * Thrown when a Redis reply — or a stored value handed to a codec — does not
  * match the shape a decoder expected. `reply` is the raw value received, so a

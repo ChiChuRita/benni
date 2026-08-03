@@ -1,5 +1,10 @@
 import { TRANSACTION_UNSUPPORTED } from "./client-source.js";
-import { ReplyShapeError, replyShapeError, ValidationError } from "./errors.js";
+import {
+  ReplyShapeError,
+  replyShapeError,
+  UnsupportedCapabilityError,
+  ValidationError
+} from "./errors.js";
 import { expectNumber } from "./helpers.js";
 import type { SameSlotList, SlotAnchor } from "./keys.js";
 import type { SlotGuard } from "./slot.js";
@@ -102,7 +107,13 @@ function buildTransaction<TResults extends readonly unknown[]>(
       }
       assertSameSlot?.("EXEC", declared);
       if (client.transaction === undefined) {
-        throw new TypeError(TRANSACTION_UNSUPPORTED);
+        // The same class the lazy facade throws, so `catch
+        // (UnsupportedCapabilityError)` works whether the client was handed
+        // over connected or behind a promise or factory.
+        throw new UnsupportedCapabilityError(
+          TRANSACTION_UNSUPPORTED,
+          "transaction"
+        );
       }
       const replies = await client.transaction(
         queued.map((entry) => entry.command)
