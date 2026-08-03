@@ -4,7 +4,7 @@
        the drop lifted back out of it. Brand red, literal on purpose: a favicon is
        fetched by the browser chrome with no page CSS in scope, so CSS custom
        properties and currentColor can never apply here. Keep in sync with the
-       benni-brand token in docs/src/styles/custom.css; test/brand.test.ts
+       benni-brand token in docs/src/styles/tokens.css; test/brand.test.ts
        enforces it. The token is named here without its leading dashes because an
        XML comment may not contain a double hyphen. -->
   <path d="M13 29 a19 19 0 0 0 38 0" fill="none" stroke="#e11d48" stroke-width="7" stroke-linecap="round"/>

@@ -79,7 +79,9 @@ export default defineConfig({
         ThemeSelect: "./src/components/Empty.astro",
         Head: "./src/components/Head.astro",
       },
-      customCss: ["./src/styles/custom.css"],
+      // tokens.css first: custom.css maps Starlight's ramp onto the tokens it
+      // declares, and the landing page imports the same file directly.
+      customCss: ["./src/styles/tokens.css", "./src/styles/custom.css"],
       sidebar: [
         {
           label: "Getting Started",

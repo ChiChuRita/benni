@@ -5,7 +5,7 @@
        renders this file through <img> (SiteTitle) and astro:assets Image (hero),
        and an SVG loaded that way is an isolated document, so CSS custom
        properties and currentColor never reach it. Keep in sync with the
-       benni-brand token in docs/src/styles/custom.css; test/brand.test.ts
+       benni-brand token in docs/src/styles/tokens.css; test/brand.test.ts
        enforces it. The token is named here without its leading dashes because an
        XML comment may not contain a double hyphen. -->
   <path d="M13 29 a19 19 0 0 0 38 0" fill="none" stroke="#e11d48" stroke-width="7" stroke-linecap="round"/>

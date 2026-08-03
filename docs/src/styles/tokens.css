@@ -1,0 +1,41 @@
+/* The single source of truth for the Benni docs palette.
+
+   Loaded two ways, which is the whole point of the file existing: Starlight
+   pulls it in through `customCss` (ahead of custom.css, so the mappings there
+   can reference it), and the standalone landing page imports it directly. Before
+   this file, the landing page repeated every value as a literal and the two
+   drifted apart: neutral greys in the docs against warm ones on the landing,
+   and two different mixes for the same accent text colour.
+
+   The greys carry a red undertone on purpose. Benni is 紅, the crimson pigment
+   pressed from safflower, and a warm ground makes the accent read as the same
+   material as the page rather than a colour dropped onto neutral grey.
+
+   The logo and favicon must still repeat --benni-brand as a literal hex: both
+   render as isolated documents (<img> and rel="icon"), where custom properties
+   and currentColor never reach. test/brand.test.ts is the guard that keeps
+   those copies from drifting from the token below. */
+:root {
+  --benni-brand: #e11d48;
+
+  /* Ground and structure, darkest to lightest. */
+  --benni-bg: #0f0a0b;
+  --benni-surface: #191113;
+  --benni-rule: #291d20;
+  --benni-rule-soft: #1f1618;
+
+  /* Ink, lightest to dimmest. The dimmest is held at 4.59:1 on --benni-bg
+     rather than pushed darker: it carries real content (table notes, code
+     captions, the gloss) and drives --sl-color-gray-3 across every docs page,
+     so it has to clear 4.5:1 for normal-size text. */
+  --benni-ink: #f3ebe8;
+  --benni-ink-2: #a89a97;
+  --benni-ink-3: #867773;
+
+  /* Brand red is mid-toned, so small text needs the lifted mix to stay
+     readable. One value, used by both the docs and the landing page. */
+  --benni-brand-text: color-mix(in oklab, var(--benni-brand) 55%, white);
+  --benni-brand-fg: #fff5f7;
+
+  --benni-radius: 4px;
+}

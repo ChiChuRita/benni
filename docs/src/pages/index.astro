@@ -2,6 +2,9 @@
 import { Code } from "astro:components";
 import "starlight-theme-next/fonts/geist-sans/index.css";
 import "starlight-theme-next/fonts/geist-mono/index.css";
+// The same palette Starlight loads through customCss. This page renders outside
+// the Starlight shell, so it has to ask for the tokens itself.
+import "../styles/tokens.css";
 
 // Astro's BASE_URL carries the configured `base` ("/benni") with a trailing
 // slash. Strip it so the helper below never emits a doubled separator.
@@ -73,30 +76,30 @@ const after = `const user = await redis.query.profiles.get("42");
 // decoded by the declared codec.`;
 
 const principles = [
-  {
-    h: "Command names stay",
-    b: "<code>hgetall</code> runs <code>HGETALL</code>. A type layer, not a query language, so everything you know about Redis still applies."
-  },
-  {
-    h: "Schemas are values",
-    b: "No CLI, no codegen, no generated files. Declaring a schema creates no keys and runs nothing."
-  },
-  {
-    h: "One round trip",
-    b: "<code>hget</code> is a single <code>HMGET</code>, not a pipeline of <code>HGET</code>s. On the edge, one call never quietly becomes four."
-  },
-  {
-    h: "Nothing is hidden",
-    b: "No lazy loading, no identity map. The key is yours through <code>.key(id)</code>, and <code>redis.raw</code> is always there."
-  },
-  {
-    h: "Nothing is silent",
-    b: "An unexpected reply throws <code>ReplyShapeError</code> with the raw value attached. It never casts and moves on."
-  },
-  {
-    h: "Works with your validator",
-    b: "Any Standard Schema validator, so Zod, Valibot, or ArkType, with zero added dependencies."
-  }
+  [
+    "Command names stay",
+    "<code>hgetall</code> runs <code>HGETALL</code>. A type layer, not a query language, so everything you know about Redis still applies."
+  ],
+  [
+    "Schemas are values",
+    "No CLI, no codegen, no generated files. Declaring a schema creates no keys and runs nothing."
+  ],
+  [
+    "One round trip",
+    "<code>hget</code> is a single <code>HMGET</code>, not a pipeline of <code>HGET</code>s. On the edge, one call never quietly becomes four."
+  ],
+  [
+    "Nothing is hidden",
+    "No lazy loading, no identity map. The key is yours through <code>.key(id)</code>, and <code>redis.raw</code> is always there."
+  ],
+  [
+    "Nothing is silent",
+    "An unexpected reply throws <code>ReplyShapeError</code> with the raw value attached. It never casts and moves on."
+  ],
+  [
+    "Works with your validator",
+    "Any Standard Schema validator, so Zod, Valibot, or ArkType, with zero added dependencies."
+  ]
 ];
 
 const runtimes = [
@@ -155,7 +158,7 @@ const primitives = [
         >
           {/* currentColor on purpose: this copy of the mark sits inside the page,
               so it can follow the brand token instead of repeating the hex. */}
-          <svg class="mark" viewBox="0 0 64 64" width="19" height="19" aria-hidden="true">
+          <svg class="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
             <path
               d="M13 29 a19 19 0 0 0 38 0"
               fill="none"
@@ -171,7 +174,7 @@ const primitives = [
           <a class="hide-sm" href="#start">Quick start</a>
           <a href="#runtimes">Runtimes</a>
           <a href="#primitives">Primitives</a>
-          <a class="docs-link" href={p("getting-started/introduction/")}>Docs</a>
+          <a href={p("getting-started/introduction/")}>Docs</a>
           <a
             class="gh"
             href="https://github.com/ChiChuRita/benni"
@@ -188,198 +191,204 @@ const primitives = [
       </div>
     </header>
 
-    <main>
-      <div class="wrap">
-        <section class="hero">
-          <span class="tagline"
-            ><span class="d"></span> Node, Bun, Deno, and the edge</span
+    <main class="wrap">
+      {/* Line breaks are set by hand. text-wrap: balance produces an evenly
+          ragged headline at every width, which is exactly what it looks like. */}
+      <h1>
+        Typed Redis for TypeScript.<br />All the way back.
+      </h1>
+      <p class="lede">
+        Declare your data model once with typed codecs, bind a client, and call
+        methods named after the Redis commands they run. Your declared types
+        travel from write to read, so replies come back as <b>your types</b>, not
+        <code>string | null</code>.
+      </p>
+      <div class="actions">
+        <a class="btn" href={p("getting-started/quick-start/")}>Quick start</a>
+        <span class="cmd">
+          <span><span class="p">$</span> npm install benni redis</span>
+          <button class="icb" type="button" data-copy="npm install benni redis"
+            >copy</button
           >
-          <h1>Typed Redis for TypeScript. <span>All the way back.</span></h1>
-          <p class="lede">
-            Declare your data model once with typed codecs, bind a client, and call
-            methods named after the Redis commands they run. Your declared types
-            travel from write to read, so replies come back as <b>your types</b>,
-            not <code>string | null</code>.
-          </p>
-          <div class="actions">
-            <a class="btn" href={p("getting-started/quick-start/")}>Quick start</a>
-            <a class="btn sec" href={p("getting-started/why-benni/")}>Why Benni?</a>
-            <span class="cmd">
-              <span><span class="p">$</span> npm install benni redis</span>
-              <button class="icb" type="button" data-copy="npm install benni redis"
-                >Copy</button
-              >
-            </span>
-          </div>
-        </section>
+        </span>
+        <a class="lnk" href={p("getting-started/why-benni/")}>Why Benni?</a>
       </div>
 
-      <div class="wrap">
-        <section id="start" class="flush">
+      {/* The round trip, as a spec table rather than an animated diagram: one
+          value written, two clients reading it back. Crimson marks the reply
+          that kept its declared type. */}
+      <table class="trip">
+        <tbody>
+          <tr>
+            <th scope="row">you write</th>
+            <td colspan="2"
+              ><code
+                >profiles.set("42", &#123; name: "Ada", score: 10 &#125;)</code
+              ></td
+            >
+          </tr>
+          <tr>
+            <th scope="row">a raw client returns</th>
+            <td><code class="lost">string | null</code></td>
+            <td class="note">plus a hand-cast the compiler never checked</td>
+          </tr>
+          <tr>
+            <th scope="row">benni returns</th>
+            <td><code class="kept">UserProfile</code></td>
+            <td class="note">decoded by the codec you declared</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <section id="why">
+        <h2>They type the commands. Benni types your data.</h2>
+        <p>
+          <code>node-redis</code> and <code>ioredis</code> are already typed, but
+          only at the command surface. A reply arrives as Redis's generic wire
+          shape, so you re-parse it and hand it a cast that the compiler agrees to
+          without checking. <b>That cast is where the bugs live.</b>
+        </p>
+        <div class="pair">
           <div class="panel">
-            <div class="panel-hd" role="tablist" aria-label="Quick start">
-              {
-                files.map((f, i) => (
-                  <button
-                    class="tab"
-                    role="tab"
-                    type="button"
-                    aria-selected={i === 0 ? "true" : "false"}
-                    aria-controls={`pane-${i}`}
-                    data-tab={i}
-                  >
-                    {f.name}
-                  </button>
-                ))
-              }
-            </div>
+            <p class="cap">A raw client. The type is lost at the edge.</p>
+            <Code code={before} lang="ts" theme="github-dark" />
+          </div>
+          <div class="panel">
+            <p class="cap">Benni. The type is carried through.</p>
+            <Code code={after} lang="ts" theme="github-dark" />
+          </div>
+        </div>
+      </section>
+
+      <section id="start">
+        <h2>Quick start</h2>
+        <div class="panel">
+          <div class="tabs" role="tablist" aria-label="Quick start">
             {
               files.map((f, i) => (
-                <div
-                  class="pane"
-                  id={`pane-${i}`}
-                  data-pane={i}
-                  hidden={i !== 0}
+                <button
+                  class="tab"
+                  role="tab"
+                  type="button"
+                  aria-selected={i === 0 ? "true" : "false"}
+                  aria-controls={`pane-${i}`}
+                  data-tab={i}
                 >
-                  <Code code={f.code} lang="ts" theme="github-dark" />
-                  <p class="panel-ft">{f.note}</p>
-                </div>
+                  {f.name}
+                </button>
               ))
             }
           </div>
-        </section>
-
-        <section id="why">
-          <p class="eyebrow">Why</p>
-          <h2>They type the commands. Benni types your data.</h2>
-          <p class="sub">
-            <code>node-redis</code> and <code>ioredis</code> are already typed, but
-            only at the command surface. A reply arrives as Redis's generic wire
-            shape, so you re-parse it and hand it a cast that the compiler agrees
-            to without checking. <b>That cast is where the bugs live.</b>
-          </p>
-          <div class="pair">
-            <div class="panel">
-              <div class="pcap">
-                <span>Raw client</span><span class="bad">Type lost at the edge</span>
+          {
+            files.map((f, i) => (
+              <div class="pane" id={`pane-${i}`} data-pane={i} hidden={i !== 0}>
+                <Code code={f.code} lang="ts" theme="github-dark" />
+                <p class="cap ft">{f.note}</p>
               </div>
-              <Code code={before} lang="ts" theme="github-dark" />
-            </div>
-            <div class="panel">
-              <div class="pcap">
-                <span>Benni</span><span>Type carried through</span>
-              </div>
-              <Code code={after} lang="ts" theme="github-dark" />
-            </div>
-          </div>
-        </section>
+            ))
+          }
+        </div>
+      </section>
 
-        <section>
-          <p class="eyebrow">Design</p>
-          <h2>A typed client, not an ORM.</h2>
-          <p class="sub">
-            It competes with raw client usage plus hand-rolled casts, not with an
-            object mapper. The altitude is deliberate: command level, on purpose.
-          </p>
-          <div class="grid">
-            {
-              principles.map((c) => (
-                <div class="cell">
-                  <h3>{c.h}</h3>
-                  <p set:html={c.b} />
-                </div>
-              ))
-            }
-          </div>
-        </section>
-
-        <section id="runtimes">
-          <p class="eyebrow">Runtimes</p>
-          <h2>One core, thin adapters, the same typed API.</h2>
-          <p class="sub">
-            Redis in TypeScript is fragmented by runtime rather than by dialect.
-            The adapter contract is four methods wide, which is what makes one
-            portable API real. Already running ioredis? Hand Benni the instance you
-            have. It shares that connection and closes only what it leased.
-          </p>
-          <div class="tw">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Runtime</th>
-                  <th scope="col">Adapter</th>
-                  <th scope="col">Client</th>
-                </tr>
-              </thead>
-              <tbody>
-                {
-                  runtimes.map(([rt, adapter, note]) => (
-                    <tr>
-                      <td>{rt}</td>
-                      <td class="a">{adapter}</td>
-                      <td class="n">{note}</td>
-                    </tr>
-                  ))
-                }
-              </tbody>
-            </table>
-          </div>
-          <p class="sub foot-note">
-            Blocking commands, Pub/Sub subscribing, <code>WATCH</code> transactions,
-            and sessions need a persistent connection. The HTTP adapter declines
-            them rather than emulating them, and covers the whole typed surface
-            otherwise.
-          </p>
-        </section>
-
-        <section id="primitives">
-          <p class="eyebrow">benni/primitives</p>
-          <h2>Batteries only for what is easy to get wrong.</h2>
-          <p class="sub">
-            Built on any adapter, edge included. Not a search engine, not an index
-            manager.
-          </p>
-          <dl>
-            {
-              primitives.map(([name, body, slug]) => (
-                <div>
-                  <dt>
-                    <a href={p(slug)}>{name}</a>
-                  </dt>
-                  <dd>{body}</dd>
-                </div>
-              ))
-            }
-          </dl>
-        </section>
-
-        <section class="end">
-          <h2>Your types should survive the round trip.</h2>
-          <div class="actions">
-            <span class="cmd">
-              <span><span class="p">$</span> npm install benni redis</span>
-              <button class="icb" type="button" data-copy="npm install benni redis"
-                >Copy</button
-              >
-            </span>
-            <a class="btn sec" href={p("getting-started/quick-start/")}
-              >Read the quick start</a
-            >
-          </div>
-        </section>
-
-        <p class="gloss">
-          <span class="hd"><b>紅</b> &nbsp;<strong>benni</strong> <em>(n.)</em></span
-          > the deep crimson pigment pressed from safflower. Which makes this the
-          red Redis client. We named it twice, in two languages, and noticed far too
-          late.
+      <section>
+        <h2>A typed client, not an ORM.</h2>
+        <p>
+          It competes with raw client usage plus hand-rolled casts, not with an
+          object mapper. The altitude is deliberate: command level, on purpose.
         </p>
+        <dl>
+          {
+            principles.map(([term, body]) => (
+              <div>
+                <dt>{term}</dt>
+                <dd set:html={body} />
+              </div>
+            ))
+          }
+        </dl>
+      </section>
 
-        <footer>
-          <span>Benni, the end-to-end typed Redis client for TypeScript</span>
-          <span>MIT licensed</span>
-        </footer>
-      </div>
+      <section id="runtimes">
+        <h2>One core, thin adapters, the same typed API.</h2>
+        <p>
+          Redis in TypeScript is fragmented by runtime rather than by dialect. The
+          adapter contract is four methods wide, which is what makes one portable
+          API real. Already running ioredis? Hand Benni the instance you have. It
+          shares that connection and closes only what it leased.
+        </p>
+        <div class="scroll">
+          <table class="data">
+            <thead>
+              <tr>
+                <th scope="col">Runtime</th>
+                <th scope="col">Adapter</th>
+                <th scope="col">Client</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                runtimes.map(([rt, adapter, note]) => (
+                  <tr>
+                    <td>{rt}</td>
+                    <td><code>{adapter}</code></td>
+                    <td class="note">{note}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="small">
+          Blocking commands, Pub/Sub subscribing, <code>WATCH</code> transactions,
+          and sessions need a persistent connection. The HTTP adapter declines
+          them rather than emulating them, and covers the whole typed surface
+          otherwise.
+        </p>
+      </section>
+
+      <section id="primitives">
+        <h2>Batteries only for what is easy to get wrong.</h2>
+        <p>
+          Built on any adapter, edge included. Not a search engine, not an index
+          manager.
+        </p>
+        <dl>
+          {
+            primitives.map(([name, body, slug]) => (
+              <div>
+                <dt><a href={p(slug)}><code>{name}</code></a></dt>
+                <dd>{body}</dd>
+              </div>
+            ))
+          }
+        </dl>
+      </section>
+
+      <section class="end">
+        <h2>Your types should survive the round trip.</h2>
+        <div class="actions">
+          <span class="cmd">
+            <span><span class="p">$</span> npm install benni redis</span>
+            <button class="icb" type="button" data-copy="npm install benni redis"
+              >copy</button
+            >
+          </span>
+          <a class="lnk" href={p("getting-started/quick-start/")}
+            >Read the quick start</a
+          >
+        </div>
+      </section>
+
+      <p class="gloss">
+        <b>紅</b> <strong>benni</strong> <em>(n.)</em> the deep crimson pigment
+        pressed from safflower. Which makes this the red Redis client. We named it
+        twice, in two languages, and noticed far too late.
+      </p>
+
+      <footer>
+        <span>Benni, the end-to-end typed Redis client for TypeScript</span>
+        <span>MIT licensed</span>
+      </footer>
     </main>
 
     <script>
@@ -404,9 +413,9 @@ const primitives = [
         .forEach((btn) => {
           btn.addEventListener("click", async () => {
             await navigator.clipboard.writeText(btn.dataset.copy ?? "");
-            btn.textContent = "Copied";
+            btn.textContent = "copied";
             setTimeout(() => {
-              btn.textContent = "Copy";
+              btn.textContent = "copy";
             }, 1600);
           });
         });
@@ -415,23 +424,27 @@ const primitives = [
     <style>
       /* The landing page is deliberately standalone: Starlight's shell is what
          the rest of the site uses, and this page is the one place that steps
-         outside it. Brand red is repeated here rather than imported because
-         custom.css only loads inside Starlight routes; test/brand.test.ts
-         guards the copies that matter (CSS token, logo, favicon). */
+         outside it. Every colour below is an alias for a token in tokens.css,
+         which the docs load too, so the two cannot drift.
+
+         Set like a technical document, not a landing page: one sans face, one
+         mono face, a small radius, hairlines instead of cards, and no section
+         chrome. Crimson appears only where a declared type survived, or where
+         something is actionable. */
       :root {
-        --bg: #0a0a0a;
-        --surface: #161616;
-        --ink: #ededed;
-        --ink-2: #a1a1a1;
-        --ink-3: #6e6e6e;
-        --border: #262626;
-        --border-2: #1c1c1c;
-        --brand: #e11d48;
-        --brand-text: color-mix(in oklab, #e11d48 55%, white);
-        --brand-fg: #fff5f7;
+        --bg: var(--benni-bg);
+        --raise: var(--benni-surface);
+        --rule: var(--benni-rule);
+        --rule-2: var(--benni-rule-soft);
+        --ink: var(--benni-ink);
+        --ink-2: var(--benni-ink-2);
+        --ink-3: var(--benni-ink-3);
+        --brand: var(--benni-brand);
+        --brand-text: var(--benni-brand-text);
+        --brand-fg: var(--benni-brand-fg);
+        --radius: var(--benni-radius);
         --sans: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
         --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-        --r: 6px;
         color-scheme: dark;
       }
 
@@ -443,48 +456,49 @@ const primitives = [
         background: var(--bg);
         color: var(--ink);
         font-family: var(--sans);
-        font-size: 15.5px;
-        line-height: 1.62;
-        letter-spacing: -0.003em;
+        font-size: 16px;
+        line-height: 1.65;
         -webkit-font-smoothing: antialiased;
       }
+      /* Wide enough that the side-by-side comparison holds a 50-character line
+         of TypeScript without clipping. Prose is held to a readable measure by
+         the ch caps below, not by this. */
       .wrap {
-        max-width: 1040px;
+        max-width: 952px;
         margin: 0 auto;
-        padding: 0 clamp(20px, 4vw, 36px);
+        padding: 0 clamp(18px, 4vw, 30px);
       }
       a {
         color: inherit;
-        text-decoration: none;
       }
       :focus-visible {
         outline: 2px solid var(--brand-text);
         outline-offset: 2px;
-        border-radius: 3px;
+        border-radius: 2px;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.88em;
       }
 
       /* ---------- nav ---------- */
       .nav {
-        border-bottom: 1px solid var(--border);
-        position: sticky;
-        top: 0;
-        background: color-mix(in srgb, var(--bg) 88%, transparent);
-        backdrop-filter: blur(8px);
-        z-index: 20;
+        border-bottom: 1px solid var(--rule);
+        margin-bottom: clamp(40px, 7vw, 68px);
       }
       .nav-in {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 18px;
-        height: 56px;
+        height: 64px;
       }
       .brand {
         display: flex;
         align-items: center;
         gap: 9px;
         font-weight: 600;
-        letter-spacing: -0.015em;
+        text-decoration: none;
       }
       .brand .mark {
         color: var(--brand);
@@ -494,16 +508,20 @@ const primitives = [
       .nav-links {
         display: flex;
         align-items: center;
-        gap: clamp(12px, 2.4vw, 24px);
+        gap: clamp(12px, 2.4vw, 22px);
         font-size: 14px;
         color: var(--ink-2);
       }
+      .nav-links a {
+        text-decoration: none;
+      }
       .nav-links a:hover {
         color: var(--ink);
+        text-decoration: underline;
+        text-underline-offset: 3px;
       }
       .gh {
         display: flex;
-        color: var(--ink-2);
       }
       @media (max-width: 660px) {
         .nav-links .hide-sm {
@@ -511,45 +529,19 @@ const primitives = [
         }
       }
 
-      /* ---------- hero ---------- */
-      .hero {
-        padding: clamp(52px, 9vw, 96px) 0 clamp(38px, 6vw, 58px);
-      }
-      .tagline {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 12.5px;
-        color: var(--ink-2);
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 5px 12px 5px 8px;
-        margin-bottom: 26px;
-      }
-      .tagline .d {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--brand);
-      }
+      /* ---------- opening ---------- */
       h1 {
-        font-size: clamp(32px, 5vw, 52px);
+        font-size: clamp(27px, 3.5vw, 38px);
         font-weight: 600;
-        line-height: 1.1;
-        letter-spacing: -0.032em;
-        margin: 0 0 20px;
-        max-width: 17ch;
-        text-wrap: balance;
-      }
-      h1 span {
-        color: var(--ink-3);
+        line-height: 1.2;
+        letter-spacing: -0.021em;
+        margin: 0 0 18px;
       }
       .lede {
-        font-size: clamp(16.5px, 1.8vw, 19px);
+        font-size: 17px;
         color: var(--ink-2);
-        max-width: 58ch;
-        margin: 0 0 30px;
+        max-width: 64ch;
+        margin: 0 0 26px;
       }
       .lede b {
         color: var(--ink);
@@ -559,30 +551,29 @@ const primitives = [
       .actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 10px;
+        gap: 10px 14px;
         align-items: center;
       }
       .btn {
         font-size: 14.5px;
         font-weight: 500;
-        border-radius: var(--r);
-        padding: 10px 17px;
+        border-radius: var(--radius);
+        padding: 9px 15px;
         border: 1px solid var(--brand);
         background: var(--brand);
         color: var(--brand-fg);
-        transition: filter 0.15s ease;
+        text-decoration: none;
       }
       .btn:hover {
-        filter: brightness(1.1);
+        filter: brightness(1.08);
       }
-      .btn.sec {
-        background: transparent;
+      .lnk {
+        font-size: 14.5px;
+        color: var(--ink-2);
+        text-underline-offset: 3px;
+      }
+      .lnk:hover {
         color: var(--ink);
-        border-color: var(--border);
-      }
-      .btn.sec:hover {
-        border-color: var(--ink-3);
-        filter: none;
       }
       .cmd {
         display: inline-flex;
@@ -591,10 +582,9 @@ const primitives = [
         font-family: var(--mono);
         font-size: 13.5px;
         color: var(--ink-2);
-        border: 1px solid var(--border);
-        border-radius: var(--r);
-        padding: 9px 9px 9px 14px;
-        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--radius);
+        padding: 8px 8px 8px 13px;
       }
       .cmd .p {
         color: var(--ink-3);
@@ -603,47 +593,175 @@ const primitives = [
         background: transparent;
         border: 0;
         cursor: pointer;
-        padding: 3px 5px;
+        padding: 2px 4px;
         font-family: var(--mono);
-        font-size: 11px;
+        font-size: 12px;
         color: var(--ink-3);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
       }
       .icb:hover {
         color: var(--ink);
+        text-decoration: underline;
       }
 
-      /* ---------- panels and code ---------- */
-      .panel {
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        overflow: hidden;
-        background: var(--bg);
+      /* ---------- the round trip ---------- */
+      .trip {
+        width: 100%;
+        border-collapse: collapse;
+        margin: clamp(34px, 5vw, 52px) 0 0;
+        border-top: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
       }
-      .panel-hd {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        border-bottom: 1px solid var(--border);
-        padding: 0 6px;
-        background: var(--surface);
+      .trip th,
+      .trip td {
+        text-align: left;
+        vertical-align: baseline;
+        padding: 13px 0;
+        border-top: 1px solid var(--rule-2);
+      }
+      .trip tr:first-child th,
+      .trip tr:first-child td {
+        border-top: 0;
+      }
+      .trip th {
+        width: 11.5em;
+        padding-right: 20px;
+        font-weight: 400;
+        color: var(--ink-3);
+        white-space: nowrap;
+      }
+      .trip td:first-of-type code {
+        font-size: 15px;
+      }
+      .trip .lost {
+        color: var(--ink-3);
+        text-decoration: line-through;
+        text-decoration-color: color-mix(in oklab, var(--ink-3) 55%, transparent);
+      }
+      .trip .kept {
+        color: var(--brand-text);
+      }
+      .trip .note {
+        padding-left: 22px;
+        font-size: 13.5px;
+        color: var(--ink-3);
+      }
+      @media (max-width: 660px) {
+        .trip th,
+        .trip td,
+        .trip .note {
+          display: block;
+          width: auto;
+          padding: 0;
+          border: 0;
+        }
+        .trip tr {
+          display: block;
+          padding: 13px 0;
+          border-top: 1px solid var(--rule-2);
+        }
+        .trip tr:first-child {
+          border-top: 0;
+        }
+        .trip th {
+          margin-bottom: 3px;
+        }
+      }
+
+      /* ---------- sections ---------- */
+      section {
+        margin: clamp(44px, 6vw, 62px) 0;
+      }
+      h2 {
+        font-size: 20.5px;
+        font-weight: 600;
+        line-height: 1.32;
+        letter-spacing: -0.015em;
+        margin: 0 0 10px;
+      }
+      section > p {
+        color: var(--ink-2);
+        max-width: 68ch;
+        margin: 0 0 22px;
+      }
+      section > p b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      /* Selector matches `section > p` rather than out-specifying it with
+         !important, which is how paddings between sections start cancelling. */
+      section > p.small {
+        font-size: 14px;
+        margin: 18px 0 0;
+      }
+      /* Prose only, matching Starlight's `:not(pre) > code` rule. The type names
+         in the round-trip table and the adapter paths are display values, not
+         inline mentions, so they stay unchipped. */
+      p code,
+      dd code {
+        background: var(--raise);
+        border: 1px solid var(--rule);
+        border-radius: var(--radius);
+        padding: 0.5px 5px;
+        color: var(--ink);
+      }
+
+      /* ---------- code panels ---------- */
+      .panel {
+        border: 1px solid var(--rule);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      .cap {
+        margin: 0;
+        padding: 9px 14px;
+        font-size: 13px;
+        color: var(--ink-3);
+        border-bottom: 1px solid var(--rule);
+        background: var(--raise);
+      }
+      .cap.ft {
+        border-bottom: 0;
+        border-top: 1px solid var(--rule);
+      }
+      .panel :global(pre) {
+        margin: 0;
+        padding: 16px;
         overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.7;
+        background: var(--raise) !important;
+      }
+      .panel :global(code) {
+        font-family: var(--mono);
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      @media (max-width: 780px) {
+        .pair {
+          grid-template-columns: 1fr;
+        }
+      }
+      .tabs {
+        display: flex;
+        gap: 16px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--rule);
+        background: var(--raise);
       }
       .tab {
         appearance: none;
         background: transparent;
         border: 0;
+        border-bottom: 1px solid transparent;
+        margin-bottom: -1px;
         cursor: pointer;
         font-family: var(--mono);
         font-size: 12.5px;
         color: var(--ink-3);
-        padding: 11px 12px 10px;
-        border-bottom: 2px solid transparent;
-        white-space: nowrap;
-        transition:
-          color 0.15s ease,
-          border-color 0.15s ease;
+        padding: 10px 0;
       }
       .tab:hover {
         color: var(--ink-2);
@@ -652,213 +770,34 @@ const primitives = [
         color: var(--ink);
         border-bottom-color: var(--brand);
       }
-      .panel-ft {
-        border-top: 1px solid var(--border);
-        padding: 10px 16px;
-        margin: 0;
-        font-size: 13px;
-        color: var(--ink-3);
-        background: var(--surface);
-      }
-      .panel :global(pre) {
-        margin: 0;
-        padding: 18px;
-        overflow-x: auto;
-        font-size: 13px;
-        line-height: 1.72;
-        background: var(--bg) !important;
-      }
-      .panel :global(code) {
-        font-family: var(--mono);
-      }
-      .pcap {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        font-family: var(--mono);
-        font-size: 11.5px;
-        color: var(--ink-3);
-        padding: 10px 16px;
-        border-bottom: 1px solid var(--border);
-        background: var(--surface);
-      }
-      .pcap .bad {
-        color: var(--brand-text);
-      }
-      .pair {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-      }
-      @media (max-width: 780px) {
-        .pair {
-          grid-template-columns: 1fr;
-        }
-      }
 
-      /* ---------- sections ---------- */
-      section {
-        padding: clamp(48px, 7vw, 82px) 0;
-        border-top: 1px solid var(--border);
-      }
-      section.flush {
-        border-top: 0;
-        padding-top: 0;
-      }
-      .eyebrow {
-        font-family: var(--mono);
-        font-size: 11.5px;
-        letter-spacing: 0.11em;
-        text-transform: uppercase;
-        color: var(--brand-text);
-        margin: 0 0 14px;
-      }
-      h2 {
-        font-size: clamp(23px, 2.9vw, 31px);
-        font-weight: 600;
-        line-height: 1.18;
-        letter-spacing: -0.025em;
-        margin: 0 0 14px;
-        max-width: 22ch;
-        text-wrap: balance;
-      }
-      h3 {
-        font-size: 15.5px;
-        font-weight: 600;
-        margin: 0 0 8px;
-        letter-spacing: -0.012em;
-      }
-      .sub {
-        color: var(--ink-2);
-        max-width: 62ch;
-        margin: 0 0 34px;
-      }
-      .sub b {
-        color: var(--ink);
-        font-weight: 500;
-      }
-      .foot-note {
-        margin: 22px 0 0;
-      }
-      code {
-        font-family: var(--mono);
-        font-size: 0.87em;
-      }
-      p code,
-      td code,
-      dd code {
-        background: var(--surface);
-        border: 1px solid var(--border-2);
-        border-radius: 4px;
-        padding: 1px 5px;
-      }
-
-      /* ---------- feature grid ---------- */
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1px;
-        background: var(--border);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        overflow: hidden;
-      }
-      @media (max-width: 880px) {
-        .grid {
-          grid-template-columns: repeat(2, 1fr);
-        }
-      }
-      @media (max-width: 560px) {
-        .grid {
-          grid-template-columns: 1fr;
-        }
-      }
-      .cell {
-        background: var(--bg);
-        padding: 24px 22px 26px;
-      }
-      .cell p {
-        margin: 0;
-        font-size: 14.5px;
-        color: var(--ink-2);
-        line-height: 1.58;
-      }
-
-      /* ---------- table ---------- */
-      .tw {
-        overflow-x: auto;
-        border: 1px solid var(--border);
-        border-radius: 10px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 14.5px;
-        min-width: 520px;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 12px 18px;
-        border-bottom: 1px solid var(--border-2);
-        vertical-align: baseline;
-      }
-      thead th {
-        font-family: var(--mono);
-        font-size: 11px;
-        font-weight: 400;
-        letter-spacing: 0.11em;
-        text-transform: uppercase;
-        color: var(--ink-3);
-        background: var(--surface);
-        border-bottom: 1px solid var(--border);
-      }
-      tbody tr:last-child td {
-        border-bottom: 0;
-      }
-      td.a {
-        font-family: var(--mono);
-        font-size: 12.5px;
-        color: var(--brand-text);
-        white-space: nowrap;
-      }
-      td.n {
-        color: var(--ink-2);
-      }
-
-      /* ---------- definition rows ---------- */
+      /* ---------- term lists ---------- */
       dl {
         margin: 0;
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        overflow: hidden;
+        border-top: 1px solid var(--rule);
       }
       dl div {
         display: grid;
-        grid-template-columns: 150px minmax(0, 1fr);
-        gap: 18px;
-        padding: 16px 20px;
-        border-bottom: 1px solid var(--border-2);
+        grid-template-columns: 13.5em minmax(0, 1fr);
+        gap: 20px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--rule-2);
+      }
+      dl div:last-child {
+        border-bottom: 1px solid var(--rule);
       }
       @media (max-width: 620px) {
         dl div {
           grid-template-columns: 1fr;
-          gap: 5px;
+          gap: 4px;
         }
       }
-      dl div:last-child {
-        border-bottom: 0;
-      }
       dt {
-        font-family: var(--mono);
-        font-size: 13px;
+        font-weight: 500;
       }
       dt a {
         color: var(--brand-text);
-      }
-      dt a:hover {
-        text-decoration: underline;
+        text-underline-offset: 3px;
       }
       dd {
         margin: 0;
@@ -866,35 +805,68 @@ const primitives = [
         font-size: 14.5px;
       }
 
+      /* ---------- data table ---------- */
+      .scroll {
+        overflow-x: auto;
+      }
+      table.data {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14.5px;
+        min-width: 500px;
+      }
+      table.data th,
+      table.data td {
+        text-align: left;
+        padding: 11px 20px 11px 0;
+        border-bottom: 1px solid var(--rule-2);
+        vertical-align: baseline;
+      }
+      table.data thead th {
+        font-weight: 500;
+        font-size: 13.5px;
+        color: var(--ink-3);
+        border-bottom: 1px solid var(--rule);
+      }
+      table.data tbody tr:last-child td {
+        border-bottom: 1px solid var(--rule);
+      }
+      .note {
+        color: var(--ink-3);
+      }
+
       /* ---------- closing ---------- */
+      .end {
+        margin-bottom: clamp(40px, 6vw, 56px);
+      }
       .end h2 {
-        max-width: 18ch;
-        margin-bottom: 22px;
+        margin-bottom: 18px;
       }
       .gloss {
-        border-top: 1px solid var(--border);
-        padding: 22px 0 0;
+        border-top: 1px solid var(--rule);
+        padding: 20px 0 0;
         margin: 0;
         font-size: 14px;
         color: var(--ink-3);
-        max-width: 66ch;
+        max-width: 68ch;
       }
-      .gloss .hd {
-        color: var(--ink-2);
-      }
-      .gloss .hd b {
+      .gloss b {
         color: var(--brand-text);
         font-weight: 400;
         font-size: 16px;
+      }
+      .gloss strong {
+        color: var(--ink-2);
+        font-weight: 500;
       }
       .gloss em {
         font-style: italic;
       }
       footer {
-        padding: 20px 0 46px;
+        padding: 18px 0 40px;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px 24px;
+        gap: 6px 22px;
         font-size: 13.5px;
         color: var(--ink-3);
       }

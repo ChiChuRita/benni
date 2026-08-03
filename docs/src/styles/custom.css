@@ -1,23 +1,45 @@
-/* Custom overrides: theme fonts (Geist) are loaded by starlight-theme-next */
+/* Starlight overrides. Every colour here comes from tokens.css, which loads
+   ahead of this file via the customCss array in astro.config.mjs and is also
+   imported directly by the standalone landing page. Add no literal hex values
+   below: a literal here is a value the landing page cannot see, which is how
+   the two drifted apart in the first place. */
 
-/* Benni brand red: the single source of truth for every CSS-driven accent.
-   Both shades are derived from it, so this is the only hex to change here.
-   The logo and favicon must repeat the value literally: they render through
-   <img> and rel="icon", which are isolated documents that page-level custom
-   properties and currentColor never reach. test/brand.test.ts fails if the
-   three copies drift apart. */
+/* Map Starlight's ramp onto the Benni tokens. In dark mode gray-1 is the
+   lightest ink and gray-6 the darkest surface. */
 :root {
-  --benni-brand: #e11d48;
-
   --sl-color-accent-low: color-mix(in oklab, var(--benni-brand) 40%, black);
   --sl-color-accent: var(--benni-brand);
-  --sl-color-accent-high: color-mix(in oklab, var(--benni-brand) 55%, white);
-  --sl-color-bg-sidebar: var(--sl-color-black);
+  --sl-color-accent-high: var(--benni-brand-text);
+
+  --sl-color-white: var(--benni-ink);
+  --sl-color-gray-1: var(--benni-ink);
+  --sl-color-gray-2: var(--benni-ink-2);
+  --sl-color-gray-3: var(--benni-ink-3);
+  --sl-color-gray-5: var(--benni-rule);
+  --sl-color-gray-6: var(--benni-surface);
+  --sl-color-black: var(--benni-bg);
+
+  --sl-color-bg: var(--benni-bg);
+  --sl-color-bg-sidebar: var(--benni-bg);
+  --sl-color-hairline: var(--benni-rule);
+  --sl-color-hairline-light: var(--benni-rule-soft);
 }
 
 /* Force dark mode */
 html {
   color-scheme: dark;
+}
+
+/* The wordmark stays ink and lets the mark carry the crimson, which is how the
+   landing page sets it. Accent-coloured type is reserved for links and for a
+   reply that kept its declared type. */
+.site-title {
+  color: var(--benni-ink);
+}
+
+.site-title img {
+  width: 24px;
+  height: 24px;
 }
 
 /* Sidebar vertical lines */
@@ -44,19 +66,21 @@ html {
   scrollbar-color: var(--sl-color-gray-5) transparent;
 }
 
-/* Code blocks: darker background */
+/* Code blocks: raised off the ground, same surface and radius the landing page
+   gives its own panels. */
 :root {
-  --ec-codeBg: #161616;
-  --ec-frm-edBg: #161616;
-  --ec-frm-edActTabBg: #161616;
-  --ec-frm-edTabBarBg: #161616;
-  --ec-frm-trmBg: #161616;
-  --ec-frm-trmTtbBg: #161616;
+  --ec-codeBg: var(--benni-surface);
+  --ec-frm-edBg: var(--benni-surface);
+  --ec-frm-edActTabBg: var(--benni-surface);
+  --ec-frm-edTabBarBg: var(--benni-surface);
+  --ec-frm-trmBg: var(--benni-surface);
+  --ec-frm-trmTtbBg: var(--benni-surface);
+  --ec-brdRad: var(--benni-radius);
 }
 
 /* Asides/callouts: darker, subtler */
 .starlight-aside {
-  background-color: #161616;
+  background-color: var(--benni-surface);
   border-color: var(--sl-color-asides-border);
 }
 
@@ -68,6 +92,7 @@ html {
 
 /* Inline code: match code block tone */
 .sl-markdown-content :not(pre) > code {
-  background-color: #161616;
+  background-color: var(--benni-surface);
   border: 1px solid var(--sl-color-gray-5);
+  border-radius: var(--benni-radius);
 }
