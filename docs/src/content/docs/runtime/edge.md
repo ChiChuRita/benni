@@ -61,3 +61,37 @@ const client = upstash({
 ```
 
 Benni runs the same shared client-contract suite that pins the Node and Bun adapters against SRH over HTTP, so the typed stores behave identically to a TCP connection (minus the session-only features above).
+
+### A failed transaction may not carry a Redis error
+
+One difference the contract suite does record, because it is the endpoint's choice rather than Benni's. Over REST a service sits in front of Redis and decides what a failed `MULTI`/`EXEC` looks like on the wire, and SRH answers with a 5xx carrying nothing:
+
+```text
+POST /pipeline    [["PING"],["ZADD","str","1","member"]]
+  -> 200  [{"result":"PONG"},{"error":"WRONGTYPE Operation against a key..."}]
+
+POST /multi-exec  [["PING"],["ZADD","str","1","member"]]
+  -> 500  (no body)
+```
+
+With no reply to read, `redis.multi().exec()` rejects with a transport `Error` rather than a [`RedisServerError`](/benni/api/errors/). Benni will not invent a `.code` from a gateway's status line, because that would hand you a `RedisServerError` for what might equally be an upstream outage.
+
+What this does and does not change:
+
+- A failed transaction **always rejects**, on every adapter. It never resolves as though it committed.
+- Single commands and pipelines are unaffected: both carry `{ "error": ... }`, so both normalize to `RedisServerError` with the code parsed.
+- Code that branches on `.code` should confirm the error is a `RedisServerError` first, which is the rule everywhere anyway:
+
+```ts
+try {
+  await redis.multi().add(["ZADD", key, "1", "member"], numberReply).exec();
+} catch (error) {
+  if (error instanceof RedisServerError && error.code === "WRONGTYPE") {
+    // Redis said no, and said why
+  } else {
+    // the transaction failed without an attributable reply: retry or surface it
+  }
+}
+```
+
+A hosted endpoint may well return a readable error where SRH does not. The contract suite asserts only what the transport can actually guarantee, so write the `catch` above and it is correct against both.

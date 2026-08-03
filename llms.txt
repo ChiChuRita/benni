@@ -265,6 +265,17 @@ adapter, so error handling is portable across runtimes; connection and transport
 failures (a closed socket, an Upstash HTTP 5xx) stay whatever the underlying
 client threw, because nothing about them came from Redis. See rule 8.
 
+One edge case follows from that boundary rather than breaking it. Over the REST
+adapter a service sits in front of Redis and decides what a failed
+`MULTI`/`EXEC` looks like on the wire, and it may answer with a 5xx carrying no
+Redis error at all: `hiett/serverless-redis-http` returns an empty-bodied HTTP
+500 for a failing `/multi-exec`, where the same server's `/pipeline` returns
+`{ "error": "WRONGTYPE ..." }`. With no reply to read, `redis.multi().exec()`
+rejects with a transport `Error` instead of a `RedisServerError`. So a failed
+transaction always rejects everywhere, but branch on `.code` only after
+confirming the error is a `RedisServerError`, which rule 8 already tells you to
+do. Single commands and pipelines are unaffected.
+
 ## Rules that avoid the usual mistakes
 
 1. **Never hand-cast a reply.** If you are writing `as T` on a Redis read, the

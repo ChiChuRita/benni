@@ -56,8 +56,35 @@ async function waitUntil(
   throw new Error("Timed out waiting for a Pub/Sub message");
 }
 
+export type RedisClientContractOptions = {
+  /**
+   * Set when the transport cannot carry a Redis error reply for a *failed
+   * transaction*, so `transaction()` rejects with a plain transport error rather
+   * than a `RedisServerError`.
+   *
+   * This is a property of the endpoint, not of Benni. Over the REST protocol a
+   * service sits in front of Redis and decides what a failed `MULTI`/`EXEC`
+   * looks like on the wire. `hiett/serverless-redis-http`, the endpoint CI runs
+   * against, answers with an empty-bodied HTTP 500:
+   *
+   * ```text
+   * POST /pipeline   [["PING"],["ZADD","str","1","member"]]
+   *   -> 200  [{"result":"PONG"},{"error":"WRONGTYPE Operation against..."}]
+   * POST /multi-exec [["PING"],["ZADD","str","1","member"]]
+   *   -> 500  (no body)
+   * ```
+   *
+   * There is no reply to normalize, and inventing a `.code` from a gateway's
+   * status line is exactly what `benni/upstash` refuses to do (see the 5xx
+   * boundary in `src/upstash/index.ts`). The rejection itself is still
+   * contractual, so the assertion below narrows rather than disappearing.
+   */
+  readonly transactionErrorsCarryNoReply?: boolean;
+};
+
 export async function expectRedisClientContract(
-  createClient: RedisClientFactory
+  createClient: RedisClientFactory,
+  options: RedisClientContractOptions = {}
 ): Promise<void> {
   const client = await createClient();
   const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
@@ -139,8 +166,13 @@ export async function expectRedisClientContract(
       const transactionError = await captureError(
         client.transaction([["PING"], ["ZADD", wrongTypeKey, "1", "member"]])
       );
-      expect(transactionError).toBeInstanceOf(RedisServerError);
-      expect((transactionError as RedisServerError).code).toBe("WRONGTYPE");
+      // Rejecting is contractual on every transport: a transaction that failed
+      // must never resolve as if it had committed.
+      expect(transactionError).toBeInstanceOf(Error);
+      if (options.transactionErrorsCarryNoReply !== true) {
+        expect(transactionError).toBeInstanceOf(RedisServerError);
+        expect((transactionError as RedisServerError).code).toBe("WRONGTYPE");
+      }
     }
     await client.send(["DEL", wrongTypeKey]);
 

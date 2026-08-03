@@ -14,13 +14,22 @@ describeUpstash("upstash", () => {
     expect(upstashUrl).toBeDefined();
     // session is intentionally absent, so the contract test's blocking/WATCH
     // block is skipped; transaction (/multi-exec) and every store run.
-    await expectRedisClientContract(() =>
-      Promise.resolve(
-        upstash({
-          url: upstashUrl as string,
-          token: upstashToken
-        })
-      )
+    await expectRedisClientContract(
+      () =>
+        Promise.resolve(
+          upstash({
+            url: upstashUrl as string,
+            token: upstashToken
+          })
+        ),
+      {
+        // SRH answers a failed /multi-exec with an empty-bodied HTTP 500, so the
+        // rejection carries no Redis error to normalize. Verified against
+        // hiett/serverless-redis-http:latest in front of redis:8; the /pipeline
+        // path on the same server does return `{ error: "WRONGTYPE ..." }`, which
+        // is why only the transaction assertion narrows.
+        transactionErrorsCarryNoReply: true
+      }
     );
   });
 });
