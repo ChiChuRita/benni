@@ -8,8 +8,11 @@ description: "A read-through cache with stampede protection: one loader call per
 ```ts
 // schema.ts
 import { cache, json } from "benni/schema";
+import { z } from "zod";
 
-export const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+const profile = z.object({ name: z.string(), score: z.number() });
+
+export const profiles = cache("profile", { ttlMs: 60_000, codec: json(profile) });
 ```
 
 ```ts

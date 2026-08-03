@@ -59,10 +59,14 @@ declare module "benni" {
 }
 ```
 
-`benni()` takes the adapter's promise unawaited and connects on the first
-command, so this file needs no top-level `await`. Pass a client you already
-awaited (`benni(client, { schema })`) when you would rather find out about a bad
-`REDIS_URL` at startup than at first use.
+`benni()` takes the adapter's promise unawaited, so this file needs no top-level
+`await`. Note what that does and does not defer: `node()` starts connecting the
+moment you call it, so importing this module opens the connection; what `benni()`
+adopts unawaited is a connection already in flight, and a bad `REDIS_URL`
+surfaces at the first command rather than at import. Pass a client you already
+awaited (`benni(client, { schema })`) to find that out at startup instead, or a
+factory (`client: () => node({ url })`) to defer connecting until the first
+command actually needs it.
 
 ```ts
 // app.ts: methods are named after the Redis commands they run
@@ -225,7 +229,7 @@ import { cache, json, lock, queue, ratelimit } from "benni/schema";
 
 export const orderLocks = lock("order", { ttlMs: 10_000 });
 export const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
-export const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+export const profiles = cache("profile", { ttlMs: 60_000, codec: json(profile) });
 export const generate = queue<{ prompt: string }, string>("generate");
 ```
 

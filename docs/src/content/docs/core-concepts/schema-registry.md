@@ -84,10 +84,12 @@ The [primitives](/benni/primitives/cache/) declare themselves the same way the d
 import {
   budget, cache, hash, json, number, queue, ratelimit, string
 } from "benni/schema";
+import { z } from "zod";
 
 export const users = hash("user", { name: string(), score: number() });
 
-export const profiles = cache("profile", { ttlMs: 60_000, codec: json(Profile) });
+const profile = z.object({ name: z.string(), score: z.number() });
+export const profiles = cache("profile", { ttlMs: 60_000, codec: json(profile) });
 export const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
 export const generate = queue<{ prompt: string }, string>("generate");
 export const tokens = budget("tokens", { limit: 1_000_000, windowMs: 86_400_000 });
