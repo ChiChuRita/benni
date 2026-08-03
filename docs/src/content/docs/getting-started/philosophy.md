@@ -15,6 +15,21 @@ await redis.hash(users).hincrby("42", "score", 1); // HINCRBY user:42 score 1
 
 Where Redis itself has folded old commands into a newer one, Benni follows Redis rather than the history: `zrange(id, { byScore: true, min, max })` mirrors modern `ZRANGE ... BYSCORE` instead of reviving the deprecated `ZRANGEBYSCORE`.
 
+The argument list follows from the same rule, which is worth knowing before you reach for the docs on a method you have not called yet. A command with one fixed form takes its arguments positionally, in the command's own order:
+
+```ts
+await redis.zset(board).zremrangebyscore("daily", "-inf", cutoff); // ZREMRANGEBYSCORE board:daily -inf <cutoff>
+await redis.zset(board).zincrby("daily", 5, "alice");              // ZINCRBY board:daily 5 alice
+```
+
+A command with modifiers, or with several forms that give the same slot different meanings, takes one options object instead, so the call site reads like the modifiers it is choosing:
+
+```ts
+await redis.zset(board).zrange("daily", { start: 0, stop: 9, rev: true, withScores: true });
+```
+
+That is why `zrange` puts even its bounds in the object while `zremrangebyscore` does not: `ZRANGE`'s bounds are indexes, scores, or lex bounds depending on the modifier chosen alongside them, and `ZREMRANGEBYSCORE` only ever takes a score range.
+
 This is deliberate altitude. An entity/document API would be further from Redis and would have to re-teach you everything you already know. Staying at command level means the only new thing to learn is the schema.
 
 ## Schemas Are Values, Not Migrations

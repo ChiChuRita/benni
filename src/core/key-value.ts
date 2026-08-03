@@ -47,6 +47,51 @@ function decodeConditionalSetReply(reply: RedisReply): boolean {
   throw replyShapeError("SET", "OK or null", reply);
 }
 
+/**
+ * A member that exists only in the types, to make one specific mistake explain
+ * itself. `counter` and `string` are alternate *views* over a kv keyspace rather
+ * than kinds of their own, so their commands live on `redis.counter(schema)` and
+ * `redis.string(schema)`. Reaching for `incr` on the kv store is the common first
+ * guess, and the bare "property does not exist" error answers it by printing
+ * every method the store *does* have, which names no fix.
+ *
+ * Typing the hint as the parameter puts the fix in the error text itself:
+ *
+ * ```text
+ * Argument of type 'string' is not assignable to parameter of type
+ * '"INCR is a counter command: use redis.counter(schema).incr(id)"'
+ * ```
+ *
+ * Nothing is added at runtime, so calling one from untyped JavaScript still
+ * fails the way an absent method fails.
+ */
+type ReachThroughAccessor<
+  TAccessor extends "counter" | "string",
+  TCommand extends string
+> = (
+  hint: `${TCommand} is a ${TAccessor} command: use redis.${TAccessor}(schema).${Lowercase<TCommand>}(id)`,
+  // The rest parameter keeps a two-argument call (`incrby(id, by)`) reporting the
+  // hint rather than "Expected 1 arguments, but got 2", which names no fix.
+  ...rest: never[]
+) => never;
+
+/**
+ * The commands a kv store deliberately lacks, each carrying its own fix. Keep
+ * this in step with {@link createCounterStore} and {@link createStringStore}:
+ * a command that moves onto the kv store should lose its entry here.
+ */
+type KeyValueViewHints = {
+  readonly incr: ReachThroughAccessor<"counter", "INCR">;
+  readonly incrby: ReachThroughAccessor<"counter", "INCRBY">;
+  readonly incrbyfloat: ReachThroughAccessor<"counter", "INCRBYFLOAT">;
+  readonly decr: ReachThroughAccessor<"counter", "DECR">;
+  readonly decrby: ReachThroughAccessor<"counter", "DECRBY">;
+  readonly append: ReachThroughAccessor<"string", "APPEND">;
+  readonly getrange: ReachThroughAccessor<"string", "GETRANGE">;
+  readonly setrange: ReachThroughAccessor<"string", "SETRANGE">;
+  readonly strlen: ReachThroughAccessor<"string", "STRLEN">;
+};
+
 export function createKeyValueStore<
   TInput,
   TOutput,
@@ -99,7 +144,7 @@ export function createKeyValueStore<
     }
   }
 
-  return {
+  const store = {
     ...createKeyLifecycleOps(client, (id: TId) => keyspace.key(id)),
     /**
      * `SET key value`. Without `nx`/`xx` resolves once the write is
@@ -214,6 +259,9 @@ export function createKeyValueStore<
       return reply;
     }
   };
+
+  // The hints are type-only: nothing is added to the object above.
+  return store as typeof store & KeyValueViewHints;
 }
 
 /**

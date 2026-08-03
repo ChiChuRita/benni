@@ -249,6 +249,18 @@ const history = await redis.stream(events).xrange("audit", { count: 10 });
 await redis.stream(events).del("audit");
 ```
 
+An entry is `{ id, value }`, and `value` is a `Partial` of the declared fields,
+because a stream entry can legally carry any subset of them. Read fields off
+`value`, with a fallback for the ones you require:
+
+```ts
+for (const entry of history) {
+  const type = entry.value.type ?? "(unknown)";
+  console.log(entry.id, type, entry.value.userId);
+  //                          ^? string | undefined
+}
+```
+
 ## Typed Bitmap
 
 ```ts
