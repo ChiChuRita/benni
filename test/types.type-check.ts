@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+// Compile-time only: every assertion here is an `Expect<Equal<…>>` that fails
+// the build when an inferred type drifts. Named `.type-check.ts` rather than
+// `.test.ts` on purpose, so it stays outside the vitest glob: it has nothing to
+// run, and as a test file it needed a placeholder `it()` asserting
+// `true === true` just to stop vitest reporting an empty suite. `tsconfig.json`
+// includes `test/`, so `pnpm typecheck` is what enforces the file.
 import type { RedisClient } from "../src/core/index.js";
 import {
   codecs,
@@ -386,9 +391,3 @@ type _EventLiveValue = Expect<
 type _EventPendingValue = Expect<
   Equal<EventPendingValue, Partial<{ type: string; size: number }> | null>
 >;
-
-describe("type assertions", () => {
-  it("compile through tsc", () => {
-    expect(true).toBe(true);
-  });
-});
