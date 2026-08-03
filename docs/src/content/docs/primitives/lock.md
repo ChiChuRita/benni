@@ -95,6 +95,13 @@ await locks.run("order:42", processOrder, { heartbeatMs: 1_000 });
 await locks.run("order:42", processOrder, { heartbeatMs: false });
 ```
 
+A `heartbeatMs` you pass yourself must be **at most half of `ttlMs`**, otherwise the call throws `ValidationError` before the lock is taken. At a half, one renewal can still fail before the lock could lapse; above it, the first tick can arrive at or after expiry and the lock lapses before renewal ever runs. That misconfiguration used to be silent and load dependent: a short body finished before the first tick and looked fine, while a long one failed with `LockLeaseLostError` on an uncontended lock. The check is on the value you supply, not on the derived default, which stays intact for a `ttlMs` so small that no ratio could hold.
+
+```ts
+// Throws: ValidationError, lock heartbeatMs must be at most half of ttlMs (1000)
+await locks.run("order:42", processOrder, { ttlMs: 1_000, heartbeatMs: 2_000 });
+```
+
 A body that finishes inside the first interval costs no extra round trips, so renewal is free for the short critical sections that never needed it.
 
 ## When The Lock Is Lost
@@ -126,6 +133,8 @@ A lost lease is not the same thing as a failed round trip, and conflating them w
 
 1. **`extend` reports it is gone.** The renewal Lua checks the token, so a `0` reply means the key is missing or now owned by somebody else. This is immediate and definitive.
 2. **A full `ttlMs` has passed with no successful renewal.** This catches the cases the first prong cannot see: renewals that keep rejecting, and a renewal that hangs and never answers at all. Silence is treated as loss, because after `ttlMs` the key has demonstrably lapsed.
+
+That deadline is read both from the renewal tick and again in the same turn your body finishes, which matters because a tick is not guaranteed to run. A body that blocks the event loop (synchronous CPU work, a blocking native call) past its TTL starves the interval entirely, and a timer is a macrotask while resuming from `await fn(handle)` is a microtask, so the completion check would otherwise win the race and report success for a lock that had already expired. The final `release` is consulted for the same reason: it runs the same token check `extend` does, so a `false` reply is Redis saying the lock had already moved on.
 
 One failed renewal is not a loss. The next tick simply retries. To see those failures, pass `onRenewError`:
 
@@ -198,7 +207,7 @@ if (stillOurs === false) {
 | `ttlMs` | `lock` / `acquire` / `run` | `30000` | Lock lifetime. It is the crash backstop, and with `run` it is also the renewal window. |
 | `retries` | `acquire` / `run` | `0` | Attempts when the lock is held. `0` fails fast. |
 | `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries. |
-| `heartbeatMs` | `run` | `ttlMs / 4` | Renewal interval while `fn` runs. `false` disables renewal. |
+| `heartbeatMs` | `run` | `ttlMs / 4` | Renewal interval while `fn` runs. Must be at most half of `ttlMs` when set explicitly. `false` disables renewal. |
 | `onRenewError` | `run` | none | Called when a renewal round trip fails. Not a lost lock. |
 
 ## Relationship To `semaphore`

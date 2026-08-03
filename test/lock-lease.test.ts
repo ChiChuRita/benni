@@ -162,6 +162,81 @@ describe("lock.run lease renewal", () => {
     // Nothing was acquired, so nothing is stranded until its TTL lapses.
     expect(fake.commands).toHaveLength(0);
   });
+
+  it("resolves for a body many TTLs long while renewals keep succeeding", async () => {
+    // The counterpart to every guard below: reporting a lost lock must not turn
+    // into failing healthy work. The deadline moves forward with each successful
+    // renewal, so five TTLs of body is unremarkable.
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 100 }); // 25ms heartbeat.
+
+    await expect(
+      locks.run("res", () => sleep(500).then(() => "ok"))
+    ).resolves.toBe("ok");
+    expect(fake.extendCount).toBeGreaterThanOrEqual(4);
+  });
+});
+
+/**
+ * A `heartbeatMs` at or above the TTL puts the first tick on or after expiry, so
+ * the deadline trips before a single renewal has even been attempted, on an
+ * uncontended lock. It passes for a fast body and fails for a slow one, so the
+ * misconfiguration only surfaces under load. An explicit value is rejected up
+ * front instead.
+ */
+describe("lock.run heartbeat bounds", () => {
+  it("rejects an explicit heartbeatMs that is not meaningfully below ttlMs", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 300 });
+
+    for (const heartbeatMs of [151, 300, 600]) {
+      await expect(
+        locks.run("res", async () => 1, { heartbeatMs })
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
+    await expect(
+      locks.run("res", async () => 1, { heartbeatMs: 600 })
+    ).rejects.toThrow(
+      "lock heartbeatMs must be at most half of ttlMs (300) so a renewal lands before the lock could lapse, received 600"
+    );
+    // Rejected before the acquire, so nothing is stranded until its TTL lapses.
+    expect(fake.commands).toHaveLength(0);
+  });
+
+  it("accepts a heartbeatMs at exactly half of ttlMs", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 300 });
+
+    // Half still leaves room for one renewal and one retry before expiry.
+    await expect(
+      locks.run("res", async () => 1, { heartbeatMs: 150 })
+    ).resolves.toBe(1);
+  });
+
+  it("checks the heartbeat against this run's ttlMs, not the store default", async () => {
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 10_000 });
+
+    await expect(
+      locks.run("res", async () => 1, { ttlMs: 100, heartbeatMs: 80 })
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("keeps deriving a default heartbeat no ratio check could satisfy", async () => {
+    // `ttlMs: 1` derives a 1ms heartbeat, which *is* the whole TTL. Only an
+    // explicitly passed value is checked, so an absurd but working TTL keeps
+    // working rather than being rejected by a rule about the caller's intent.
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 1 });
+
+    const outcome = await locks
+      .run("res", async () => "ok")
+      .catch((error: unknown) => error);
+
+    expect(outcome).not.toBeInstanceOf(ValidationError);
+    // It got as far as acquiring, which is what proves validation let it past.
+    expect(fake.of("SET")).toHaveLength(1);
+  });
 });
 
 describe("lock.run lost lease", () => {
@@ -288,6 +363,99 @@ describe("lock.run lost lease", () => {
     ).resolves.toBe("ok");
     expect(fake.extendCount).toBe(0);
   });
+
+  it("reports a lost lock when the body blocks the event loop past the ttl", async () => {
+    // The case a flag set only from inside the renewal tick cannot see. A
+    // synchronous stall keeps the tick (a macrotask) from ever running, and
+    // `await fn(handle)` resumes on a microtask, so the completion check gets
+    // there first with `lease.lost` still false. The deadline has to be read at
+    // completion too, or `run()` reports a success for an expired lock.
+    const fake = lockFake();
+    const locks = lock(fake.client, { ttlMs: 60 });
+
+    await expect(
+      locks.run("res", () => {
+        const until = Date.now() + 200; // Over three TTLs, fully synchronous.
+        while (Date.now() < until) {}
+        return "critical section completed";
+      })
+    ).rejects.toBeInstanceOf(LockLeaseLostError);
+    // Not one renewal got to run, which is exactly why the flag was not enough.
+    expect(fake.extendCount).toBe(0);
+  });
+
+  it("reports a lost lock when the final release finds it was not ours", async () => {
+    // Nothing renewed and the local deadline is nowhere near: only the release
+    // knows, because it runs the same token check `extend` does. Its answer used
+    // to be discarded.
+    const fake = lockFake({ release: () => 0 });
+    const locks = lock(fake.client, { ttlMs: 10_000 });
+
+    await expect(locks.run("res", async () => "ok")).rejects.toBeInstanceOf(
+      LockLeaseLostError
+    );
+    expect(fake.extendCount).toBe(0);
+  });
+
+  it("survives an onRenewError hook that throws", async () => {
+    // The renewal promise is deliberately discarded, so a throw from the hook
+    // used to reject a promise nobody observes: an `unhandledRejection`, fatal
+    // in default Node. A telemetry callback cannot be allowed to do that.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const fake = lockFake({
+        extend: () => {
+          throw new Error("connection reset");
+        }
+      });
+      const locks = lock(fake.client, { ttlMs: 200 });
+      let hookCalls = 0;
+
+      await expect(
+        locks.run("res", () => sleep(120).then(() => "ok"), {
+          heartbeatMs: 20,
+          onRenewError: () => {
+            hookCalls += 1;
+            throw new Error("hook blew up");
+          }
+        })
+      ).resolves.toBe("ok");
+
+      // Called, repeatedly, and swallowed every time: the body's outcome stands.
+      expect(hookCalls).toBeGreaterThanOrEqual(2);
+      await sleep(20); // A turn for Node to report anything unhandled.
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("does not call onRenewError for a renewal that settles after run returned", async () => {
+    // A round trip still in flight when the lock is released can fail after the
+    // caller already has an answer. Reporting then would fire the hook outside
+    // the lifetime of the call it belongs to, so a late failure is dropped.
+    const fake = lockFake({
+      extend: () =>
+        new Promise<RedisReply>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("late")), 80);
+        })
+    });
+    const locks = lock(fake.client, { ttlMs: 200 });
+    const errors: unknown[] = [];
+
+    await expect(
+      locks.run("res", () => sleep(30).then(() => "ok"), {
+        heartbeatMs: 10,
+        onRenewError: (error) => errors.push(error)
+      })
+    ).resolves.toBe("ok");
+
+    expect(fake.extendCount).toBe(1);
+    await sleep(120); // Long enough for the in-flight renewal to reject.
+    expect(errors).toEqual([]);
+  });
 });
 
 describe("lock.run timer hygiene", () => {
@@ -343,6 +511,47 @@ describe("lock.run timer hygiene", () => {
     await locks.run("res", async () => 1, { heartbeatMs: false });
 
     expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
+  it("clears the renewal timer as soon as the lease is lost", async () => {
+    // `run()`'s exit path is not the only thing that has to clear the interval:
+    // a body that ignores the abort signal and never settles never reaches it,
+    // and the interval used to stay armed, waking up to early-return for the
+    // life of the process.
+    const created: NodeJS.Timeout[] = [];
+    const realSetInterval = globalThis.setInterval;
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      handler: () => void,
+      ms?: number
+    ) => {
+      const timer = realSetInterval(handler, ms);
+      created.push(timer);
+      return timer;
+    }) as typeof globalThis.setInterval);
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const fake = lockFake({ extend: () => 0 });
+    const locks = lock(fake.client, { ttlMs: 10_000 });
+
+    let lostReason: unknown;
+    // Never settles and never checks the signal, so `run()` stays pending.
+    void locks.run(
+      "res",
+      (handle) =>
+        new Promise<never>(() => {
+          handle.signal.addEventListener("abort", () => {
+            lostReason = handle.signal.reason;
+          });
+        }),
+      { heartbeatMs: 10 }
+    );
+    await sleep(60); // Several heartbeats after the loss.
+
+    expect(lostReason).toBeInstanceOf(LockLeaseLostError);
+    expect(created).toHaveLength(1);
+    expect(clearIntervalSpy).toHaveBeenCalledWith(created[0]);
+    // And it really is gone: no later tick renewed again.
+    expect(fake.extendCount).toBe(1);
   });
 });
 

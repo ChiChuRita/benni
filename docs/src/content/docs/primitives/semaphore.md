@@ -84,6 +84,13 @@ await slots.run("openai", work, { heartbeatMs: 5_000 });
 await slots.run("openai", work, { heartbeatMs: false });
 ```
 
+A `heartbeatMs` you pass yourself must be **at most half of `leaseMs`**, otherwise the call throws `ValidationError` before a slot is taken. At a half, one renewal can still fail before the slot could lapse; above it, the first tick can arrive at or after expiry and the slot is reclaimable before renewal ever runs. That misconfiguration used to be silent and load dependent: a short body finished before the first tick and looked fine, while a long one failed with `SemaphoreLeaseLostError` even with the pool uncontended. The check is on the value you supply, not on the derived default, which stays intact for a `leaseMs` so small that no ratio could hold.
+
+```ts
+// Throws: ValidationError, semaphore heartbeatMs must be at most half of leaseMs (1000)
+await slots.run("openai", work, { leaseMs: 1_000, heartbeatMs: 2_000 });
+```
+
 A body that finishes inside the first interval costs no extra round trips, so renewal is free for the short calls that never needed it.
 
 ## When The Slot Is Lost
@@ -113,6 +120,8 @@ A lost lease is not the same thing as a failed round trip, and conflating them w
 
 1. **`extend` reports it is gone.** The renewal Lua checks that our member is present *and* that its score is still in the future, because presence is not ownership: an expired member sits in the set until some acquire prunes it. A `false` result is immediate and definitive.
 2. **A full `leaseMs` has passed with no successful renewal.** This catches what the first prong cannot see: renewals that keep rejecting, and a renewal that hangs and never answers at all. Silence is treated as loss, because after `leaseMs` the slot is demonstrably reclaimable.
+
+That deadline is read both from the renewal tick and again in the same turn your body finishes, which matters because a tick is not guaranteed to run. A body that blocks the event loop (synchronous CPU work, a blocking native call) past its lease starves the interval entirely, and a timer is a macrotask while resuming from `await fn(handle)` is a microtask, so the completion check would otherwise win the race and report success for a slot that had already been reclaimed. The final `release` is consulted for the same reason: it runs the same ownership check `extend` does, so a `false` reply is Redis saying the slot had already moved on.
 
 One failed renewal is not a loss. The next tick simply retries. To see those failures, pass `onRenewError`:
 
@@ -185,7 +194,7 @@ This is [`lock`](/benni/primitives/lock/) with a number: same handle shape, same
 | `leaseMs` | `semaphore` / `acquire` / `run` | `60000` | How long a slot is held without an `extend`. With `run` it is also the renewal window. |
 | `retries` | `acquire` / `run` | `0` | Attempts when every slot is taken. `0` fails fast. |
 | `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries. |
-| `heartbeatMs` | `run` | `leaseMs / 4` | Renewal interval while `fn` runs. `false` disables renewal. |
+| `heartbeatMs` | `run` | `leaseMs / 4` | Renewal interval while `fn` runs. Must be at most half of `leaseMs` when set explicitly. `false` disables renewal. |
 | `onRenewError` | `run` | none | Called when a renewal round trip fails. Not a lost slot. |
 
 ## When You Don't Need This

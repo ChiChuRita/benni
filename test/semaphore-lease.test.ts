@@ -181,6 +181,81 @@ describe("semaphore.run lease renewal", () => {
     // Nothing was acquired, so no slot is held until its lease lapses.
     expect(fake.commands).toHaveLength(0);
   });
+
+  it("resolves for a body many leases long while renewals keep succeeding", async () => {
+    // The counterpart to every guard below: reporting a lost slot must not turn
+    // into failing healthy work. The deadline moves forward with each successful
+    // renewal, so five leases of body is unremarkable.
+    const fake = semaphoreFake();
+    const slots = semaphore(fake.client, { limit: 2, leaseMs: 100 }); // 25ms.
+
+    await expect(
+      slots.run("openai", () => sleep(500).then(() => "ok"))
+    ).resolves.toBe("ok");
+    expect(fake.extendCount).toBeGreaterThanOrEqual(4);
+  });
+});
+
+/**
+ * A `heartbeatMs` at or above the lease puts the first tick on or after expiry,
+ * so the deadline trips before a single renewal has even been attempted, on a
+ * semaphore with slots to spare. It passes for a fast body and fails for a slow
+ * one, so the misconfiguration only surfaces under load. An explicit value is
+ * rejected up front instead.
+ */
+describe("semaphore.run heartbeat bounds", () => {
+  it("rejects an explicit heartbeatMs that is not meaningfully below leaseMs", async () => {
+    const fake = semaphoreFake();
+    const slots = semaphore(fake.client, { limit: 3, leaseMs: 300 });
+
+    for (const heartbeatMs of [151, 300, 600]) {
+      await expect(
+        slots.run("openai", async () => 1, { heartbeatMs })
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
+    await expect(
+      slots.run("openai", async () => 1, { heartbeatMs: 600 })
+    ).rejects.toThrow(
+      "semaphore heartbeatMs must be at most half of leaseMs (300) so a renewal lands before the slot could lapse, received 600"
+    );
+    // Rejected before the acquire, so no slot is held until its lease lapses.
+    expect(fake.commands).toHaveLength(0);
+  });
+
+  it("accepts a heartbeatMs at exactly half of leaseMs", async () => {
+    const fake = semaphoreFake();
+    const slots = semaphore(fake.client, { limit: 3, leaseMs: 300 });
+
+    // Half still leaves room for one renewal and one retry before expiry.
+    await expect(
+      slots.run("openai", async () => 1, { heartbeatMs: 150 })
+    ).resolves.toBe(1);
+  });
+
+  it("checks the heartbeat against this run's leaseMs, not the store default", async () => {
+    const fake = semaphoreFake();
+    const slots = semaphore(fake.client, { limit: 3, leaseMs: 10_000 });
+
+    await expect(
+      slots.run("openai", async () => 1, { leaseMs: 100, heartbeatMs: 80 })
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("keeps deriving a default heartbeat no ratio check could satisfy", async () => {
+    // `leaseMs: 1` derives a 1ms heartbeat, which *is* the whole lease. Only an
+    // explicitly passed value is checked, so an absurd but working lease keeps
+    // working rather than being rejected by a rule about the caller's intent.
+    const fake = semaphoreFake();
+    const slots = semaphore(fake.client, { limit: 3, leaseMs: 1 });
+
+    const outcome = await slots
+      .run("openai", async () => "ok")
+      .catch((error: unknown) => error);
+
+    expect(outcome).not.toBeInstanceOf(ValidationError);
+    // It got as far as acquiring, which is what proves validation let it past.
+    expect(fake.evalshas()).toContain("sha-acquire");
+  });
 });
 
 describe("semaphore.run lost lease", () => {
@@ -314,6 +389,101 @@ describe("semaphore.run lost lease", () => {
     ).resolves.toBe("ok");
     expect(fake.extendCount).toBe(0);
   });
+
+  it("reports a lost slot when the body blocks the event loop past the lease", async () => {
+    // The case a flag set only from inside the renewal tick cannot see. A
+    // synchronous stall keeps the tick (a macrotask) from ever running, and
+    // `await fn(handle)` resumes on a microtask, so the completion check gets
+    // there first with `lease.lost` still false. That is genuine over-admission:
+    // the next acquire prunes the lapsed member and lets another caller in while
+    // this body is still going.
+    const fake = semaphoreFake();
+    const slots = semaphore(fake.client, { limit: 2, leaseMs: 60 });
+
+    await expect(
+      slots.run("openai", () => {
+        const until = Date.now() + 200; // Over three leases, fully synchronous.
+        while (Date.now() < until) {}
+        return "critical section completed";
+      })
+    ).rejects.toBeInstanceOf(SemaphoreLeaseLostError);
+    // Not one renewal got to run, which is exactly why the flag was not enough.
+    expect(fake.extendCount).toBe(0);
+  });
+
+  it("reports a lost slot when the final release finds it was not ours", async () => {
+    // Nothing renewed and the local deadline is nowhere near: only the release
+    // knows, because it runs the same ownership check `extend` does. Its answer
+    // used to be discarded.
+    const fake = semaphoreFake({ release: () => 0 });
+    const slots = semaphore(fake.client, { limit: 2, leaseMs: 10_000 });
+
+    await expect(slots.run("openai", async () => "ok")).rejects.toBeInstanceOf(
+      SemaphoreLeaseLostError
+    );
+    expect(fake.extendCount).toBe(0);
+  });
+
+  it("survives an onRenewError hook that throws", async () => {
+    // The renewal promise is deliberately discarded, so a throw from the hook
+    // used to reject a promise nobody observes: an `unhandledRejection`, fatal
+    // in default Node. A telemetry callback cannot be allowed to do that.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const fake = semaphoreFake({
+        extend: () => {
+          throw new Error("connection reset");
+        }
+      });
+      const slots = semaphore(fake.client, { limit: 2, leaseMs: 200 });
+      let hookCalls = 0;
+
+      await expect(
+        slots.run("openai", () => sleep(120).then(() => "ok"), {
+          heartbeatMs: 20,
+          onRenewError: () => {
+            hookCalls += 1;
+            throw new Error("hook blew up");
+          }
+        })
+      ).resolves.toBe("ok");
+
+      // Called, repeatedly, and swallowed every time: the body's outcome stands.
+      expect(hookCalls).toBeGreaterThanOrEqual(2);
+      await sleep(20); // A turn for Node to report anything unhandled.
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("does not call onRenewError for a renewal that settles after run returned", async () => {
+    // A round trip still in flight when the slot is given back can fail after
+    // the caller already has an answer. Reporting then would fire the hook
+    // outside the lifetime of the call it belongs to, so a late failure is
+    // dropped.
+    const fake = semaphoreFake({
+      extend: () =>
+        new Promise<RedisReply>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("late")), 80);
+        })
+    });
+    const slots = semaphore(fake.client, { limit: 2, leaseMs: 200 });
+    const errors: unknown[] = [];
+
+    await expect(
+      slots.run("openai", () => sleep(30).then(() => "ok"), {
+        heartbeatMs: 10,
+        onRenewError: (error) => errors.push(error)
+      })
+    ).resolves.toBe("ok");
+
+    expect(fake.extendCount).toBe(1);
+    await sleep(120); // Long enough for the in-flight renewal to reject.
+    expect(errors).toEqual([]);
+  });
 });
 
 describe("semaphore.run timer hygiene", () => {
@@ -369,6 +539,47 @@ describe("semaphore.run timer hygiene", () => {
     await slots.run("openai", async () => 1, { heartbeatMs: false });
 
     expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
+  it("clears the renewal timer as soon as the lease is lost", async () => {
+    // `run()`'s exit path is not the only thing that has to clear the interval:
+    // a body that ignores the abort signal and never settles never reaches it,
+    // and the interval used to stay armed, waking up to early-return for the
+    // life of the process.
+    const created: NodeJS.Timeout[] = [];
+    const realSetInterval = globalThis.setInterval;
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      handler: () => void,
+      ms?: number
+    ) => {
+      const timer = realSetInterval(handler, ms);
+      created.push(timer);
+      return timer;
+    }) as typeof globalThis.setInterval);
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const fake = semaphoreFake({ extend: () => 0 });
+    const slots = semaphore(fake.client, { limit: 2, leaseMs: 10_000 });
+
+    let lostReason: unknown;
+    // Never settles and never checks the signal, so `run()` stays pending.
+    void slots.run(
+      "openai",
+      (held) =>
+        new Promise<never>(() => {
+          held.signal.addEventListener("abort", () => {
+            lostReason = held.signal.reason;
+          });
+        }),
+      { heartbeatMs: 10 }
+    );
+    await sleep(60); // Several heartbeats after the loss.
+
+    expect(lostReason).toBeInstanceOf(SemaphoreLeaseLostError);
+    expect(created).toHaveLength(1);
+    expect(clearIntervalSpy).toHaveBeenCalledWith(created[0]);
+    // And it really is gone: no later tick renewed again.
+    expect(fake.extendCount).toBe(1);
   });
 });
 
