@@ -1,5 +1,166 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- 7d488c0: `lock().run()` now renews the lock while the critical section runs, and reports a lost lease instead of hiding it.
+
+  Before, `run()` acquired with `ttlMs` and never renewed, so a body that outlived the TTL silently lost mutual exclusion: the key expired, another caller acquired it, and the original body kept running as if it still held the lock. It now renews on an interval, following the same policy the `queue` primitive already used for job leases.
+
+  - `run()` renews the lock every `heartbeatMs`, which defaults to a quarter of the effective `ttlMs` (matching the queue's `leaseMs` 60000 / `heartbeatMs` 15000 ratio). Pass `heartbeatMs: false` to opt out and keep the previous behaviour.
+  - New `LockLeaseLostError`. If renewal finds the lock gone, `run()` rejects with it even when the body resolved, because a body that finished without the lock did not finish under mutual exclusion.
+  - `LockHandle` gained a `signal` (an `AbortSignal`) that aborts with that error, so a body can pass it to `fetch` or the AI SDK and stop as soon as the work stops being exclusive. A manual `extend()` that resolves `false` aborts it too.
+  - New `onRenewError` hook on `run()`, called when a renewal round trip fails. A failed round trip is not treated as a lost lock: the next tick retries, and the lease is only declared lost once Redis reports another token owns the key or the TTL window has passed with no successful renewal.
+  - The renewal timer is unref'd and always cleared, so it can never keep a process alive.
+
+  The fail-fast default is unchanged: `retries` still defaults to `0`, so a contended `acquire()` resolves `null` and a contended `run()` throws `LockNotAcquiredError` rather than waiting. That contract is now spelled out on `lock()`, `acquire()`, and `run()`, along with the `retries` / `retryDelayMs` pair to pass when the intent is to serialize concurrent callers instead.
+
+  `acquire()`, `run()`, `LockHandle.release()`, `LockHandle.extend()`, and `LockNotAcquiredError` are unchanged.
+
+- 8f513d9: Server errors are now normalized across every adapter: Redis error replies arrive as one `RedisServerError`, with the error code parsed out.
+
+  Before, an error the Redis _server_ returned reached the caller in whatever shape the underlying client used. On `benni/node` a `ZADD` against a key holding a hash threw node-redis's own `SimpleError`; `benni/ioredis` threw ioredis's `ReplyError`; `benni/bun` threw Bun's `RedisError`; `benni/upstash` threw a bare `Error` built from the REST payload. So `catch (error) { if (error instanceof ...) }` could not be written portably, and WRONGTYPE or NOSCRIPT handling written against one adapter silently stopped matching after a move to another one, which is the opposite of what one typed API across runtimes is supposed to buy.
+
+  - New `RedisServerError`, exported from `benni` and `benni/core`. It means the command reached Redis and Redis refused it, as opposed to `ValidationError` (benni refused the input before sending) and `ReplyShapeError` (a successful reply did not match the shape a decoder expected).
+  - `code` carries the reply's leading error code (`"WRONGTYPE"`, `"NOSCRIPT"`, `"NOAUTH"`, `"OOM"`, `"READONLY"`, `"BUSYGROUP"`, ...), so callers branch on a field instead of matching a substring of the message. It is `undefined` when the text carries no code, which in practice means a Lua script returned a bare `redis.error_reply(...)`.
+  - `command` names the command that drew the error, uppercased, wherever the throw site can attribute it: a single `send`, or a pipeline entry the adapter reports per command.
+  - `cause` holds the adapter-native error (or, for the HTTP adapter, the raw payload string), so nothing the underlying client attached is lost.
+  - `message` stays the server's text verbatim, code included, so message matching that predates this class keeps working.
+  - Also exported: `redisErrorCode(message)` for classifying a raw message, and `redisServerError(source, command?)`, the normalizer the adapters use, which passes an already normalized error through unchanged.
+
+  All four adapters agree, including their pipeline, `MULTI`, and `WATCH` paths. Client-side failures are deliberately left alone: a closed client, a dropped socket, an ioredis `MaxRetriesPerRequestError`, or an Upstash HTTP transport failure never came from Redis, so none of them is reported as a server error. The `MULTI` rejection unwrap on `benni/node` and `WATCH` abort detection on every adapter behave exactly as before, and cluster redirections are still followed by the cluster-aware client underneath.
+
+- 223d2cf: One call shape everywhere, a client source that never needs a top-level `await`, and primitives that declare themselves like schemas.
+
+  - **`benni()` takes a config object.** `benni({ client, schema })` is now the same call as `benni(client, { schema })`, and `client` accepts a connected client, a promise of one, a factory, or another Benni handle, so `benni({ client: node({ url }), schema })` binds without a top-level `await`. The trade is that a bad URL surfaces at the first command rather than at construction, which is the trade `benni/hono` and `benni/next` already made. A promise is adopted at bind time, because it is already connecting: its rejection is observed straight away rather than left to become an `unhandledRejection`, `close()` closes the client it opened even if no command was ever sent, and every command reports that same connect failure since a settled promise cannot be retried. A factory is not called until the first command, so nothing is opened, `close()` on an unused client opens nothing, and a failed connect really is retried on the next command.
+  - **`Register` types the handle once.** Declare `interface Register { schema: typeof schema }` on the `benni` module and the bare `Benni` is the fully typed handle, so a helper signature reads `function handlers(redis: Benni)` instead of repeating `Benni<typeof schema>`. Without the augmentation nothing changes.
+  - **Primitives are schema values.** `cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, and `budget` are exported from `benni/schema` as builders that take a prefix and their options, so they sit in the schema module next to the data stores and are reached through `redis.query.<name>` with the same inference. Each carries its own store binding, so a bundle only pulls in the primitives the module declares.
+  - **The primitive constructors take one options object.** `cache({ client, ttlMs })` alongside the existing `cache(client, { ttlMs })`, with `client` accepting the same sources as `benni()`, including the handle itself. This removes the "primitives take `client`, not `redis`" papercut.
+  - **The primitive store types are nameable.** `CacheStore<T>`, `QueueStore<TPayload, TResult>`, `RatelimitStore`, `LockStore`, `SemaphoreStore`, `IdempotencyStore<T>`, and `BudgetStore` are exported, so a helper can be typed against a primitive without `ReturnType<typeof ...>`.
+
+  Everything above is additive: every existing call shape still compiles and behaves identically. The one behavior change is that `benni()` now rejects a client source that is neither a client, a promise, a factory, nor a handle, where it previously accepted it and failed at the first command.
+
+- ec45c41: Add per-entity Pub/Sub channels. `redis.pubsub.channel(schema, id)` now addresses `name:<id>`, derived by the same key builder every keyspace uses, so publishing and subscribing to one channel per room, per user, or per job no longer means minting a schema per call or dropping to `redis.raw`. Without an id the resource still addresses the schema's own name, exactly as before.
+
+  - `channel(name, codec, { ids })` narrows the id type the way a keyspace's `ids` option does.
+  - `schema.channelName(id)` and `resource.channelName(id)` resolve the concrete channel, so the string is never hand-built.
+  - `resource.at(id)` scopes a resource reached through `redis.query`, and is what the second argument calls underneath.
+  - Id-scoped publishes are matched by a `pattern()` subscription over the prefix, because both sides derive the name the same way.
+
+- 7d488c0: `semaphore().run()` now renews its lease while the critical section runs, and reports a lost slot instead of hiding it.
+
+  Before, `run()` acquired with `leaseMs` and never renewed, so a body that outlived the lease silently lost its slot: the lease lapsed, the next acquire pruned it and admitted another caller, and the original body kept running as if it were still inside the limit. That is over-admission, the one thing a semaphore exists to prevent, and a `limit: 20` guarding a provider quota would quietly run 21 in flight. It now renews on an interval, matching `lock().run()` and the `queue` primitive's job leases.
+
+  - `run()` renews the lease every `heartbeatMs`, which defaults to a quarter of the effective `leaseMs` (15s at the default `leaseMs` of 60000, the same ratio the queue uses). Pass `heartbeatMs: false` to opt out and keep the previous behaviour.
+  - New `SemaphoreLeaseLostError`, carrying `key` and `limit`. If renewal finds the slot gone, `run()` rejects with it even when the body resolved, because a body that finished without a slot did not finish under the bound it was written against.
+  - `SemaphoreHandle` gained a `signal` (an `AbortSignal`) that aborts with that error, so a body can pass it to `fetch` or the AI SDK and stop as soon as the pool stops accounting for it. A manual `extend()` that resolves `false` aborts it too.
+  - New `onRenewError` hook on `run()`, called when a renewal round trip fails. A failed round trip is not treated as a lost slot: the next tick retries, and the lease is only declared lost once Redis reports the slot is no longer ours, or a full `leaseMs` has passed with no successful renewal.
+  - New `SemaphoreRunOptions` type, the third argument to `run()`, widening `SemaphoreAcquireOptions`.
+  - Renewal options are validated before a slot is taken, so a bad `heartbeatMs` cannot hold a slot until its lease lapses. The renewal timer is unref'd and always cleared, so it can never keep a process alive.
+
+  The fail-fast default is unchanged: `retries` still defaults to `0`, so a full pool makes `acquire()` resolve `null` and `run()` throw `SemaphoreNotAcquiredError` rather than waiting. That contract is now spelled out on `semaphore()`, `acquire()`, `run()`, and `retries`, along with the `retries` / `retryDelayMs` pair to pass when the intent is to queue callers instead.
+
+  `acquire()`, `count()`, `SemaphoreHandle.release()`, `SemaphoreHandle.extend()`, and `SemaphoreNotAcquiredError` are otherwise unchanged.
+
+  The lock and semaphore documentation pages are rewritten around the shared lease model, and both now state that an `acquire()`d handle is never renewed in the background.
+
+### Patch Changes
+
+- 8ee4705: Docs: a reference page for the whole error surface, and one recommended `json` form across every entry point.
+
+  - New [Errors](https://chichurita.github.io/benni/api/errors/) page under API. It documents every public error class (`ValidationError`, `ReplyShapeError`, `PartialRecordError`, `RedisServerError`, `SessionClosedError`, `WatchRetriesExceededError`, `CrossSlotError`, and the lock, semaphore, queue, idempotency, and budget errors), what throws each one, the structured properties it carries, and how to tell it apart from its siblings. It opens with a "which error should I catch" table and shows a `catch` branching on `RedisServerError.code`. Also covered: `redisErrorCode`, `redisServerError`, and the deliberate exclusion of connection and transport failures from `RedisServerError`.
+  - The docs quick start now leads with `json(validator)`, matching the README and `llms.txt`. `json<T>()` is shown right after it, labelled as the unchecked escape hatch. Before, the quick start led with the cast and the README led with the validator, so the two disagreed about the recommended default.
+  - The README philosophy section and `llms.txt` both mention `RedisServerError`, including a rule telling coding agents to branch on `.code` rather than match against message text.
+
+- 0e9747c: Document that a failed `MULTI`/`EXEC` over REST may not carry a Redis error, and stop the shared client contract from asserting otherwise.
+
+  The integration job had been red since the 5xx boundary landed, and the failure was a real finding rather than a flake. Over REST a service sits in front of Redis and decides what a failed transaction looks like on the wire. Reproduced against `hiett/serverless-redis-http:latest` in front of `redis:8`, the endpoint CI runs:
+
+  ```text
+  POST /pipeline    [["PING"],["ZADD","str","1","member"]]
+    -> 200  [{"result":"PONG"},{"error":"WRONGTYPE Operation against a key..."}]
+
+  POST /multi-exec  [["PING"],["ZADD","str","1","member"]]
+    -> 500  (no body)
+  ```
+
+  There is no reply to normalize, so `redis.multi().exec()` rejects with a transport `Error`. That is `benni/upstash` behaving as intended: inventing a `.code` from a gateway's status line would hand the caller a `RedisServerError` for what might equally be an upstream outage. The shared contract was asserting a guarantee the transport cannot make.
+
+  - `expectRedisClientContract` takes `transactionErrorsCarryNoReply`, and the Upstash integration test sets it with the captured evidence. The assertion narrows rather than disappearing: a failed transaction must still reject on every adapter, and the TCP adapters keep the full `RedisServerError` plus `.code` assertion.
+  - [Edge runtime](https://chichurita.github.io/benni/runtime/edge/) gains "A failed transaction may not carry a Redis error", with the wire traffic, what does and does not change (single commands and pipelines are unaffected), and the `catch` that is correct against both kinds of endpoint.
+  - `llms.txt` no longer says error handling is uniform without qualification. A failed transaction always rejects; branch on `.code` only after confirming the error is a `RedisServerError`, which rule 8 already required.
+
+- 668cdce: Reaching for a counter or string command on a kv store now gets an error that names the fix.
+
+  `counter` and `string` are alternate views over a kv keyspace rather than kinds of their own, so `INCR` lives on `redis.counter(schema)` and `APPEND` on `redis.string(schema)`. Guessing `redis.query.views.incr("post-1")` first is common, and the old error answered it by printing every method the store does have, naming no fix:
+
+  ```text
+  Property 'incr' does not exist on type '{ set: { (id: RedisKeyPart, value: number,
+  options: ConditionalSetOptions): Promise<boolean>; ... 10 more ...;
+  persist(id: RedisKeyPart): Promise<...>; } & Pick<...>'.
+  ```
+
+  The store now carries a type-only member per absent command whose parameter type is the fix, so the fix is the error text:
+
+  ```text
+  Argument of type '"post-1"' is not assignable to parameter of type
+  '"INCR is a counter command: use redis.counter(schema).incr(id)"'.
+  ```
+
+  Covered: `incr`, `incrby`, `incrbyfloat`, `decr`, `decrby`, `append`, `getrange`, `setrange`, `strlen`. Nothing is added at runtime, so calling one from untyped JavaScript fails the way an absent method already failed, and `Object.keys` on a kv store is unchanged.
+
+  Also documented, all three found in the same DX pass:
+
+  - `ReplyShapeError` carries the value Redis returned on **`.reply`**, not `.value`. The API reference already said so; the README philosophy bullet and `llms.txt` did not, which is where someone looks mid-incident.
+  - `examples.md` now shows reading a field off an `xrange` entry. An entry is `{ id, value }` and `value` is a `Partial` of the declared fields, because a stream entry can legally carry any subset of them.
+  - [Philosophy](https://chichurita.github.io/benni/getting-started/philosophy/) and `llms.txt` now state how arguments map to commands, so the shape of a method you have not called yet is predictable: one fixed form takes positional arguments in the command's own order (`zremrangebyscore(id, min, max)`), while modifiers or several forms take a single options object (`zrange(id, { start, stop, rev })`). `zrange` keeps its bounds in the object because they are indexes, scores, or lex bounds depending on the modifier beside them.
+
+- 9b13a00: A client passed as a promise or a factory now reports the same capabilities as the same client passed connected, and `close()` on one is terminal.
+
+  Both defects were in the lazy facade `resolveClient` builds when the client source is not a client yet, and both reduce to the same rule: the facade has to be indistinguishable from the client it will resolve to.
+
+  - **The facade claimed optional capabilities it might not have.** `RedisClient` has required `send`/`pipeline`/`close` and optional `transaction`/`session`/`subscriber`, and callers feature-detect the optional ones by presence. The facade cannot know at bind time what it will resolve to, so it defines all three, which meant a presence check passed for a client that could not actually do the thing. A caller with a legitimate fallback then took the wrong branch: `hset(id, value, { ttlSeconds })` wants `HSET` plus `EXPIRE` atomic and settles for a pipeline when the client has no MULTI, but `client.transaction?.(...) ?? client.pipeline(...)` found the facade's method and the call threw `Redis client does not support transactions` instead. The same custom client behaved differently depending on whether it was handed to `benni()` connected or as a promise.
+
+    The unsupported case is now distinguishable rather than merely thrown: a new **`UnsupportedCapabilityError`** carries `capability` (`"transaction"`, `"session"`, or `"subscriber"`), and `hset` recognizes exactly that error to take its pipeline fallback. It extends `TypeError` and keeps the connected-client guards' message strings verbatim, so `instanceof TypeError`, existing `catch` blocks, and message matching all keep working unchanged.
+
+    The fix deliberately does **not** make the facade fall back to a pipeline on its own. `redis.multi()` exists for MULTI/EXEC atomicity, so on a client without `transaction` it still throws rather than silently degrading; only a call site that is correct without the atomicity opts into the fallback. Exported from `benni` and `benni/core`, and documented on the [Errors](https://chichurita.github.io/benni/api/errors/) page.
+
+  - **`close()` was not terminal for an unused factory.** It peeks rather than resolves, so closing a client that was never used opens nothing, which is correct and stays. But it recorded nothing, so a command landing after `close()` still called the factory and opened a connection after shutdown. That differs from the adapters, whose `close()` is final, and in Node a live socket pins the event loop, so a request racing shutdown could turn a graceful exit into a hang. `close()` is now idempotent and terminal: later operations reject with `Redis client is closed`, an unused factory is still never invoked, the underlying client is closed exactly once, a second `close()` awaits the first one's teardown rather than resolving early, and a source whose resolution already failed still does not make `close()` throw.
+
+  Found by an independent review, with both defects reproduced before the fix and kept as regression tests.
+
+- 549d19b: `lock` and `semaphore` no longer report a successful `run()` when the lease was lost, and a throwing `onRenewError` can no longer take the process down.
+
+  Lease renewal shipped with its completion check reading one flag, `lease.lost`, which is set only from inside the renewal interval. That left the interval as the single witness to a lost lease, and an interval is not guaranteed to run. A body that blocks the event loop past its TTL (synchronous CPU work, a blocking native call) starves it completely, and because a timer is a macrotask while resuming from `await fn(handle)` is a microtask, the completion check won that race and resolved as though the critical section had been exclusive throughout. A 600ms synchronous body under `ttlMs: 200` returned its value with the lock key already gone from Redis. For the semaphore the same path is real over-admission: the member is pruned by the next `acquire` and another caller is let in on top of a body still running.
+
+  Completion now consults the deadline in the same turn the body finished, and the result of the final `release` (which runs the same token check `extend` does, so a `false` reply is Redis saying the lease had already moved on), alongside the flag. A lease given up deliberately inside the body is still not a loss, and `heartbeatMs: false` still means the documented opt-out rather than a failure. A healthy body that outlives many TTLs while renewals keep succeeding still resolves normally.
+
+  Three smaller fixes in the same area:
+
+  - **A throwing `onRenewError` is contained.** The hook ran inside the rejection handler of a promise the tick discards, so a throw from it became an unobserved rejection, which is fatal in default Node. A telemetry callback must not be able to kill the process. The hook is also no longer called for a renewal that settles after `run()` has already returned.
+  - **The interval is torn down when the lease is lost**, instead of staying armed and early-returning on every future tick. It was `unref()`ed so it never held Node open, but a body that ignores the abort signal and never settles used to leave it spinning.
+  - **An explicitly passed `heartbeatMs` must be at most half the lease.** Above that the first tick can land at or after expiry, so the lease lapses before renewal is ever attempted, on an uncontended lock. The old behavior was silent and load dependent: it passed for a body that finished before the first tick and failed for a slower one. The derived default is unchanged and still applies to a lease too small for any ratio to hold.
+
+  Found by an independent review of the renewal work, with each case reproduced before the fix and kept as a regression test.
+
+- 294920b: Docs: replace the positioning numbers with measured ones, advertise the compile-time cost, and state the `redis.watch()` write-side gap plainly.
+
+  A second DX evaluation built three apps twice, once through Benni and once through raw `node-redis` v6, and two claims in the public copy did not survive it.
+
+  - **"Expect the same amount of code, not less" was only true for CRUD.** The app behind that line had no primitive in it. Measured across three apps: a URL shortener 97 lines against 171, an AI generation service on `queue` 45 against 437, a realtime presence and payout service 103 against 197. README, `llms.txt`, and [Why Benni?](https://chichurita.github.io/benni/getting-started/why-benni/) now claim the same code for typed CRUD and much less once a primitive replaces hand-written Lua, with the caveat that the raw column hand-rolls what a team would otherwise install.
+  - **"Raw `node-redis` caught 0 of 9 planted bugs" was measured against a straw man.** A raw version with an ordinary hand-written typed edge catches 4 of 9. The public figure is now 9 against 4, and it names the five misses, all of which are silent: a typo adds a second field instead of replacing one, a date string in a `number()` slot reads back `NaN`, a partial write leaves a partial record, and an undeclared field reads `undefined`. Only the wrong store kind throws.
+  - **The compile-time cost profile is now published**, because "a schema layer will slow my editor down" is the first objection raised. The same three apps cost 13,774 type instantiations through Benni against 198,061 through raw `node-redis`, whose own command generics are the expensive part. Runtime overhead measured 3 to 6 percent on sequential ops, inside the run-to-run spread.
+  - **[Optimistic Transactions](https://chichurita.github.io/benni/advanced/optimistic-transactions/) gains "The Write Side Is Not Typed The Way Stores Are"**, and `llms.txt` gains a matching rule 10. Reads inside a watched transaction go through typed stores, writes are hand-built command arrays, and nothing checks the command against the schema's kind, the decoder against the command, or arity and option order. The page now says so where balance-changing code will read it, names `schema.key(id)` and `schema.encode(value)` as the discipline that keeps it honest, and points at a typed `script()` for check-and-set logic that deserves a real guarantee.
+
+- eabe013: `benni/upstash` no longer reports an HTTP 5xx as a Redis error reply when the response carries an `{ "error": ... }` body.
+
+  Upstash uses that envelope for two different things: a genuine Redis error (200 for a pipeline element, 4xx for a single command), and a plain service failure from whatever sits in front of Redis. The adapter only checked whether the envelope was present, not the status, so a `502` with `{ "error": "upstream unavailable" }` came back as a `RedisServerError` attributed to the command, with a `code` parsed out of the gateway's own prose. That contradicted the boundary the error reference documents: `RedisServerError` means the command reached Redis and Redis refused it.
+
+  A 5xx is now a plain `Error` again, the way a non-JSON response and a dropped socket already were, and its message keeps the body's text so the failure stays debuggable (`Upstash HTTP 502: upstream unavailable`). A 4xx carrying the same envelope is still a real server reply and still normalizes to `RedisServerError` with its code, so `NOSCRIPT` handling and the script reload path are unaffected.
+
+  Found by an independent review of the normalization work. The misclassification predates that change; what was new was documenting a boundary the code did not hold to.
+
 ## 0.1.0
 
 ### Minor Changes
@@ -268,11 +429,11 @@
 
   Measured with rolldown, minified + gzipped:
 
-  | app                              | before  | after   |
-  | -------------------------------- | ------- | ------- |
+  | app                               | before  | after   |
+  | --------------------------------- | ------- | ------- |
   | `benni` + kv only                 | 13.9 kB | 4.2 kB  |
   | `benni/upstash` + one hash schema | 15.2 kB | 7.0 kB  |
-  | three kinds (hash + zset + list) | 15.2 kB | 10.2 kB |
+  | three kinds (hash + zset + list)  | 15.2 kB | 10.2 kB |
 
   **The public API is unchanged.** `redis.query.<name>`, `redis.hash(schema)`,
   the session accessors, `QueryResource`, `Benni<typeof schema>` — same
