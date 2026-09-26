@@ -201,7 +201,7 @@ Exported from `benni/primitives`.
 
 | Error | Properties | Thrown when |
 |---|---|---|
-| `LockNotAcquiredError` | `key` | `lock().run()` could not acquire the lock. Acquisition is fail-fast by default (`retries: 0`), so a caller that finds the lock held throws immediately |
+| `LockNotAcquiredError` | `key` | `lock().run()` could not acquire the lock, after any `retries` or `waitTimeoutMs`. Acquisition is fail-fast by default (`retries: 0`), so a caller that finds the lock held throws immediately |
 | `LockLeaseLostError` | `key` | The lock was lost while `fn` was still running: renewal found the key gone or owned by another token |
 
 `run()` rejects with `LockLeaseLostError` **even when `fn` itself resolved**, because a body that completed without the lock did not complete under the guarantee it was written against. The same error is the abort reason on `handle.signal`. [Distributed Lock](/benni/primitives/lock/#when-the-lock-is-lost) covers the two-pronged detection and how to size `ttlMs` and `heartbeatMs`.
@@ -214,6 +214,14 @@ Exported from `benni/primitives`.
 | `SemaphoreLeaseLostError` | `key`, `limit` | The slot was lost while `fn` was still running: renewal found the lease gone, so it had already been reclaimed |
 
 A lost lock means two callers collided on one key; a lost slot means the semaphore **over-admits**, so a `limit: 20` pool guarding a provider quota quietly runs 21 in flight. As with the lock, `run()` rejects even when `fn` resolved, and the error is the abort reason on `held.signal`. [Semaphore](/benni/primitives/semaphore/#when-the-slot-is-lost) has the detail.
+
+### Cache
+
+| Error | Properties | Thrown when |
+|---|---|---|
+| `CacheWaitTimeoutError` | `key` | `cache().get()` waited `waitTimeoutMs` on another caller's load that was still running |
+
+A waiter gives up rather than loading for itself, because a backend too slow to answer inside the budget is exactly the one a burst of extra loads would topple. Nothing was loaded or written by the caller that threw. See [Cache](/benni/primitives/cache/#slow-loads-dead-loaders-and-the-wait-deadline).
 
 ### Queue
 
@@ -238,8 +246,10 @@ Two more are errors **you throw**, from inside a handler, to steer the retry mac
 | `IdempotencyConflictError` | `key` | Another caller holds the key and `onConflict` is `"throw"` |
 | `IdempotencyTimeoutError` | `key` | `onConflict: "wait"` gave up before the holder finished |
 | `IdempotencyNotRecordedError<T>` | `key`, `value` | The handler succeeded but its result could not be stored |
+| `IdempotencyLeaseLostError` | `key` | The running marker was lost while the handler ran. The abort reason on the handler's `signal`, and the `cause` of an `IdempotencyNotRecordedError` when the handler resolved anyway |
+| `IdempotencyFingerprintMismatchError` | `key` | The key was already used with a different `fingerprint`. Nothing ran |
 
-`IdempotencyNotRecordedError` is the one that needs care. **The side effect happened.** What failed is the record of it, so the running marker will lapse and a later caller with the same key will run the handler again. Treat it as indeterminate rather than as a failure: `value` carries the result if you can still use it (return it to the client, write it somewhere durable), but do not assume a retry is safe. The usual causes are a codec that cannot encode the result, or a Redis blip between finishing the work and recording it. The underlying failure is on `cause`. See [Idempotency](/benni/primitives/idempotency/).
+`IdempotencyNotRecordedError` is the one that needs care. **The side effect happened.** What failed is the record of it, so a later caller with the same key will run the handler again. Treat it as indeterminate rather than as a failure: `value` carries the result if you can still use it (return it to the client, write it somewhere durable), but do not assume a retry is safe. The usual causes are a codec that cannot encode the result, a Redis blip between finishing the work and recording it, or a lost claim; the underlying failure is on `cause`, and when that is an `IdempotencyLeaseLostError` another caller may have run the handler too. See [Idempotency](/benni/primitives/idempotency/#what-it-guarantees).
 
 ### Budget
 
@@ -265,8 +275,10 @@ Error
 ├── WatchRetriesExceededError
 ├── LockNotAcquiredError / LockLeaseLostError
 ├── SemaphoreNotAcquiredError / SemaphoreLeaseLostError
+├── CacheWaitTimeoutError
 ├── JobNotFoundError / JobLeaseLostError / TerminalJobError / RetryJobError
 ├── IdempotencyConflictError / IdempotencyTimeoutError / IdempotencyNotRecordedError
+├── IdempotencyLeaseLostError / IdempotencyFingerprintMismatchError
 └── BudgetWindowRolledError
 ```
 

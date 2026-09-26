@@ -84,7 +84,7 @@ data on top.
 - **Schema-derived keys and TTLs** instead of hand-built strings.
 - **Correct primitives included.** A distributed lock that never frees a lock
   that expired and was re-acquired, a sliding-window rate limiter in one atomic
-  round trip, a stampede-proof read-through cache, and an AI-shaped job queue
+  round trip, a single-flight read-through cache, and an AI-shaped job queue
   with resumable output streams.
 - **Validator integration.** `json(zodSchema)` gives runtime-validated, inferred
   reads through any [Standard Schema](https://standardschema.dev) validator (Zod,

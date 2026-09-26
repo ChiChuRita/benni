@@ -78,6 +78,6 @@ The same typed API runs on Node, Bun, Deno, and the edge. Benni does not polyfil
 
 ## Batteries Only For What Is Easy To Get Wrong
 
-[Primitives](/benni/primitives/lock/) exist for the handful of patterns that are subtly hard: a correct distributed lock, an accurate sliding window, a stampede-proof cache, a job queue with leases and resumable output. These are worth shipping because most hand-rolled versions have a race in them.
+[Primitives](/benni/primitives/lock/) exist for the handful of patterns that are subtly hard: a fenced distributed lock, an exact sliding window, a single-flight cache, a job queue with leases and resumable output. These are worth shipping because most hand-rolled versions have a race in them.
 
 Benni deliberately does not ship a secondary-index manager, a full-text search layer, or a general job framework. Those belong to Redis Search, or to BullMQ, or to your application, and shipping a mediocre version of each is how a client turns into an ORM.
