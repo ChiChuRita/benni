@@ -642,8 +642,8 @@ export function createSortedSetStore<
      * (update only when the new score is greater/less). No-op returning `0`
      * for an empty list.
      *
-     * @example await redis.zset(board).zadd("global", { score: 10, member: "ada" });
-     * @example await redis.zset(board).zadd("global", entries, { gt: true, ch: true });
+     * @example await redis.query.board.zadd("global", { score: 10, member: "ada" });
+     * @example await redis.query.board.zadd("global", entries, { gt: true, ch: true });
      */
     async zadd(
       id: TId,

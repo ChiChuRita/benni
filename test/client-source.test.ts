@@ -6,8 +6,15 @@ import {
 import { numberReply } from "../src/core/transaction.js";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
 import { benni } from "../src/index.js";
-import { lock, ratelimit } from "../src/primitives/index.js";
-import { hash, json, kv, number, string } from "../src/schema.js";
+import {
+  hash,
+  json,
+  kv,
+  lock,
+  number,
+  ratelimit,
+  string
+} from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
 // 0.2: a client source is an adapter's client or a benni handle, nothing
@@ -168,13 +175,13 @@ describe("capabilities are checked where a call needs them", () => {
   });
 });
 
-describe("primitives take a handle, a client, or a config object", () => {
-  it("accepts the benni handle in the config form", async () => {
+describe("a primitive over a client with no schema module", () => {
+  it("is reached with benni({ client }).store(schema)", async () => {
     const commands: RedisCommand[] = [];
     // The acquire script's SCRIPT LOAD, then its EVALSHA returning the fence.
-    const redis = benni({ client: fakeClient(commands, ["sha", 1]) });
-
-    const locks = lock({ client: redis, ttlMs: 10_000 });
+    const locks = benni({ client: fakeClient(commands, ["sha", 1]) }).store(
+      lock("lock", { ttlMs: 10_000 })
+    );
     const handle = await locks.acquire("order:42");
 
     expect(handle?.key).toBe("lock:order:42");
@@ -186,16 +193,14 @@ describe("primitives take a handle, a client, or a config object", () => {
     ]);
   });
 
-  it("still accepts the positional client", async () => {
-    const commands: RedisCommand[] = [];
-    const limiter = ratelimit(fakeClient(commands, ["sha", [1, 9, 1000, 0]]), {
+  it("ignores a prefix smuggled into the options: the first argument names it", () => {
+    const limiter = ratelimit("api", {
       limit: 10,
-      windowMs: 60_000
+      windowMs: 60_000,
+      // @ts-expect-error the key prefix is the builder's first argument.
+      prefix: "other"
     });
-
-    const result = await limiter.check("user:1");
-    expect(result.success).toBe(true);
-    expect(result.remaining).toBe(9);
+    expect(limiter.prefix).toBe("api");
   });
 });
 

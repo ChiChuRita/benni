@@ -25,16 +25,19 @@ if (!success) {
 
 Use `retryAfterMs` for `Retry-After`, not `resetMs - Date.now()`. `resetMs` is a timestamp on the *Redis server's* clock; subtracting your own clock from it bakes the skew between the two into every header, and a server a few seconds ahead tells clients to wait seconds longer than they need to (or, behind, to come back while still limited). `retryAfterMs` is computed inside the script from the same clock as `resetMs`, so it carries no skew.
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, such as inside a middleware factory, `benni/primitives` exports the same limiter in its client-taking form, over the same keys:
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no schema module, wrap the client once and reach the same limiter, over the same keys, through `store()`:
 
 ```ts
-import { ratelimit } from "benni/primitives";
+import { benni } from "benni";
+import { ratelimit } from "benni/schema";
 
-const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
+const limiter = benni({ client }).store(
+  ratelimit("api", { limit: 10, windowMs: 60_000 })
+);
 const { success } = await limiter.check(userId);
 ```
 
-`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it runs over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
+It runs over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge, which is where rate limiting is most often needed.
 
 ## The result
 

@@ -1,4 +1,3 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
@@ -102,7 +101,7 @@ export type RatelimitResult = {
  * Works over any adapter, including `benni/upstash` on the edge.
  *
  * ```ts
- * const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
+ * const limiter = redis.query.apiLimit; // ratelimit("api", { limit: 10, windowMs: 60_000 })
  * const { success, remaining } = await limiter.check(userId);
  * if (!success) throw new Response("Too Many Requests", { status: 429 });
  * ```
@@ -111,7 +110,10 @@ export type RatelimitResult = {
  * bounded by `limit` entries per key. For very high per-key rates prefer a
  * counter-based limiter.
  */
-function createRatelimit(client: RedisClient, options: RatelimitOptions) {
+export function createRatelimit(
+  client: RedisClient,
+  options: RatelimitOptions
+) {
   const limit = positiveInt(options.limit, "limit");
   const windowMs = positiveInt(options.windowMs, "windowMs");
   const prefix = options.prefix ?? DEFAULT_PREFIX;
@@ -138,27 +140,8 @@ function createRatelimit(client: RedisClient, options: RatelimitOptions) {
   };
 }
 
-/** The limiter {@link ratelimit} returns. */
+/** A limiter, as `redis.query.<name>` returns it for a {@link RatelimitSchema}. */
 export type RatelimitStore = ReturnType<typeof createRatelimit>;
-
-/** {@link RatelimitOptions} plus the client, for the single-argument form. */
-export type RatelimitConfig = RatelimitOptions & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-export function ratelimit(config: RatelimitConfig): RatelimitStore;
-export function ratelimit(
-  client: ClientSource,
-  options: RatelimitOptions
-): RatelimitStore;
-export function ratelimit(
-  source: ClientSource | RatelimitConfig,
-  options?: RatelimitOptions
-): RatelimitStore {
-  const args = clientArgs<RatelimitOptions>(source, options);
-  return createRatelimit(args.client, args.options);
-}
 
 /**
  * A limiter declared as a schema value, so it lands in `redis.query` next to
@@ -186,7 +169,7 @@ const ratelimitBinding: StoreBinding = {
  */
 export function defineRatelimit(
   prefix: string,
-  options: RatelimitOptions
+  options: Omit<RatelimitOptions, "prefix">
 ): RatelimitSchema {
   return withStore(
     { ...options, kind: "ratelimit", prefix } as RatelimitSchema,

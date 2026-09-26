@@ -40,8 +40,8 @@ So `mget(["u1", "u2"])`, `sunionstore`, `zmpop`, `bitop`, `pfmerge`, `lmove`, an
 import { json, kv, zset } from "benni/schema";
 
 // Bounded keyspace, needs within-schema set algebra: pin the whole thing.
-const featureFlags = zset("flags", string(), { hashTag: "prefix" });
-await redis.zset(featureFlags).zunionstore("all", "beta", ["internal"]);
+export const featureFlags = zset("flags", string(), { hashTag: "prefix" });
+await redis.query.featureFlags.zunionstore("all", "beta", ["internal"]);
 
 // Unbounded keyspace, needs per-user co-location: tag the id.
 const carts = kv("cart", json<Cart>(), { hashTag: "id" });
@@ -66,7 +66,7 @@ A `hashTag: "id"` prefix may not contain `{`. Redis reads the tag from the first
 Because the tag is part of the key's template-literal type, Benni can reject cross-slot combinations before you run anything. This covers `script().run()`, `redis.watch()`, and the transaction key declaration:
 
 ```ts
-await redis.script(moveItem).run({
+await redis.query.moveItem.run({
   keys: { from: carts.key("u1"), to: orders.key("u2") },
   //                                  ^ Type '"order:{u2}"' is not assignable to type
   //                                    'KeysMustShareOneHashSlot<"order:{u2}", "u1">'
@@ -93,7 +93,7 @@ import { assertSameSlot } from "benni/cluster";
 
 const redis = benni({ client, schema, cluster: assertSameSlot });
 
-await redis.set(sessions).sunion("a1", ["b7"]);
+await redis.query.sessions.sunion("a1", ["b7"]);
 // CrossSlotError: SUNION spans two Redis Cluster hash slots, which the server
 // rejects with CROSSSLOT.
 //   "sessions:a1" hashes to slot 9716

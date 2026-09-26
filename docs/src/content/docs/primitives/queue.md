@@ -17,12 +17,13 @@ export const generate = queue<{ prompt: string }, string>("generate");
 const { id } = await redis.query.generate.enqueue({ prompt });
 ```
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, `benni/primitives` exports the same queue in its client-taking form, over the same keys:
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no schema module, wrap the client once and reach the same queue, over the same keys, through `store()`:
 
 ```ts
-import { queue } from "benni/primitives";
+import { benni } from "benni";
+import { queue } from "benni/schema";
 
-const jobs = queue<{ prompt: string }, string>({ client, prefix: "generate" });
+const jobs = benni({ client }).store(queue<{ prompt: string }, string>("generate"));
 ```
 
 ## The five bugs you hit in order
@@ -156,7 +157,7 @@ The key stays bound to the job for as long as it runs *and after it completes*, 
 Everything retries with exponential backoff and full jitter, except what you mark otherwise:
 
 ```ts
-import { RetryJobError, TerminalJobError } from "benni/primitives";
+import { RetryJobError, TerminalJobError } from "benni";
 
 jobs.worker(async (job) => {
   const response = await fetch(providerUrl, {

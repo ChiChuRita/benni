@@ -1,7 +1,12 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { decodeBase64, encodeBase64 } from "../core/base64.js";
 import { type ClientSource, resolveClient } from "../core/client-source.js";
-import { ratelimit as createRatelimiter } from "../primitives/ratelimit.js";
+// Type-only: the limiter arrives already built, from the handle, so this
+// module never pulls the rate-limit primitive in itself.
+import type {
+  RatelimitResult,
+  RatelimitStore
+} from "../primitives/ratelimit.js";
 
 /**
  * A Redis client from a benni adapter, or the handle `benni()` returned.
@@ -11,14 +16,12 @@ import { ratelimit as createRatelimiter } from "../primitives/ratelimit.js";
 export type { ClientSource };
 
 export type RateLimitMiddlewareOptions = {
-  /** A Redis client from a benni adapter, or a benni handle. */
-  readonly client: ClientSource;
-  /** Maximum requests allowed within the window. */
-  readonly limit: number;
-  /** Window length in milliseconds. */
-  readonly windowMs: number;
-  /** Key namespace; keys are `<prefix>:<id>`. Default `"ratelimit"`. */
-  readonly prefix?: string;
+  /**
+   * The limiter to count requests against: a `ratelimit` schema reached
+   * through the handle, e.g. `redis.query.apiLimit`. Its limit, window, and
+   * key prefix are the ones declared on the schema.
+   */
+  readonly limiter: RatelimitStore;
   /**
    * Derives the rate-limit subject from the request. Required, and
    * deliberately so: there is no request property a limiter can trust without
@@ -52,17 +55,39 @@ export type RateLimitMiddlewareOptions = {
 };
 
 /**
- * Sliding-window rate limiting as Hono middleware, built on the
- * [`ratelimit` primitive](../primitives/ratelimit.js) — one atomic Lua round
- * trip per request. Allowed requests carry `X-RateLimit-Limit`, `-Remaining`,
- * and `-Reset` (epoch seconds) headers; denied requests get a JSON 429 with
- * `Retry-After`.
+ * The limiter a rate-limit middleware was handed, checked when the middleware
+ * is built rather than on the first request, so a 0.1-style
+ * `{ client, limit, windowMs }` config fails at startup with the fix in the
+ * message instead of as "check is not a function" under traffic.
+ */
+function assertLimiter(
+  limiter: unknown,
+  middleware: string
+): asserts limiter is RatelimitStore {
+  if (
+    typeof (limiter as Partial<RatelimitStore> | null)?.check !== "function"
+  ) {
+    throw new TypeError(
+      `${middleware} takes the limiter itself: declare \`export const apiLimit = ratelimit("api", { limit, windowMs })\` in your schema module and pass \`limiter: redis.query.apiLimit\`. The { client, limit, windowMs } options were removed in 0.2.`
+    );
+  }
+}
+
+/**
+ * Sliding-window rate limiting as Hono middleware, over a `ratelimit` schema
+ * reached through the handle — one atomic Lua round trip per request.
+ * Allowed requests carry `X-RateLimit-Limit`, `-Remaining`, and `-Reset`
+ * (epoch seconds) headers; denied requests get a JSON 429 with `Retry-After`.
  *
  * Fails closed by default: a Redis error propagates instead of letting the
  * request through uncounted. See `failOpen`.
  *
  * @example
  * ```ts
+ * // schema.ts
+ * export const apiLimit = ratelimit("api", { limit: 100, windowMs: 60_000 });
+ *
+ * // app.ts
  * import { Hono } from "hono";
  * import { rateLimitMiddleware } from "benni/hono";
  *
@@ -70,9 +95,7 @@ export type RateLimitMiddlewareOptions = {
  * app.use(
  *   "*",
  *   rateLimitMiddleware({
- *     client,
- *     limit: 100,
- *     windowMs: 60_000,
+ *     limiter: redis.query.apiLimit,
  *     key: (c) => c.get("userId")
  *   })
  * );
@@ -82,17 +105,14 @@ export type RateLimitMiddlewareOptions = {
 export function rateLimitMiddleware(
   options: RateLimitMiddlewareOptions
 ): MiddlewareHandler {
-  const limiter = createRatelimiter(resolveClient(options.client), {
-    limit: options.limit,
-    windowMs: options.windowMs,
-    ...(options.prefix !== undefined && { prefix: options.prefix })
-  });
+  const limiter = options.limiter;
+  assertLimiter(limiter, "rateLimitMiddleware()");
   const key = options.key;
   const failOpen = options.failOpen ?? false;
 
   return async (c, next) => {
     const subject = await key(c);
-    let result: Awaited<ReturnType<typeof limiter.check>>;
+    let result: RatelimitResult;
     try {
       result = await limiter.check(subject);
     } catch (error) {

@@ -10,7 +10,6 @@ import {
   resolveClient,
   SESSION_UNSUPPORTED
 } from "./core/client-source.js";
-import { createCounterStore } from "./core/counter.js";
 // A value import, but errors.js is a leaf the root entry already pulls in for
 // the exported error classes, so this pins nothing new into the bundle.
 import { UnsupportedCapabilityError } from "./core/errors.js";
@@ -20,7 +19,7 @@ import type {
   createHllResource,
   HyperLogLogSchema
 } from "./core/hyperloglog.js";
-import type { createKvResource } from "./core/key-value.js";
+import type { KvResource } from "./core/key-value.js";
 import type { HashTagLayout, SameSlotArg, SameSlotList } from "./core/keys.js";
 import type {
   createListResource,
@@ -62,15 +61,13 @@ import {
   resolveSessionStore,
   resolveStore,
   STORE,
-  type StoreContext,
-  withKey
+  type StoreContext
 } from "./core/store.js";
 import type { StreamSchema } from "./core/stream.js";
 import type {
   createStreamResource,
   createStreamSessionAccessor
 } from "./core/stream-resource.js";
-import { createStringStore } from "./core/string.js";
 import {
   createTransaction,
   type RedisTransaction,
@@ -182,148 +179,6 @@ export type BenniOptions = {
 };
 
 /**
- * The data-store accessors shared by `benni()` and every session — each bound
- * to the connection passed in. `benni()` binds them to the shared client; a
- * session rebinds the identical set to its private connection so
- * `session.kv(x)` and `redis.kv(x)` behave the same. The list/zset/stream
- * accessors returned here are the base (non-blocking) shape; sessions swap in
- * the blocking supersets (see createBenniSessionFacade).
- *
- * Each accessor resolves the schema's own store binding rather than naming a
- * store factory, so this module pulls in no store code. The casts restore the
- * precise resource type the binding is known to produce — the accessor
- * signatures, and therefore the public API, are unchanged.
- *
- * `counter` and `string` are the exceptions: they are alternate views over a
- * plain kv keyspace rather than a kind of their own, so they cannot dispatch
- * through the schema and stay bound directly.
- */
-function createStoreAccessors(ctx: StoreContext) {
-  return {
-    kv: <
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "kv schema") as ReturnType<
-        typeof createKvResource<TInput, TOutput, TPrefix, TId, THashTag>
-      >,
-    hash: <
-      TFields extends FieldCodecs,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: HashSchema<TFields, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "hash schema") as ReturnType<
-        typeof createHashResource<TFields, TPrefix, TId, THashTag>
-      >,
-    list: <
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "list schema") as ReturnType<
-        typeof createListResource<TInput, TOutput, TPrefix, TId, THashTag>
-      >,
-    set: <
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: SetSchema<TInput, TOutput, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "set schema") as ReturnType<
-        typeof createSetResource<TInput, TOutput, TPrefix, TId, THashTag>
-      >,
-    zset: <
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "zset schema") as ReturnType<
-        typeof createZsetResource<TInput, TOutput, TPrefix, TId, THashTag>
-      >,
-    hll: <
-      TInput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: HyperLogLogSchema<TInput, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "hll schema") as ReturnType<
-        typeof createHllResource<TInput, TPrefix, TId, THashTag>
-      >,
-    stream: <
-      TFields extends FieldCodecs,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: StreamSchema<TFields, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "stream schema") as ReturnType<
-        typeof createStreamResource<TFields, TPrefix, TId, THashTag>
-      >,
-    bitmap: <
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: BitmapSchema<TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "bitmap schema") as ReturnType<
-        typeof createBitmapResource<TPrefix, TId, THashTag>
-      >,
-    geo: <
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: GeoSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
-    ) =>
-      resolveStore(schema, ctx, "geo schema") as ReturnType<
-        typeof createGeoResource<TInput, TOutput, TPrefix, TId, THashTag>
-      >,
-    counter: <
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: Keyspace<number, number, TPrefix, TId, THashTag>
-    ) => withKey(schema, createCounterStore(ctx.client, schema)),
-    string: <
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: Keyspace<string, string, TPrefix, TId, THashTag>
-    ) =>
-      withKey(schema, createStringStore(ctx.client, schema, ctx.assertSameSlot))
-  };
-}
-
-type StoreAccessors = ReturnType<typeof createStoreAccessors>;
-
-/**
  * The kinds a schema builder stamps onto its result, used to dispatch a
  * schema to its matching store in the `redis.query` registry.
  */
@@ -377,6 +232,36 @@ const SCHEMA_KINDS: ReadonlySet<unknown> = new Set<SchemaKind>([
   "budget"
 ]);
 
+/**
+ * The kinds a session reaches through `session.query` and `session.store()`:
+ * the data stores. Primitives, channels, patterns, and scripts stay on the
+ * handle. They gain nothing from a dedicated connection, and a primitive
+ * that manages its own connections or timers (a queue worker, a lock's
+ * renewal) must not be tied to one that closes with the session.
+ */
+export type SessionSchemaKind =
+  | "kv"
+  | "hash"
+  | "set"
+  | "list"
+  | "zset"
+  | "stream"
+  | "bitmap"
+  | "geo"
+  | "hll";
+
+const SESSION_KINDS: ReadonlySet<unknown> = new Set<SessionSchemaKind>([
+  "kv",
+  "hash",
+  "set",
+  "list",
+  "zset",
+  "stream",
+  "bitmap",
+  "geo",
+  "hll"
+]);
+
 /** A client that can lease a session: `session()`, `watch()`, blocking reads. */
 type SessionCapable = { session(): Promise<RedisSession> };
 /** A client that can lease a subscriber connection: `subscribe()`. */
@@ -424,8 +309,7 @@ export type ChannelResourceFor<
 
 /**
  * Maps one declared schema to the typed resource `redis.query.<name>` exposes
- * for it — the same resource the matching `redis.<kind>(schema)` accessor
- * returns.
+ * for it, which is also what `redis.store(schema)` returns.
  * Dispatch is on the schema's literal `kind`, so structurally-identical schema
  * shapes (kv/set/list/zset/geo) still resolve to distinct resources. `TClient`
  * only matters for channels, which lose `subscribe()` on a client that cannot
@@ -458,11 +342,10 @@ export type QueryResource<
           infer TOutput,
           infer TPrefix extends string,
           infer TId,
-          infer THashTag extends HashTagLayout | undefined
+          infer THashTag extends HashTagLayout | undefined,
+          infer TFormat
         >
-        ? ReturnType<
-            typeof createKvResource<TInput, TOutput, TPrefix, TId, THashTag>
-          >
+        ? KvResource<TInput, TOutput, TPrefix, TId, THashTag, TFormat>
         : never
       : T extends { readonly kind: "set" }
         ? T extends SetSchema<
@@ -631,50 +514,104 @@ export type QueryRegistry<
 };
 
 /**
- * A dedicated connection leased from the Benni handle, shaped like the same
- * store surface. Exposes the same data-store accessors bound to its private
- * connection — where the
- * list/zset/stream accessors are supersets that also expose the blocking
- * variants (blpop/brpop/blmove/blmpop, bzpopmin/bzpopmax/bzmpop,
- * xread with a timeout) and the
- * blocking consumer-group read — plus the WATCH primitives. `scan`, `pubsub`,
- * and `script` are intentionally absent: they have no session-specific
- * semantics, and the smaller surface keeps the session's purpose legible —
- * block, or watch-then-commit.
+ * The schemas `redis.store()` accepts over a client of type `TClient`: any
+ * benni schema, except a pattern subscription when the client cannot
+ * pattern-subscribe, since a pattern resource has nothing else to offer.
  */
-export type BenniSession = Omit<StoreAccessors, "list" | "zset" | "stream"> & {
-  list<
-    TInput,
-    TOutput,
-    TPrefix extends string,
-    TId extends RedisKeyPart,
-    THashTag extends HashTagLayout | undefined
-  >(
-    schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>
-  ): ReturnType<
-    typeof createListSessionAccessor<TInput, TOutput, TPrefix, TId, THashTag>
-  >;
-  zset<
-    TInput,
-    TOutput,
-    TPrefix extends string,
-    TId extends RedisKeyPart,
-    THashTag extends HashTagLayout | undefined
-  >(
-    schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>
-  ): ReturnType<
-    typeof createZsetSessionAccessor<TInput, TOutput, TPrefix, TId, THashTag>
-  >;
-  stream<
-    TFields extends FieldCodecs,
-    TPrefix extends string,
-    TId extends RedisKeyPart,
-    THashTag extends HashTagLayout | undefined
-  >(
-    schema: StreamSchema<TFields, TPrefix, TId, THashTag>
-  ): ReturnType<
-    typeof createStreamSessionAccessor<TFields, TPrefix, TId, THashTag>
-  >;
+export type StorableSchema<TClient extends RedisClient = FullRedisClient> = {
+  readonly kind: TClient extends PatternCapable
+    ? SchemaKind
+    : Exclude<SchemaKind, "pattern">;
+};
+
+/**
+ * What `session.query.<name>` and `session.store(schema)` resolve a data-store
+ * schema to: the shared resource, except that list, zset, and stream get the
+ * blocking superset (blpop/brpop/blmove/blmpop, bzpopmin/bzpopmax/bzmpop,
+ * xread with a timeout, the blocking consumer-group read), bound to the
+ * session's own connection.
+ */
+export type SessionQueryResource<T> = T extends { readonly kind: "list" }
+  ? T extends ListSchema<
+      infer TInput,
+      infer TOutput,
+      infer TPrefix extends string,
+      infer TId,
+      infer THashTag extends HashTagLayout | undefined
+    >
+    ? ReturnType<
+        typeof createListSessionAccessor<
+          TInput,
+          TOutput,
+          TPrefix,
+          TId,
+          THashTag
+        >
+      >
+    : never
+  : T extends { readonly kind: "zset" }
+    ? T extends SortedSetSchema<
+        infer TInput,
+        infer TOutput,
+        infer TPrefix extends string,
+        infer TId,
+        infer THashTag extends HashTagLayout | undefined
+      >
+      ? ReturnType<
+          typeof createZsetSessionAccessor<
+            TInput,
+            TOutput,
+            TPrefix,
+            TId,
+            THashTag
+          >
+        >
+      : never
+    : T extends { readonly kind: "stream" }
+      ? T extends StreamSchema<
+          infer TFields,
+          infer TPrefix extends string,
+          infer TId,
+          infer THashTag extends HashTagLayout | undefined
+        >
+        ? ReturnType<
+            typeof createStreamSessionAccessor<TFields, TPrefix, TId, THashTag>
+          >
+        : never
+      : QueryResource<T>;
+
+/**
+ * `session.query`: the data-store schemas of the bound schema module, keyed by
+ * export name, bound to the session's connection. See {@link SessionSchemaKind}
+ * for why the primitives and pub/sub are not in it.
+ */
+export type SessionQueryRegistry<TSchema extends BenniSchema> = {
+  [K in keyof TSchema as TSchema[K] extends {
+    readonly kind: SessionSchemaKind;
+  }
+    ? K
+    : never]: SessionQueryResource<TSchema[K]>;
+};
+
+/**
+ * A dedicated connection leased from the handle, for the two workloads that
+ * monopolize one: blocking reads and WATCH-then-commit. `query` and `store()`
+ * reach the same data stores as the handle's, bound to this connection, with
+ * the blocking commands added to lists, sorted sets, and streams. `scan`,
+ * pub/sub, scripts, and the primitives are intentionally absent: they have no
+ * session-specific semantics, and the smaller surface keeps the session's
+ * purpose legible.
+ */
+export interface BenniSession<TSchema extends BenniSchema = RegisteredSchema> {
+  /**
+   * The bound schema module's data stores by export name, on this
+   * connection: `s.query.users.hget("42")` inside `redis.watch()`.
+   */
+  readonly query: SessionQueryRegistry<TSchema>;
+  /** A data-store schema outside the bound module, on this connection. */
+  store<T extends { readonly kind: SessionSchemaKind }>(
+    schema: T
+  ): SessionQueryResource<T>;
 
   /** WATCH k1 k2…; throws on empty. Keys must share one Cluster hash slot. */
   watch<const TKeys extends readonly string[]>(
@@ -691,93 +628,94 @@ export type BenniSession = Omit<StoreAccessors, "list" | "zset" | "stream"> & {
   close(): Promise<void>;
   /** Alias of close(); enables `await using`. */
   [Symbol.asyncDispose](): Promise<void>;
-};
+}
 
 /**
  * The redis.watch policy layer options: the retry loop lives in core
  * (runWatch); the borrow-a-session escape hatch is typed here in the Benni
  * handle's BenniSession.
  */
-export type BenniWatchOptions = Omit<
-  RunWatchOptions<BenniSession>,
-  "session"
-> & {
-  /** Borrow a long-lived session (hot paths); never closed by the helper. */
-  readonly session?: BenniSession;
+export type BenniWatchOptions<TSchema extends BenniSchema = RegisteredSchema> =
+  Omit<RunWatchOptions<BenniSession<TSchema>>, "session"> & {
+    /** Borrow a long-lived session (hot paths); never closed by the helper. */
+    readonly session?: BenniSession<TSchema>;
+  };
+
+/** Options for `redis.close()`. */
+export type BenniCloseOptions = {
+  /**
+   * How long queue workers started through this handle may spend finishing
+   * their in-flight jobs, in milliseconds, forwarded to each worker's
+   * `stop({ timeoutMs })`: once it elapses, jobs still running are aborted
+   * and handed back to the queue. Default: no limit, as for `worker.stop()`.
+   */
+  readonly timeoutMs?: number;
 };
 
 /**
- * A session's own accessors: identical to the shared set, except that list,
- * zset, and stream resolve the schema's *session* binding — the blocking
- * superset — over the session's private connection.
+ * Memoizes resolved stores per schema object, so `redis.store(schema)` hands
+ * back the very resource `redis.query` holds for it, and a second call the
+ * same one. A primitive keeps per-instance state (the cache's single-flight
+ * map, a queue's workers), which a fresh store per call would silently split.
+ */
+function storeCache(
+  resolve: (schema: object, label: string) => unknown
+): (schema: unknown, label: string) => unknown {
+  const resolved = new WeakMap<object, unknown>();
+  return (schema, label) => {
+    // Non-objects have no binding; resolving them throws the usual message.
+    if (typeof schema !== "object" || schema === null) {
+      return resolve(schema as object, label);
+    }
+    if (!resolved.has(schema)) resolved.set(schema, resolve(schema, label));
+    return resolved.get(schema);
+  };
+}
+
+/**
+ * A session over its private connection. It gets its own store context, so
+ * everything a store builds lazily (the script runner behind `incr` with a
+ * TTL) is bound to this connection rather than the shared client's.
  */
 function createBenniSessionFacade(
   raw: RedisSession,
   parent: StoreContext,
-  onClose: (session: BenniSession) => void
-): BenniSession {
+  queryable: readonly (readonly [string, unknown])[],
+  onClose: (session: BenniSession<BenniSchema>) => void
+): BenniSession<BenniSchema> {
   const kernel = createBenniSession(raw, parent.assertSameSlot);
   const close = () => {
-    onClose(accessors);
+    onClose(session);
     return kernel.close();
   };
-  // A session shares the parent's singletons (hub, script runner) but binds
-  // every store to its own connection.
-  const ctx: StoreContext = { ...parent, client: kernel.client };
-  const base = createStoreAccessors(ctx);
-  const accessors: BenniSession = {
-    kv: base.kv,
-    hash: base.hash,
-    set: base.set,
-    hll: base.hll,
-    bitmap: base.bitmap,
-    geo: base.geo,
-    counter: base.counter,
-    string: base.string,
-    list<
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(schema: ListSchema<TInput, TOutput, TPrefix, TId, THashTag>) {
-      return resolveSessionStore(schema, ctx, "list schema") as ReturnType<
-        typeof createListSessionAccessor<
-          TInput,
-          TOutput,
-          TPrefix,
-          TId,
-          THashTag
-        >
-      >;
-    },
-    zset<
-      TInput,
-      TOutput,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(schema: SortedSetSchema<TInput, TOutput, TPrefix, TId, THashTag>) {
-      return resolveSessionStore(schema, ctx, "zset schema") as ReturnType<
-        typeof createZsetSessionAccessor<
-          TInput,
-          TOutput,
-          TPrefix,
-          TId,
-          THashTag
-        >
-      >;
-    },
-    stream<
-      TFields extends FieldCodecs,
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(schema: StreamSchema<TFields, TPrefix, TId, THashTag>) {
-      return resolveSessionStore(schema, ctx, "stream schema") as ReturnType<
-        typeof createStreamSessionAccessor<TFields, TPrefix, TId, THashTag>
-      >;
-    },
+  const ctx = createStoreContext(
+    kernel.client,
+    parent.onPubSubError,
+    parent.assertSameSlot
+  );
+  const resolve = storeCache((schema, label) => {
+    const kind = (schema as { readonly kind?: unknown } | null)?.kind;
+    if (SCHEMA_KINDS.has(kind) && !SESSION_KINDS.has(kind)) {
+      throw new TypeError(
+        `${label} is a ${String(kind)} schema. A session reaches only the data stores (${[...SESSION_KINDS].join(", ")}); use the handle for primitives, channels, and scripts.`
+      );
+    }
+    return resolveSessionStore(schema, ctx, label);
+  });
+  // Getters, resolved on first use: a watch retry opens a session per
+  // attempt, and building every store up front would allocate the whole
+  // registry each time for the one or two the body reads.
+  const query: Record<string, unknown> = {};
+  for (const [name, schema] of queryable) {
+    Object.defineProperty(query, name, {
+      enumerable: true,
+      get: () => resolve(schema, `schema.${name}`)
+    });
+  }
+  const session: BenniSession<BenniSchema> = {
+    query: query as SessionQueryRegistry<BenniSchema>,
+    store: ((schema: unknown) =>
+      resolve(schema, "session.store() schema")) as BenniSession["store"],
     watch: kernel.watch,
     unwatch: kernel.unwatch,
     multi: kernel.multi,
@@ -788,7 +726,7 @@ function createBenniSessionFacade(
     close,
     [Symbol.asyncDispose]: close
   };
-  return accessors;
+  return session;
 }
 
 /** `redis.scan`: cursor-driven iteration, without blocking the server. */
@@ -820,33 +758,8 @@ export interface BenniScan {
   ): AsyncIterable<SortedSetEntry<TOutput>>;
 }
 
-/** `redis.pubsub`, over a client of type `TClient`. */
-export interface BenniPubSub<TClient extends RedisClient> {
-  /**
-   * `redis.pubsub.channel(schema)` addresses the channel the schema names;
-   * `redis.pubsub.channel(schema, id)` addresses the per-entity channel
-   * `name:id` — one channel per room, per user, per job. Over a client that
-   * cannot subscribe (`benni/upstash`) the resource only publishes.
-   */
-  channel<TInput, TOutput, TName extends string, TId extends RedisKeyPart>(
-    channel: PubSubChannel<TInput, TOutput, TName, TId>
-  ): ChannelResourceFor<TClient, TInput, TOutput, TName, TId>;
-  channel<
-    TInput,
-    TOutput,
-    TName extends string,
-    TId extends RedisKeyPart,
-    TActualId extends TId
-  >(
-    channel: PubSubChannel<TInput, TOutput, TName, TId>,
-    id: TActualId
-  ): ChannelResourceFor<
-    TClient,
-    TInput,
-    TOutput,
-    ChannelName<TName, TActualId>,
-    TId
-  >;
+/** `redis.pubsub`: the handle's subscriber connection. */
+export interface BenniPubSub {
   /**
    * Drop every subscription and close the leased subscriber connection.
    * Publishing keeps working — it rides the bound client. `redis.close()`
@@ -855,33 +768,23 @@ export interface BenniPubSub<TClient extends RedisClient> {
   close(): Promise<void>;
 }
 
-/** `redis.pubsub.pattern()`, present when the client can pattern-subscribe. */
-export interface BenniPatterns {
-  pattern<TOutput>(
-    pattern: PubSubPattern<TOutput>
-  ): ReturnType<typeof createPatternResource<TOutput>>;
-}
-
-// biome-ignore lint/suspicious/noEmptyInterface: named, not `{}`, so the handle's type prints as `Benni<…>` in hovers and errors instead of dissolving into its structure.
-export interface BenniNoPatterns {}
-
 /** `redis.session()` and `redis.watch()`, present when the client can lease a session. */
-export interface BenniSessions {
+export interface BenniSessions<TSchema extends BenniSchema = RegisteredSchema> {
   /**
    * Lease a dedicated connection, for blocking reads and WATCH. The callback
    * form closes it when the callback settles; otherwise close it yourself (or
    * `await using`). `redis.close()` closes any still open.
    */
-  session(): Promise<BenniSession>;
-  session<T>(fn: (s: BenniSession) => Promise<T>): Promise<T>;
+  session(): Promise<BenniSession<TSchema>>;
+  session<T>(fn: (s: BenniSession<TSchema>) => Promise<T>): Promise<T>;
   /**
    * The retrying optimistic-transaction helper. Per attempt: (open or borrow
-   * a session) → WATCH keys → run the body (reads via the session accessors)
-   * → the body returns the built, un-executed multi → the helper calls
-   * exec(). A conflict (null) fires onAbort, backs off, and re-WATCHes; a body
-   * that returns null opts out (UNWATCH, resolve null); exhausted attempts
-   * throw WatchRetriesExceededError. Owned sessions close in finally; a
-   * borrowed options.session is never closed.
+   * a session) → WATCH keys → run the body (reads via `s.query`) → the body
+   * returns the built, un-executed multi → the helper calls exec(). A
+   * conflict (null) fires onAbort, backs off, and re-WATCHes; a body that
+   * returns null opts out (UNWATCH, resolve null); exhausted attempts throw
+   * WatchRetriesExceededError. Owned sessions close in finally; a borrowed
+   * options.session is never closed.
    *
    * Keys are checked for a shared Cluster hash tag wherever that is provable
    * from their types; see {@link SameSlotList}. Keys built from runtime ids
@@ -895,24 +798,23 @@ export interface BenniSessions {
     // conditional, so without it the check silently never fires.
     keys: TKeys & SameSlotArg<TKeys>,
     body: (
-      s: BenniSession
+      s: BenniSession<TSchema>
     ) => Promise<WatchedRedisTransaction<TResults> | null>,
-    watchOptions?: BenniWatchOptions
+    watchOptions?: BenniWatchOptions<TSchema>
   ): Promise<TResults | null>;
 }
 
-// biome-ignore lint/suspicious/noEmptyInterface: named for the same reason as BenniNoPatterns.
+// biome-ignore lint/suspicious/noEmptyInterface: named, not `{}`, so the handle's type prints as `Benni<…>` in hovers and errors instead of dissolving into its structure.
 export interface BenniNoSessions {}
 
 /**
  * The members every handle has, whatever its client can do. {@link Benni}
- * adds `session()`/`watch()` and `redis.pubsub.pattern()` when the client
- * supports them.
+ * adds `session()`/`watch()` when the client supports them.
  */
 export interface BenniBase<
   TSchema extends BenniSchema,
   TClient extends RedisClient
-> extends StoreAccessors {
+> {
   /** The schema module passed as `schema`, or undefined when none was. */
   readonly schema: TSchema | undefined;
   /**
@@ -924,35 +826,40 @@ export interface BenniBase<
   /**
    * The schema registry: `redis.query.<exportName>` resolves each schema from
    * the bound `{ schema }` module to its typed resource, dispatched by the
-   * schema's `kind`. This is the drizzle-style headline surface — declare
-   * schemas once, reach every store by name with full inference.
+   * schema's `kind`. This is the one path to every store and primitive:
+   * declare schemas once, reach each by name with full inference.
    */
   readonly query: QueryRegistry<TSchema, TClient>;
+  /**
+   * The same resource `redis.query` would give, for a schema that is not in
+   * the bound module: one declared inside a library, or a handle built with
+   * no `schema`. For a schema that is in it, this is the very object
+   * `redis.query` holds.
+   *
+   * ```ts
+   * const locks = benni({ client }).store(lock("order", { ttlMs: 10_000 }));
+   * ```
+   */
+  store<T extends StorableSchema<TClient>>(
+    schema: T
+  ): QueryResource<T, TClient>;
   readonly scan: BenniScan;
-  readonly pubsub: BenniPubSub<TClient> &
-    (TClient extends PatternCapable ? BenniPatterns : BenniNoPatterns);
+  readonly pubsub: BenniPubSub;
   /**
    * Typed MULTI/EXEC builder (shared-client form; for WATCH-based
    * optimistic transactions use `redis.watch()` or a session's `multi()`).
    */
   multi(): RedisTransaction<[]>;
-  script<
-    TName extends string,
-    TKeys extends readonly string[],
-    TArgs extends FieldCodecs,
-    TResult
-  >(
-    schema: ScriptSchema<TName, TKeys, TArgs, TResult>
-  ): ReturnType<typeof createScriptResource<TName, TKeys, TArgs, TResult>>;
   /**
    * Shut the handle down, in order: the Pub/Sub subscriptions, then queue
    * workers started through it (each drains its in-flight jobs, as
-   * `worker.stop()` does), then sessions still open, then the client. Only
-   * what this handle opened is closed: a handle built over another handle
-   * leaves that handle's client open, and an ioredis client you adopted is
-   * never closed. Idempotent; commands issued once it has run reject.
+   * `worker.stop()` does, bounded by `timeoutMs` when given), then sessions
+   * still open, then the client. Only what this handle opened is closed: a
+   * handle built over another handle leaves that handle's client open, and an
+   * ioredis client you adopted is never closed. Idempotent; commands issued
+   * once it has run reject.
    */
-  close(): Promise<void>;
+  close(options?: BenniCloseOptions): Promise<void>;
   /** Alias of close(); enables `await using redis = benni(…)`. */
   [Symbol.asyncDispose](): Promise<void>;
 }
@@ -969,7 +876,7 @@ export interface BenniBase<
  * `TClient` is the adapter's client type and decides what the handle offers:
  * without sessions (`benni/upstash`) there is no `session()` or `watch()`,
  * without a subscriber connection no `subscribe()`, without pattern support
- * (`benni/bun`) no `redis.pubsub.pattern()`. It defaults to a client that can
+ * (`benni/bun`) no pattern entries in `redis.query`. It defaults to a client that can
  * do everything, as `benni/node` and `benni/ioredis` can; on another adapter
  * name its client: `Benni<typeof schema, UpstashClient>`. Libraries that
  * accept any handle take {@link AnyBenni}.
@@ -983,7 +890,7 @@ export type Benni<
   TSchema extends BenniSchema = RegisteredSchema,
   TClient extends RedisClient = FullRedisClient
 > = BenniBase<TSchema, TClient> &
-  (TClient extends SessionCapable ? BenniSessions : BenniNoSessions);
+  (TClient extends SessionCapable ? BenniSessions<TSchema> : BenniNoSessions);
 
 /**
  * Any handle, whatever its schema and client: the parameter type for a
@@ -1059,6 +966,9 @@ function guardClient(
   return guarded;
 }
 
+/** What `track` registers: a queue worker, stoppable with a drain timeout. */
+type Stoppable = { stop(options?: BenniCloseOptions): Promise<void> };
+
 function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
   source: ClientSource<TClient>,
   options: BenniOptions & { readonly schema?: TSchema }
@@ -1068,13 +978,15 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
   // another handle belongs to that handle.
   const ownsClient = underlying === source;
   const state = { closing: false, closed: false };
-  const workers = new Set<{ stop(): Promise<void> }>();
-  const sessions = new Set<BenniSession>();
+  const workers = new Set<Stoppable>();
+  const sessions = new Set<BenniSession<BenniSchema>>();
   let closing: Promise<void> | undefined;
 
-  function close(): Promise<void> {
+  function close(closeOptions?: BenniCloseOptions): Promise<void> {
     // Memoized, so a second close() awaits the first one's teardown rather
     // than resolving while it is still running, and the client is closed once.
+    // A second call's timeoutMs therefore has no effect: the workers were
+    // already told how long they have.
     closing ??= (async () => {
       state.closing = true;
       const failures: unknown[] = [];
@@ -1085,9 +997,13 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
           if (result.status === "rejected") failures.push(result.reason);
         }
       };
+      const stopOptions =
+        closeOptions?.timeoutMs === undefined
+          ? undefined
+          : { timeoutMs: closeOptions.timeoutMs };
       const hub = ctx.peek<{ close(): Promise<void> }>(PUBSUB_HUB_KEY);
       await settle(hub === undefined ? [] : [hub.close()]);
-      await settle([...workers].map((worker) => worker.stop()));
+      await settle([...workers].map((worker) => worker.stop(stopOptions)));
       await settle([...sessions].map((session) => session.close()));
       state.closed = true;
       if (ownsClient) await settle([underlying.close()]);
@@ -1096,7 +1012,7 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
     return closing;
   }
 
-  const client = guardClient(underlying, state, close);
+  const client = guardClient(underlying, state, () => close());
   const ctx = createStoreContext(
     client,
     options.onPubSubError,
@@ -1106,17 +1022,28 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
       return () => workers.delete(worker);
     }
   );
-  const accessors = createStoreAccessors(ctx);
+  const resolve = storeCache((schema, label) =>
+    resolveStore(schema, ctx, label)
+  );
+  // The bound module's schemas, checked once here. A session builds its own
+  // `query` from the data-store entries of this list.
+  const bound = boundSchemas(options.schema, ctx);
+  const sessionQueryable = bound.filter(([, schema]) =>
+    SESSION_KINDS.has((schema as { readonly kind?: unknown }).kind)
+  );
 
-  async function openSession(): Promise<BenniSession> {
+  async function openSession(): Promise<BenniSession<BenniSchema>> {
     if (client.session === undefined) {
       // The runtime backstop: a handle over a client without sessions has no
       // session() in its type.
       throw new UnsupportedCapabilityError(SESSION_UNSUPPORTED, "session");
     }
     const raw = await client.session();
-    const leased = createBenniSessionFacade(raw, ctx, (closed) =>
-      sessions.delete(closed)
+    const leased = createBenniSessionFacade(
+      raw,
+      ctx,
+      sessionQueryable,
+      (closed) => sessions.delete(closed)
     );
     // Leased while close() was already draining the sessions: nothing would
     // close this one.
@@ -1128,11 +1055,10 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
     return leased;
   }
 
-  function session(): Promise<BenniSession>;
-  function session<T>(fn: (s: BenniSession) => Promise<T>): Promise<T>;
-  function session<T>(
-    fn?: (s: BenniSession) => Promise<T>
-  ): Promise<BenniSession | T> {
+  type Session = BenniSession<BenniSchema>;
+  function session(): Promise<Session>;
+  function session<T>(fn: (s: Session) => Promise<T>): Promise<T>;
+  function session<T>(fn?: (s: Session) => Promise<T>): Promise<Session | T> {
     if (fn === undefined) return openSession();
     return openSession().then(async (leased) => {
       try {
@@ -1143,68 +1069,25 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
     });
   }
 
-  /**
-   * The id is applied by the resource's own `at()` rather than being passed
-   * into the store factory, because a schema's store binding is invoked with
-   * `(ctx, schema)` and nothing else. Reaching past that would mean naming the
-   * pub/sub resource factory here as a value, which is exactly what the binding
-   * indirection exists to avoid — it would pin the whole pub/sub module into
-   * every bundle that imports `benni()`.
-   */
-  function pubsubChannel(
-    channel: PubSubChannel<unknown, unknown, string, RedisKeyPart>,
-    id?: RedisKeyPart
-  ): PubSubChannelResource<unknown, unknown> {
-    const resource = resolveStore(
-      channel,
-      ctx,
-      "channel schema"
-    ) as PubSubChannelResource<unknown, unknown>;
-    return id === undefined ? resource : resource.at(id);
+  const query: Record<string, unknown> = {};
+  for (const [name, schema] of bound) {
+    query[name] = resolve(schema, `schema.${name}`);
   }
 
-  function buildQuery(): QueryRegistry<TSchema> {
-    const registry: Record<string, unknown> = {};
-    const schema = options.schema;
-    if (schema) {
-      for (const name of Object.keys(schema)) {
-        const value = (schema as Record<string, unknown>)[name];
-        // The store binding is what makes an export a benni schema, not a
-        // `kind` property: Valibot stamps `kind` on every schema and ArkType
-        // on every type(), and both are ordinary co-exports of a schema module
-        // (that is how `json(validator)` is used), so claiming every
-        // kind-bearing object would kill benni() at bind time on a module that
-        // is perfectly valid.
-        if (
-          (value as Partial<BoundSchema> | null | undefined)?.[STORE] ===
-          undefined
-        ) {
-          // A copy of a real schema keeps its kind but drops the
-          // non-enumerable binding. That one must still fail here, at bind
-          // time, naming the export, rather than at first call.
-          if (
-            SCHEMA_KINDS.has(
-              (value as { readonly kind?: unknown } | null)?.kind
-            )
-          ) {
-            resolveStore(value, ctx, `schema.${name}`);
-          }
-          continue;
-        }
-        registry[name] = resolveStore(value, ctx, `schema.${name}`);
-      }
-    }
-    return registry as QueryRegistry<TSchema>;
-  }
-
-  // Typed as the everything-capable handle: the implementation always has
-  // every member, with the runtime guards as the backstop. The return type is
-  // what narrows it to what `TClient` can do.
-  const handle: BenniBase<TSchema, FullRedisClient> & BenniSessions = {
+  // Typed as the everything-capable handle over an open schema: the
+  // implementation always has every member, with the runtime guards as the
+  // backstop. The return type is what narrows it to `TSchema` and to what
+  // `TClient` can do.
+  const handle: BenniBase<BenniSchema, FullRedisClient> &
+    BenniSessions<BenniSchema> = {
     schema: options.schema,
     raw: client as FullRedisClient,
-    ...accessors,
-    query: buildQuery(),
+    query,
+    store: ((schema: unknown) =>
+      resolve(schema, "redis.store() schema")) as BenniBase<
+      BenniSchema,
+      FullRedisClient
+    >["store"],
     scan: {
       keys(scanOptions) {
         return scanKeys(client, scanOptions);
@@ -1223,12 +1106,6 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
       }
     },
     pubsub: {
-      channel: pubsubChannel as BenniPubSub<FullRedisClient>["channel"],
-      pattern<TOutput>(pattern: PubSubPattern<TOutput>) {
-        return resolveStore(pattern, ctx, "pattern schema") as ReturnType<
-          typeof createPatternResource<TOutput>
-        >;
-      },
       /**
        * Peeks rather than resolves: the hub is created on first subscribe, so
        * closing a handle that never subscribed must not create one (and must
@@ -1246,28 +1123,54 @@ function createBenni<TSchema extends BenniSchema, TClient extends RedisClient>(
     multi() {
       return createTransaction(client, ctx.assertSameSlot);
     },
-    script(schema) {
-      return resolveStore(schema, ctx, "script schema") as ReturnType<
-        typeof createScriptResource<
-          (typeof schema)["name"],
-          (typeof schema)["keys"],
-          (typeof schema)["args"],
-          never
-        >
-      >;
-    },
     close,
-    [Symbol.asyncDispose]: close
+    [Symbol.asyncDispose]: () => close()
   };
   return handle as unknown as Benni<TSchema, TClient>;
 }
 
 /**
+ * The benni schemas a bound module exports, as `[exportName, schema]` pairs.
+ *
+ * The store binding is what makes an export a benni schema, not a `kind`
+ * property: Valibot stamps `kind` on every schema and ArkType on every
+ * type(), and both are ordinary co-exports of a schema module (that is how
+ * `json(validator)` is used), so claiming every kind-bearing object would
+ * kill benni() at bind time on a module that is perfectly valid. A copy of a
+ * real schema keeps its kind but drops the non-enumerable binding; that one
+ * must still fail here, at bind time, naming the export, rather than at first
+ * call.
+ */
+function boundSchemas(
+  schema: BenniSchema | undefined,
+  ctx: StoreContext
+): Array<readonly [string, BoundSchema]> {
+  const found: Array<readonly [string, BoundSchema]> = [];
+  if (!schema) return found;
+  for (const name of Object.keys(schema)) {
+    const value = schema[name];
+    if (
+      (value as Partial<BoundSchema> | null | undefined)?.[STORE] === undefined
+    ) {
+      if (
+        SCHEMA_KINDS.has((value as { readonly kind?: unknown } | null)?.kind)
+      ) {
+        // Throws, naming the export.
+        resolveStore(value, ctx, `schema.${name}`);
+      }
+      continue;
+    }
+    found.push([name, value as BoundSchema]);
+  }
+  return found;
+}
+
+/**
  * Bind a Redis client to create the typed `redis` handle. Reach every schema
  * the bound `{ schema }` module exports by its export name through
- * `redis.query` (dispatched on each schema's `kind`), or address a store
- * directly by kind — `redis.hash(schema)`, `redis.zset(schema)`,
- * `redis.scan.*`, `redis.session()`.
+ * `redis.query` (dispatched on each schema's `kind`); a schema declared
+ * elsewhere goes through `redis.store(schema)`, which returns the same
+ * resource.
  *
  * The adapter returns its client synchronously and connects on the first
  * command, so this needs no top-level `await` and opens nothing at import.

@@ -7,14 +7,12 @@ import type {
 } from "../src/core/index.js";
 import {
   codecs,
-  createCounterStore,
   createHashStore,
   createKeyValueStore,
   createListStore,
   createPubSubPublisher,
   createSetStore,
   createSortedSetStore,
-  createStringStore,
   describeReply,
   ReplyShapeError,
   ValidationError
@@ -27,6 +25,7 @@ import {
 } from "../src/core/pubsub.js";
 import { defineSet } from "../src/core/set.js";
 import { defineSortedSet } from "../src/core/sorted-set.js";
+import { kvResource } from "./fake-client.js";
 
 describe("codec soundness and typed errors", () => {
   it("number() decode surfaces a ReplyShapeError carrying the value", () => {
@@ -67,7 +66,7 @@ describe("codec soundness and typed errors", () => {
 
   it("store decode errors are ReplyShapeError and name the reply", async () => {
     const counters = defineKeyspace("counter", codecs.number());
-    const store = createCounterStore(fakeClient([], ["x"]), counters);
+    const store = kvResource(fakeClient([], ["x"]), counters);
     const error = await store.incr("42").catch((caught) => caught);
     expect(error).toBeInstanceOf(ReplyShapeError);
     expect((error as Error).message).toContain(
@@ -235,10 +234,10 @@ describe("createKeyValueStore", () => {
   });
 });
 
-describe("createCounterStore", () => {
+describe("counter commands on a number() kv", () => {
   it("supports typed INCR, INCRBY, DECR, and DECRBY", async () => {
     const commands: RedisCommand[] = [];
-    const counters = createCounterStore(
+    const counters = kvResource(
       fakeClient(commands, [1, 6, 5, 3]),
       defineKeyspace("counter", codecs.number())
     );
@@ -260,21 +259,21 @@ describe("createCounterStore", () => {
     const keyspace = defineKeyspace("counter", codecs.number());
 
     await expect(
-      createCounterStore(fakeClient([], ["1"]), keyspace).incr("hits")
+      kvResource(fakeClient([], ["1"]), keyspace).incr("hits")
     ).rejects.toThrow(TypeError);
     await expect(
-      createCounterStore(fakeClient([], [1]), keyspace).incrby("hits", 1.5)
+      kvResource(fakeClient([], [1]), keyspace).incrby("hits", 1.5)
     ).rejects.toThrow(TypeError);
     await expect(
-      createCounterStore(fakeClient([], [1]), keyspace).decrby("hits", 1.5)
+      kvResource(fakeClient([], [1]), keyspace).decrby("hits", 1.5)
     ).rejects.toThrow(TypeError);
   });
 });
 
-describe("createStringStore", () => {
+describe("string commands on a string() kv", () => {
   it("supports typed APPEND, GETRANGE, SETRANGE, STRLEN, and GETEX", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(
+    const strings = kvResource(
       fakeClient(commands, [5, "hello", 11, 11, "hello world"]),
       defineKeyspace("text", codecs.string())
     );
@@ -295,7 +294,7 @@ describe("createStringStore", () => {
   });
 
   it("returns null for missing GETEX values", async () => {
-    const strings = createStringStore(
+    const strings = kvResource(
       fakeClient([], [null]),
       defineKeyspace("text", codecs.string())
     );
@@ -307,36 +306,33 @@ describe("createStringStore", () => {
     const strings = defineKeyspace("text", codecs.string());
 
     await expect(
-      createStringStore(fakeClient([], ["5"]), strings).append(
-        "greeting",
-        "hello"
-      )
+      kvResource(fakeClient([], ["5"]), strings).append("greeting", "hello")
     ).rejects.toThrow(TypeError);
     await expect(
-      createStringStore(fakeClient([], [1]), strings).getrange("greeting", 0, 4)
+      kvResource(fakeClient([], [1]), strings).getrange("greeting", 0, 4)
     ).rejects.toThrow(TypeError);
     await expect(
-      createStringStore(fakeClient([], ["11"]), strings).setrange(
+      kvResource(fakeClient([], ["11"]), strings).setrange(
         "greeting",
         0,
         "hello"
       )
     ).rejects.toThrow(TypeError);
     await expect(
-      createStringStore(fakeClient([], [11]), strings).setrange(
+      kvResource(fakeClient([], [11]), strings).setrange(
         "greeting",
         -1,
         "hello"
       )
     ).rejects.toThrow(TypeError);
     await expect(
-      createStringStore(fakeClient([], ["11"]), strings).strlen("greeting")
+      kvResource(fakeClient([], ["11"]), strings).strlen("greeting")
     ).rejects.toThrow(TypeError);
     await expect(
-      createStringStore(fakeClient([], [1]), strings).getex("greeting", 60)
+      kvResource(fakeClient([], [1]), strings).getex("greeting", 60)
     ).rejects.toThrow(TypeError);
     await expect(
-      createStringStore(fakeClient([], ["hello"]), strings).getex("greeting", 0)
+      kvResource(fakeClient([], ["hello"]), strings).getex("greeting", 0)
     ).rejects.toThrow(TypeError);
   });
 });

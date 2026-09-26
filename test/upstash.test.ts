@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
@@ -263,18 +263,40 @@ describe("upstash", () => {
     await expect(client.send(["SET", "k", "v"])).resolves.toBe("OK");
   });
 
-  it("rejects a missing url, token, or a bad timeoutMs at construction", () => {
-    const fetch = fakeFetch(() => ({ body: { result: null } })).fn;
-    expect(() => upstash({ url: "", token: "tok", fetch })).toThrow(
-      /requires a url/
+  it("builds with a missing url or token and refuses them on first use", async () => {
+    // What `next build` does to a cache-handler.mjs or lib/redis.ts that
+    // builds its client at top level from env vars the build never sets.
+    const { fn: fetch, calls } = fakeFetch(() => ({ body: { result: null } }));
+    const onError = vi.fn();
+    const noUrl = upstash({
+      url: process.env.BENNI_UNSET_URL as string,
+      token: "tok",
+      fetch,
+      onError
+    });
+    const noToken = upstash({
+      url: "https://x",
+      token: undefined as unknown as string,
+      fetch
+    });
+    const empty = upstash({ url: "", token: "", fetch });
+
+    await expect(noUrl.send(["PING"])).rejects.toThrow(
+      "upstash() requires a url (the REST endpoint)"
     );
-    expect(() =>
-      upstash({
-        url: "https://x",
-        token: undefined as unknown as string,
-        fetch
-      })
-    ).toThrow(/requires a token/);
+    await expect(noUrl.pipeline([["PING"]])).rejects.toThrow(/requires a url/);
+    await expect(noToken.transaction([["PING"]])).rejects.toThrow(
+      "upstash() requires a token (the REST bearer token)"
+    );
+    await expect(empty.send(["PING"])).rejects.toThrow(/requires a url/);
+    await expect(noUrl.close()).resolves.toBeUndefined();
+    expect(calls).toEqual([]);
+    // A configuration error, not a failure in transit.
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bad timeoutMs at construction", () => {
+    const fetch = fakeFetch(() => ({ body: { result: null } })).fn;
     for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() =>
         upstash({ url: "https://x", token: "tok", fetch, timeoutMs })

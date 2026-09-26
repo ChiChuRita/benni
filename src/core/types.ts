@@ -264,16 +264,46 @@ export interface Codec<TInput, TOutput = TInput> {
   decode(stored: string): TOutput;
 }
 
+/**
+ * The `number()` codec. Its `format` says the stored form is the decimal
+ * string Redis's own INCR family reads and writes, so a kv store over it
+ * carries `incr`, `incrby`, `decr`, `decrby`, and `incrbyfloat`.
+ */
+export interface NumberCodec extends Codec<number> {
+  readonly format: "number";
+}
+
+/**
+ * The `string()` codec. Its `format` says the value is stored as-is, so a kv
+ * store over it carries the commands that edit a string in place: `append`,
+ * `getrange`, `setrange`, `strlen`, and `lcs`.
+ */
+export interface StringCodec extends Codec<string> {
+  readonly format: "string";
+}
+
+/**
+ * A keyspace: one Redis string per id. `TFormat` is the codec's `format`
+ * (`"number"` for `number()`, `"string"` for `string()`, `undefined` for every
+ * other codec), which decides the extra commands its store carries. It is
+ * read off the codec rather than off the value type on purpose: a
+ * `json<number>()` value is a number too, but only `number()` promises the
+ * plain decimal INCR works on, and APPEND on a `json<string>()` value would
+ * corrupt the JSON.
+ */
 export type Keyspace<
   TInput,
   TOutput = TInput,
   TPrefix extends string = string,
   TId extends RedisKeyPart = RedisKeyPart,
-  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
+  THashTag extends HashTagLayout | undefined = HashTagLayout | undefined,
+  TFormat = unknown
 > = InferAnchors<TInput, TOutput> & {
   readonly kind: "kv";
   readonly prefix: TPrefix;
   readonly hashTag?: THashTag;
+  /** The codec's `format`, present only when the codec has one. */
+  readonly format?: TFormat;
   key<TActualId extends TId>(
     id: TActualId
   ): RedisKey<TPrefix, TActualId, THashTag>;

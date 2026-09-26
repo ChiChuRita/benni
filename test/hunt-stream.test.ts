@@ -23,7 +23,7 @@ const events = defineStream("events", {
 // Built with fromEntries, not a literal: `{ __proto__: ... }` in an object
 // literal sets the prototype instead of declaring a field, so the only way to
 // reach this shape is a fields object assembled from data.
-const protoFields = Object.fromEntries([
+const protoFields = Object.fromEntries<Codec<string>>([
   ["__proto__", codecs.string()],
   ["ok", codecs.string()]
 ]) as Record<"__proto__" | "ok", Codec<string>>;

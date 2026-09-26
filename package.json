@@ -63,10 +63,6 @@
       "types": "./dist/hono/index.d.mts",
       "import": "./dist/hono/index.mjs"
     },
-    "./primitives": {
-      "types": "./dist/primitives/index.d.mts",
-      "import": "./dist/primitives/index.mjs"
-    },
     "./zod": {
       "types": "./dist/zod/index.d.mts",
       "import": "./dist/zod/index.mjs"

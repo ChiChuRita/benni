@@ -28,7 +28,7 @@ export const rateLimit = script("rate-limit", {
 });
 ```
 
-Add it to your bound `{ schema }` to reach it as `redis.query.rateLimit`, or call it directly with `redis.script(rateLimit)`.
+Add it to your bound `{ schema }` to reach it as `redis.query.rateLimit`, or reach it without binding with `redis.store(rateLimit)`.
 
 ## Check a limit
 
@@ -37,7 +37,7 @@ const WINDOW_SECONDS = 60;
 const MAX_PER_WINDOW = 100;
 
 async function allow(userId: string): Promise<boolean> {
-  const count = await redis.script(rateLimit).run({
+  const count = await redis.query.rateLimit.run({
     keys: { counter: `ratelimit:${userId}` },
     args: { windowSeconds: WINDOW_SECONDS }
   });
@@ -46,6 +46,15 @@ async function allow(userId: string): Promise<boolean> {
 ```
 
 `INCR` returns the running count for the window. The first call in a window creates the key and arms its TTL; the window resets when the key expires, so there is nothing to clean up.
+
+The same fixed window needs no script of your own: a `kv` over `number()` has `incr`, and `incr(id, { ttlMs })` increments and sets the expiry when the key has none, in one atomic step.
+
+```ts
+export const hits = kv("ratelimit", number()); // schema.ts
+
+const count = await redis.query.hits.incr(userId, { ttlMs: WINDOW_SECONDS * 1000 });
+const allowed = count <= MAX_PER_WINDOW;
+```
 
 ## Use it in a request handler
 
@@ -63,7 +72,7 @@ async function handle(request: Request, userId: string): Promise<Response> {
 `script()` decodes a single scalar, so the counter comes back as a number. Derive the rest on the client and surface it in headers:
 
 ```ts
-const count = await redis.script(rateLimit).run({
+const count = await redis.query.rateLimit.run({
   keys: { counter: `ratelimit:${userId}` },
   args: { windowSeconds: WINDOW_SECONDS }
 });

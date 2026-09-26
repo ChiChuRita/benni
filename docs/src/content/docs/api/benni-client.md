@@ -1,6 +1,6 @@
 ---
 title: "Benni Client"
-description: "Create a Benni client by passing a Redis adapter to benni(), then reach every schema through typed data-structure accessors."
+description: "Create a Benni client by passing a Redis adapter to benni(), then reach every schema by name through redis.query."
 ---
 
 Create a Benni client by passing a Redis adapter to `benni`. It takes one config object:
@@ -24,9 +24,9 @@ Adapters return their client synchronously and connect on the first command, so 
 | `onPubSubError` | Called when a Pub/Sub handler throws (see [`redis.pubsub`](#redispubsub)). Without it, the error is rethrown asynchronously rather than swallowed. |
 | `cluster` | Check, before sending, that every key in a multi-key command hashes to one Redis Cluster slot, throwing `CrossSlotError` when it does not. Off by default. See [Redis Cluster](/benni/advanced/cluster/). |
 
-Everything else a client can do follows from the adapter you pass in, and the handle's type says so: over `benni/upstash` there is no `redis.session()`, `redis.watch()`, or `subscribe()`, and over `benni/bun` no `redis.pubsub.pattern()`. See [What the client can do](#what-the-client-can-do).
+Everything else a client can do follows from the adapter you pass in, and the handle's type says so: over `benni/upstash` there is no `redis.session()`, `redis.watch()`, or `subscribe()`, and over `benni/bun` no pattern subscriptions in `redis.query`. See [What the client can do](#what-the-client-can-do).
 
-Every data-structure accessor exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
+Every data-structure resource exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
 
 ## Closing
 
@@ -43,13 +43,17 @@ await using redis = benni({ client: node({ url }), schema });
 
 It closes only what the handle opened. A handle built over another handle leaves that handle's client open, and an ioredis client you adopted with `ioredis(instance)` is never closed: whoever created it owns it. `close()` is idempotent, and every command or lease issued after it rejects instead of reopening a connection nothing would close. `redis.raw.close()` is the same call.
 
-A worker's own `stop()` accepts a `timeoutMs`; `redis.close()` waits for in-flight jobs without one, so stop long-running workers yourself first if shutdown has a deadline.
+Without options, `redis.close()` waits for in-flight jobs however long they take. Pass `timeoutMs` when shutdown has a deadline: it is forwarded to every worker's `stop({ timeoutMs })`, so once it elapses the jobs still running are aborted and handed back to the queue for another worker.
+
+```ts
+process.on("SIGTERM", () => redis.close({ timeoutMs: 10_000 }));
+```
 
 ## What the client can do
 
 Each adapter returns a client type that says which optional capabilities it has, and `benni()` carries that type into the handle:
 
-| Adapter | Client type | `session()` / `watch()` | `subscribe()` | `pubsub.pattern()` |
+| Adapter | Client type | `session()` / `watch()` | `subscribe()` | pattern subscriptions |
 | --- | --- | --- | --- | --- |
 | `benni/node` | `FullRedisClient` | yes | yes | yes |
 | `benni/ioredis` | `FullRedisClient` | yes | yes | yes |
@@ -81,7 +85,7 @@ declare module "benni" {
 import type { Benni } from "benni";
 
 export function makeHandlers(redis: Benni) {
-  // redis.query.users, redis.hash(...), ... all fully typed
+  // redis.query.users, redis.store(...), ... all fully typed
 }
 ```
 
@@ -108,7 +112,7 @@ const user = await redis.query.users.hget("42");
 await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);
 ```
 
-`redis.query.<name>` returns the same resource as the matching `redis.<kind>(schema)` accessor. It covers the twelve data kinds (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`, pub/sub channels and patterns, and scripts) and the seven primitives (`cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, `budget`):
+It is the one path to every store: the nine data kinds (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`), pub/sub channels and patterns, scripts, and the seven primitives (`cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, `budget`):
 
 ```ts
 await redis.query.userEvents.publish({ id: "42", action: "created" });
@@ -118,48 +122,79 @@ await redis.query.rateLimit.run({ keys: { counter: "user:42" }, args: { limit: 1
 const profile = await redis.query.profiles.get(userId, () => db.load(userId));
 ```
 
-Counter and string stores are not separate kinds, so a `kv` schema always maps to the `kv` resource. `redis.query.<name>` on a `kv(prefix, number())` therefore has `get` / `set` / `del` but no `incr`: reach for `redis.counter(schema)` for the counter commands and `redis.string(schema)` for the string ones. Both work on the same keys as the `kv` resource, so mixing them on one schema is fine.
-
-```ts
-await redis.query.clicks.set("home", 0);          // kv resource
-await redis.counter(clicks).incr("home");         // counter view, not on redis.query
-```
-
 Non-schema exports (types, helpers) are dropped, and `redis.query` is `{}` when no schema is bound. See [Schema Registry](/benni/core-concepts/schema-registry/).
 
-## `redis.kv(schema)`
+## `redis.store`
 
-Typed Redis string values:
+The same resource `redis.query` would give, for a schema that is not in the bound module: one a library declares for itself, or any schema on a handle built without `schema`. For a schema that is in the module, it returns the very object `redis.query` holds, and a second call returns the same one again.
 
 ```ts
-await redis.kv(profiles).set("42", profile, { ttlSeconds: 3600 });
-const loaded = await redis.kv(profiles).get("42");
-await redis.kv(profiles).del("42");
+import { kv, lock, number } from "benni/schema";
+
+const flags = redis.store(kv("flag", number()));
+await flags.incr("new-dashboard");
+
+// Code that holds a client and no schema module.
+const locks = benni({ client }).store(lock("order", { ttlMs: 10_000 }));
 ```
 
-`set` returns `Promise<void>` for plain writes. With `{ nx: true }` (only create) or `{ xx: true }` (only update) it returns `Promise<boolean>` indicating whether the write happened:
+Over a client that cannot pattern-subscribe, a `pattern` schema is a compile error here, as it is absent from `redis.query`.
+
+## Key-value stores
+
+Typed Redis string values, from a `kv` schema:
 
 ```ts
-const created = await redis.kv(profiles).set("42", profile, { nx: true });
-const updated = await redis.kv(profiles).set("42", profile, { xx: true });
+await redis.query.profiles.set("42", profile, { ttlSeconds: 3600 });
+const loaded = await redis.query.profiles.get("42");
+const refreshed = await redis.query.profiles.getex("42", 3600); // read, reset the TTL
+await redis.query.profiles.del("42");
 ```
 
-## `redis.string(schema)`
-
-String operations for `kv` schemas with a `string()` codec:
+`set` returns `Promise<void>` for plain writes. With `nx` (only create) or `xx` (only update) it returns `Promise<boolean>` indicating whether the write happened, and that holds for a computed `nx: someBoolean` too:
 
 ```ts
-const drafts = kv("draft", string());
+const created = await redis.query.profiles.set("42", profile, { nx: true });
+const updated = await redis.query.profiles.set("42", profile, { xx: true });
+```
 
-await redis.string(drafts).append("42", " more text");
-const slice = await redis.string(drafts).getrange("42", 0, 4);
-const length = await redis.string(drafts).strlen("42");
-const value = await redis.string(drafts).getex("42", 3600);
+The codec decides what else a `kv` store can do. A `number()` kv carries the counter commands and a `string()` kv the string commands, on the same `redis.query.<name>`; a kv over any other codec (`json`, `boolean`, `enumOf`, …) carries neither, because Redis's INCR and APPEND would corrupt what it stores.
+
+### Counters: `number()`
+
+```ts
+// schema.ts
+export const hits = kv("hits", number());
+
+const total = await redis.query.hits.incr("42");
+await redis.query.hits.incrby("42", 10);
+await redis.query.hits.decrby("42", 3);
+await redis.query.hits.incrbyfloat("42", 0.5);
+```
+
+`incr` takes `{ ttlMs }` to give the key an expiry in the same atomic step. The expiry only lands on a key that has none, so the increment that creates the counter starts the window and later increments leave it running:
+
+```ts
+const attempts = await redis.query.loginAttempts.incr(ip, { ttlMs: 60_000 });
+if (attempts > 5) return tooManyAttempts();
+```
+
+`number()` stores fractions too, and Redis refuses the integer commands on one of those with a `RedisServerError`; `incrbyfloat` works on both. Redis counters are 64-bit. Once a counter passes `Number.MAX_SAFE_INTEGER` its value can no longer be represented exactly as a JavaScript number, so the integer commands throw a `ReplyShapeError` rather than resolve a rounded one. The same applies to `BITFIELD` reads of the wide encodings (`i64`, `u63`).
+
+### Strings: `string()`
+
+```ts
+// schema.ts
+export const drafts = kv("draft", string());
+
+await redis.query.drafts.append("42", " more text");
+const slice = await redis.query.drafts.getrange("42", 0, 4);
+const length = await redis.query.drafts.strlen("42");
 
 // LCS: longest common subsequence of two keys in the same schema.
-const sub = await redis.string(drafts).lcs("42", "43"); // the subsequence string
-const len = await redis.string(drafts).lcs("42", "43", { len: true }); // its length
-const idx = await redis.string(drafts).lcs("42", "43", {
+const sub = await redis.query.drafts.lcs("42", "43"); // the subsequence string
+const len = await redis.query.drafts.lcs("42", "43", { len: true }); // its length
+const idx = await redis.query.drafts.lcs("42", "43", {
   idx: true,
   withMatchLen: true
 });
@@ -173,62 +208,45 @@ boundary that falls inside a multi-byte character decodes to the replacement
 character, so read the whole value with `getrange(id, 0, -1)`, or split your
 chunks on byte boundaries you computed yourself.
 
-## `redis.counter(schema)`
-
-Atomic counters for `kv` schemas with a `number()` codec:
-
-```ts
-const hits = kv("hits", number());
-
-const total = await redis.counter(hits).incr("42");
-await redis.counter(hits).incrby("42", 10);
-await redis.counter(hits).decrby("42", 3);
-```
-
-Redis counters are 64-bit. Once a counter passes `Number.MAX_SAFE_INTEGER` its
-value can no longer be represented exactly as a JavaScript number, so the
-integer commands throw a `ReplyShapeError` rather than resolve a rounded one.
-The same applies to `BITFIELD` reads of the wide encodings (`i64`, `u63`).
-
-## `redis.hash(schema)`
+## Hashes
 
 Typed Redis hashes:
 
 ```ts
-await redis.hash(users).hset("42", { name: "Ada", score: 10 });
-await redis.hash(users).hset("42", "score", 11);
-const user = await redis.hash(users).hget("42");
-const field = await redis.hash(users).hrandfield("42");
+await redis.query.users.hset("42", { name: "Ada", score: 10 });
+await redis.query.users.hset("42", "score", 11);
+const user = await redis.query.users.hget("42");
+const field = await redis.query.users.hrandfield("42");
 ```
 
-## `redis.set(schema)`
+## Sets
 
 Typed Redis sets:
 
 ```ts
-await redis.set(teamMembers).sadd("engineering", ["ada"]);
-const members = await redis.set(teamMembers).smembers("engineering");
+await redis.query.teamMembers.sadd("engineering", ["ada"]);
+const members = await redis.query.teamMembers.smembers("engineering");
 ```
 
-## `redis.list(schema)`
+## Lists
 
 Typed Redis lists:
 
 ```ts
-await redis.list(events).rpush("user:42", [event]);
-const recent = await redis.list(events).lrange("user:42", 0, 9);
+await redis.query.events.rpush("user:42", [event]);
+const recent = await redis.query.events.lrange("user:42", 0, 9);
 ```
 
-## `redis.zset(schema)`
+## Sorted Sets
 
 Typed Redis sorted sets:
 
 ```ts
-await redis.zset(leaderboards).zadd("weekly", [
+await redis.query.leaderboards.zadd("weekly", [
   { member: "user:42", score: 100 }
 ]);
 
-const top = await redis.zset(leaderboards).zrange("weekly", {
+const top = await redis.query.leaderboards.zrange("weekly", {
   start: 0,
   stop: 9,
   rev: true
@@ -238,7 +256,7 @@ const top = await redis.zset(leaderboards).zrange("weekly", {
 When members share a score, `zrange` with `{ byLex: true }` ranges over them lexically, as do `zlexcount`, `zremrangebylex`, and `zrangestore` with `{ byLex: true }`:
 
 ```ts
-const names = await redis.zset(nameIndex).zrange("directory", {
+const names = await redis.query.nameIndex.zrange("directory", {
   byLex: true,
   min: { value: "ada" },
   max: "+"
@@ -247,59 +265,59 @@ const names = await redis.zset(nameIndex).zrange("directory", {
 
 See [Lexicographic Ranges](/benni/data-structures/sorted-sets/#lexicographic-ranges).
 
-## `redis.hll(schema)`
+## HyperLogLog
 
 Typed Redis HyperLogLog values:
 
 ```ts
-await redis.hll(pageViews).pfadd("2026-07-04", ["user:42"]);
-const count = await redis.hll(pageViews).pfcount("2026-07-04");
+await redis.query.pageViews.pfadd("2026-07-04", ["user:42"]);
+const count = await redis.query.pageViews.pfcount("2026-07-04");
 ```
 
-## `redis.stream(schema)`
+## Streams
 
 Typed Redis streams:
 
 ```ts
-await redis.stream(activity).xadd("42", { action: "login", points: 5 });
-const entries = await redis.stream(activity).xrange("42", { count: 10 });
+await redis.query.activity.xadd("42", { action: "login", points: 5 });
+const entries = await redis.query.activity.xrange("42", { count: 10 });
 ```
 
 `.group(name)` opens a consumer group on the stream for at-least-once delivery across workers:
 
 ```ts
-const group = redis.stream(activity).group("processors");
+const group = redis.query.activity.group("processors");
 await group.create("42", { from: "start" });
 const batch = await group.consumer("w-1").xreadgroup("42", { count: 10 });
 ```
 
 See [Consumer Groups](/benni/data-structures/consumer-groups/).
 
-## `redis.bitmap(schema)`
+## Bitmaps
 
 Typed Redis bitmaps:
 
 ```ts
-await redis.bitmap(dailyActive).setbit("2026-07-04", 42, true);
-const total = await redis.bitmap(dailyActive).bitcount("2026-07-04");
+await redis.query.dailyActive.setbit("2026-07-04", 42, true);
+const total = await redis.query.dailyActive.bitcount("2026-07-04");
 
 // Packed integer fields via BITFIELD; the result tuple is typed to the chain.
-const [visits] = await redis.bitmap(dailyActive)
+const [visits] = await redis.query.dailyActive
   .bitfield("2026-07-04")
   .incrby("u32", 0, 1)
   .exec();
 ```
 
-## `redis.geo(schema)`
+## Geo
 
 Typed Redis geospatial indexes:
 
 ```ts
-await redis.geo(stores).geoadd("berlin", [
+await redis.query.stores.geoadd("berlin", [
   { member: "store:1", longitude: 13.405, latitude: 52.52 }
 ]);
 
-const nearby = await redis.geo(stores).geosearch("berlin", {
+const nearby = await redis.query.stores.geosearch("berlin", {
   from: { longitude: 13.4, latitude: 52.52 },
   by: { radius: 5, unit: "km" }
 });
@@ -322,12 +340,12 @@ for await (const entry of redis.scan.zset(leaderboards, "global")) { /* { member
 
 See [Scans](/benni/advanced/scans/) for options and iteration guarantees.
 
-## `redis.pubsub`
+## Pub/Sub
 
-Typed publish and subscribe. `PUBLISH` is a stateless command, so publishing rides the bound client and works on every adapter; it returns the number of subscribers Redis delivered to:
+Typed publish and subscribe, through the channel and pattern schemas in `redis.query`. `PUBLISH` is a stateless command, so publishing rides the bound client and works on every adapter; it returns the number of subscribers Redis delivered to:
 
 ```ts
-const receivers = await redis.pubsub.channel(userEvents).publish({
+const receivers = await redis.query.userEvents.publish({
   id: "42",
   action: "created"
 });
@@ -336,19 +354,25 @@ const receivers = await redis.pubsub.channel(userEvents).publish({
 `subscribe` takes just a handler and returns a subscription with `unsubscribe()`. The first subscription lazily leases one subscriber connection from the client and every channel and pattern is multiplexed onto it; it closes when the last subscription goes away:
 
 ```ts
-const subscription = await redis.pubsub.channel(userEvents).subscribe((message) => {
+const subscription = await redis.query.userEvents.subscribe((message) => {
   // message is the channel's decoded output type
 });
 
 await subscription.unsubscribe();
 ```
 
-`redis.pubsub.pattern(...).subscribe(handler)` receives every matching channel, and the handler's second argument is the concrete channel name:
+A per-entity channel `name:id` is `.at(id)` on the channel resource:
 
 ```ts
-const patternSubscription = await redis.pubsub
-  .pattern(userEventPattern)
-  .subscribe((message, channelName) => { /* ... */ });
+await redis.query.roomEvents.at("42").publish({ text: "hi" });
+```
+
+A pattern schema's `subscribe(handler)` receives every matching channel, and the handler's second argument is the concrete channel name:
+
+```ts
+const patternSubscription = await redis.query.userEventPattern.subscribe(
+  (message, channelName) => { /* ... */ }
+);
 ```
 
 `stream(options?)` is the async-iterator form of the same subscription. A channel stream yields decoded messages; a pattern stream yields `{ message, channel }`. Aborting `options.signal` (or leaving the loop) ends iteration and releases the subscription:
@@ -356,9 +380,9 @@ const patternSubscription = await redis.pubsub
 ```ts
 const controller = new AbortController();
 
-for await (const message of redis.pubsub
-  .channel(userEvents)
-  .stream({ signal: controller.signal })) {
+for await (const message of redis.query.userEvents.stream({
+  signal: controller.signal
+})) {
   // ...
 }
 ```
@@ -389,13 +413,13 @@ Lease a dedicated connection for blocking commands and `WATCH` transactions. The
 
 ```ts
 const job = await redis.session(async (s) => {
-  return s.list(jobs).blpop("pending", { timeoutSeconds: 5 });
+  return s.query.jobs.blpop("pending", { timeoutSeconds: 5 });
 });
 
 await using session = await redis.session();
 ```
 
-A session carries the same store accessors as the Benni handle, bound to its private connection, where `list`, `zset`, and `stream` are supersets that add the blocking variants and the blocking consumer-group read. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. A handle over a client without sessions (`benni/upstash`) has no `session()`; forced through, it throws `UnsupportedCapabilityError`. See [Sessions](/benni/advanced/sessions/), [Blocking Operations](/benni/advanced/blocking-operations/), and [Consumer Groups](/benni/data-structures/consumer-groups/).
+A session has its own `s.query` and `s.store(schema)`, typed against the bound module: the data stores, bound to its private connection, where lists, sorted sets, and streams add the blocking variants and the blocking consumer-group read. Primitives, channels, and scripts stay on the handle. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. A handle over a client without sessions (`benni/upstash`) has no `session()`; forced through, it throws `UnsupportedCapabilityError`. See [Sessions](/benni/advanced/sessions/), [Blocking Operations](/benni/advanced/blocking-operations/), and [Consumer Groups](/benni/data-structures/consumer-groups/).
 
 ## `redis.watch`
 
@@ -405,7 +429,7 @@ Retrying optimistic transaction (`WATCH`/`MULTI`/`EXEC`), discoverable next to `
 const result = await redis.watch(
   views.key("home"),
   async (s) => {
-    const current = (await s.kv(views).get("home")) ?? 0;
+    const current = (await s.query.views.get("home")) ?? 0;
     return s.multi().add(["SET", views.key("home"), String(current + 1)], okReply);
   },
   { attempts: 5, onAbort: ({ attempt }) => metrics.increment("cas.conflict", { attempt }) }

@@ -14,7 +14,7 @@ Four questions cover almost every case:
 | I passed bad input, nothing was sent | `ValidationError` | `benni` |
 | Redis answered with an error reply | `RedisServerError` | `benni` |
 | A reply or stored value was the wrong shape | `ReplyShapeError` | `benni` |
-| A primitive could not give me what I asked for | the primitive's own class | `benni/primitives` |
+| A primitive could not give me what I asked for | the primitive's own class | `benni` |
 
 The first three are the important distinction, and they are mutually exclusive:
 
@@ -76,7 +76,7 @@ Extends `TypeError`. Thrown when the client behind the call does not implement t
 
 Every built-in adapter implements all three except `benni/upstash`, which is stateless HTTP and so has no `session` or `subscriber`, and `benni/bun`, whose subscriber has no pattern support.
 
-You rarely meet this class in type-checked code: each adapter's client type says which capabilities it has, and a handle over a client that lacks one does not offer the members that need it (no `session()` over Upstash, no `redis.pubsub.pattern()` over Bun), so the mistake is a compile error. This class is the runtime backstop, for untyped code, a cast, or a hand-written client whose type claims more than it implements.
+You rarely meet this class in type-checked code: each adapter's client type says which capabilities it has, and a handle over a client that lacks one does not offer the members that need it (no `session()` over Upstash, no pattern subscriptions over Bun), so the mistake is a compile error. This class is the runtime backstop, for untyped code, a cast, or a hand-written client whose type claims more than it implements.
 
 The message is the same text a connected client's own guard uses, and `TypeError` is still the base class, so `instanceof TypeError` and message matching that predate this class keep working.
 
@@ -197,7 +197,7 @@ Exported from **`benni/cluster`**, not from the root entrypoint: naming it from 
 
 ## Primitive Errors
 
-Exported from `benni/primitives`.
+Exported from `benni`, like every other class on this page. They live in a module that holds only the classes, so importing one to `instanceof` it adds the class to a bundle and none of the primitive's Lua or lease logic.
 
 ### Lock
 

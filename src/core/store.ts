@@ -41,10 +41,12 @@ export type StoreContext = {
   readonly assertSameSlot?: SlotGuard;
   /**
    * Register something this handle started that `redis.close()` must stop
-   * (a queue worker); returns the unregister function. Absent outside a
-   * handle, e.g. for a primitive built straight from a client.
+   * (a queue worker), with close()'s `timeoutMs` passed on; returns the
+   * unregister function. Absent outside a handle, e.g. in a session.
    */
-  readonly track?: (running: { stop(): Promise<void> }) => () => void;
+  readonly track?: (running: {
+    stop(options?: { readonly timeoutMs?: number }): Promise<void>;
+  }) => () => void;
   /** Get or create the memoized singleton stored under `key`. */
   shared<T>(key: string, create: () => T): T;
   /** The memoized singleton if it was ever created; never creates one. */
@@ -82,7 +84,7 @@ export function withStore<T extends object>(
 
 /**
  * Carry the schema's own key() type through (not a widened `(id) => string`)
- * so `redis.kv(s).key("42")` keeps the `"prefix:42"` template-literal type the
+ * so `redis.query.profiles.key("42")` keeps the `"prefix:42"` template-literal type the
  * schemas advertise.
  */
 export function withKey<

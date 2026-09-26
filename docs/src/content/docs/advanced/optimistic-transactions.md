@@ -24,7 +24,7 @@ Per attempt the helper opens (or borrows) a session, sends `WATCH keys`, runs yo
 - The body returns `null` → the helper `UNWATCH`es and resolves `null`; you opted out.
 - Attempts run out → the helper throws `WatchRetriesExceededError`.
 
-Read the watched keys through the session (`s.kv(...)`, `s.hash(...)`, …) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/benni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
+Read the watched keys through the session (`s.query.<name>`) so the reads happen on the same connection that holds the `WATCH`. Build the write with `s.multi()`, whose `.add(command, decoder)` extends a position-typed result tuple exactly like [`redis.multi()`](/benni/advanced/transactions/), and whose `exec()` resolves the tuple or `null` on abort.
 
 Everything [`redis.multi()`](/benni/advanced/transactions/#encode-values-with-the-schemas-codec) says about arguments applies here. Encode each value with the schema's own codec, `schema.encode(value)` for a keyspace and `schema.fields.<name>.encode(value)` for a hash field, rather than `String(...)`: the transaction then writes exactly what the typed store reads back, and a wrong type fails at the encode call instead of at some later read. The [decoder you pair with each command is still unchecked](/benni/advanced/transactions/#the-decoder-is-not-checked-against-the-command) against the command string, so keep the usual pairings in mind (`SET` to `okReply`, `INCR` and `HSET` to `numberReply`, `GET` to `stringOrNullReply`).
 
@@ -36,12 +36,12 @@ Cap a counter at a ceiling, retrying if a concurrent writer moves it:
 import { okReply, numberReply, WatchRetriesExceededError } from "benni";
 import { number, kv } from "benni/schema";
 
-const views = kv("views", number());
+export const views = kv("views", number());
 
 const result = await redis.watch(
   views.key("home"),
   async (s) => {
-    const current = (await s.kv(views).get("home")) ?? 0; // read on the watching connection
+    const current = (await s.query.views.get("home")) ?? 0; // read on the watching connection
     if (current >= 1_000_000) return null;                      // opt out -> resolves null
     return s
       .multi()
@@ -68,15 +68,15 @@ Move funds between two accounts atomically, aborting the whole operation if eith
 import { okReply } from "benni";
 import { number, kv } from "benni/schema";
 
-const balances = kv("balance", number());
+export const balances = kv("balance", number());
 
 async function transfer(from: string, to: string, amount: number) {
   return redis.watch(
     [balances.key(from), balances.key(to)], // watch both accounts
     async (s) => {
-      const fromBalance = (await s.kv(balances).get(from)) ?? 0;
+      const fromBalance = (await s.query.balances.get(from)) ?? 0;
       if (fromBalance < amount) return null; // insufficient funds -> resolves null, no retry
-      const toBalance = (await s.kv(balances).get(to)) ?? 0;
+      const toBalance = (await s.query.balances.get(to)) ?? 0;
       return s
         .multi()
         .add(
@@ -100,7 +100,7 @@ if (outcome === null) {
 
 ## The Write Side Is Not Typed The Way Stores Are
 
-Say it plainly, because this is where balance-changing code lives: inside a watched transaction the **reads** go through the typed stores (`s.kv(balances).get(from)` hands back `number | null`), and the **writes** are hand-built command arrays. There is no `s.kv(balances).set(...)` that enrolls in the transaction. The schema still helps on both halves of every argument, and that is the whole of the help you get:
+Say it plainly, because this is where balance-changing code lives: inside a watched transaction the **reads** go through the typed stores (`s.query.balances.get(from)` hands back `number | null`), and the **writes** are hand-built command arrays. There is no `s.query.balances.set(...)` that enrolls in the transaction. The schema still helps on both halves of every argument, and that is the whole of the help you get:
 
 - `balances.key(from)` derives the key, so no key text is written by hand.
 - `balances.encode(value)` encodes it with the same codec the typed store reads back, and `users.fields.score.encode(value)` does it per hash field.
@@ -164,7 +164,7 @@ For a custom loop, drive the primitives on a session directly:
 ```ts
 await using s = await redis.session();
 await s.watch([views.key("home")]);
-const current = (await s.kv(views).get("home")) ?? 0;
+const current = (await s.query.views.get("home")) ?? 0;
 const outcome = await s
   .multi()
   .add(["SET", views.key("home"), views.encode(current + 1)], okReply)

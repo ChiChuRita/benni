@@ -61,7 +61,7 @@ const profiles = kv("profile", json<Profile>());
 Use with:
 
 ```ts
-redis.kv(profiles);
+redis.query.profiles;
 ```
 
 ## Hash
@@ -79,7 +79,7 @@ const users = hash("user", {
 Use with:
 
 ```ts
-redis.hash(users);
+redis.query.users;
 ```
 
 ## Collections
@@ -94,10 +94,10 @@ const pageViews = hll("page-views", string());
 Use with:
 
 ```ts
-redis.set(tags);
-redis.list(events);
-redis.zset(leaderboard);
-redis.hll(pageViews);
+redis.query.tags;
+redis.query.events;
+redis.query.leaderboard;
+redis.query.pageViews;
 ```
 
 ## Stream
@@ -112,7 +112,7 @@ const activity = stream("activity", {
 Use with:
 
 ```ts
-redis.stream(activity);
+redis.query.activity;
 ```
 
 ## Bitmap
@@ -124,7 +124,7 @@ const dailyActive = bitmap("daily-active");
 Bitmaps take no codec; bits are addressed by offset and exposed as booleans. Use with:
 
 ```ts
-redis.bitmap(dailyActive);
+redis.query.dailyActive;
 ```
 
 ## Geo
@@ -136,7 +136,7 @@ const stores = geo("stores", string());
 Use with:
 
 ```ts
-redis.geo(stores);
+redis.query.stores;
 ```
 
 ## Script
@@ -153,7 +153,7 @@ const rateLimit = script("rate-limit", {
 Use with:
 
 ```ts
-redis.script(rateLimit);
+redis.query.rateLimit;
 ```
 
 ## Pub/Sub
@@ -166,6 +166,6 @@ const userEventPattern = pattern("events:user:*", json<UserEvent>());
 Use with:
 
 ```ts
-redis.pubsub.channel(userEvents);
-redis.pubsub.pattern(userEventPattern);
+redis.query.userEvents;
+redis.query.userEventPattern;
 ```

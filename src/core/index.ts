@@ -60,7 +60,11 @@ export {
 export {
   createKeyValueStore,
   createKvResource,
-  type KeyValueSetOptions
+  type KeyValueFormatCommands,
+  type KeyValueGetExOptions,
+  type KeyValueSetOptions,
+  type KeyValueStore,
+  type KvResource
 } from "./key-value.js";
 export {
   createBlockingListOps,

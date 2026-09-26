@@ -1,5 +1,12 @@
+import { type CounterCommands, createCounterCommands } from "./counter.js";
 import { replyShapeError, ValidationError } from "./errors.js";
-import { createKeyLifecycleOps, expectNumber, ttlSeconds } from "./helpers.js";
+import {
+  createKeyLifecycleOps,
+  type ExpiryOptions,
+  expectNumber,
+  expiryArgs,
+  ttlSeconds
+} from "./helpers.js";
 import { type HashTagLayout, type KeyOptions, keyBuilder } from "./keys.js";
 import type { SlotGuard } from "./slot.js";
 import {
@@ -8,6 +15,7 @@ import {
   withKey,
   withStore
 } from "./store.js";
+import { createStringCommands, type StringCommands } from "./string.js";
 import type {
   Codec,
   Keyspace,
@@ -23,7 +31,7 @@ import type {
  * `nx` and `xx` are mutually exclusive (write only if absent / only if
  * present), as are `ttlSeconds` and `keepTtl` — both pairs are modeled so
  * the invalid combination is a compile-time error, not a runtime throw.
- * When `nx` or `xx` is set, `set` resolves to whether the write happened.
+ * When `nx` or `xx` is given, `set` resolves to whether the write happened.
  */
 type SetTtlMode =
   | { readonly ttlSeconds?: number; readonly keepTtl?: never }
@@ -35,62 +43,37 @@ type SetConditionMode =
 
 export type KeyValueSetOptions = SetTtlMode & SetConditionMode;
 
+/**
+ * A `set` that spells out `nx` or `xx`, literal or computed: it resolves to
+ * whether the write happened. Keyed on the flag being present rather than
+ * `true`, because a `boolean` flag used to fall through to the `void`
+ * overload while the call resolved a boolean whenever the flag was on.
+ */
 type ConditionalSetOptions = SetTtlMode &
   (
-    | { readonly nx: true; readonly xx?: never }
-    | { readonly xx: true; readonly nx?: never }
+    | { readonly nx: boolean; readonly xx?: never }
+    | { readonly xx: boolean; readonly nx?: never }
   );
+
+/**
+ * A `set` that provably spells out neither flag. An options value typed
+ * {@link KeyValueSetOptions}, whose flags are merely optional, matches neither
+ * overload: the reply shape depends on them, so they have to be visible at
+ * the call site.
+ */
+type UnconditionalSetOptions = SetTtlMode & {
+  readonly nx?: undefined;
+  readonly xx?: undefined;
+};
+
+/** GETEX expiry modes; shared with HGETEX (see `ExpiryOptions`). */
+export type KeyValueGetExOptions = ExpiryOptions;
 
 function decodeConditionalSetReply(reply: RedisReply): boolean {
   if (reply === "OK") return true;
   if (reply === null) return false;
   throw replyShapeError("SET", "OK or null", reply);
 }
-
-/**
- * A member that exists only in the types, to make one specific mistake explain
- * itself. `counter` and `string` are alternate *views* over a kv keyspace rather
- * than kinds of their own, so their commands live on `redis.counter(schema)` and
- * `redis.string(schema)`. Reaching for `incr` on the kv store is the common first
- * guess, and the bare "property does not exist" error answers it by printing
- * every method the store *does* have, which names no fix.
- *
- * Typing the hint as the parameter puts the fix in the error text itself:
- *
- * ```text
- * Argument of type 'string' is not assignable to parameter of type
- * '"INCR is a counter command: use redis.counter(schema).incr(id)"'
- * ```
- *
- * Nothing is added at runtime, so calling one from untyped JavaScript still
- * fails the way an absent method fails.
- */
-type ReachThroughAccessor<
-  TAccessor extends "counter" | "string",
-  TCommand extends string
-> = (
-  hint: `${TCommand} is a ${TAccessor} command: use redis.${TAccessor}(schema).${Lowercase<TCommand>}(id)`,
-  // The rest parameter keeps a two-argument call (`incrby(id, by)`) reporting the
-  // hint rather than "Expected 1 arguments, but got 2", which names no fix.
-  ...rest: never[]
-) => never;
-
-/**
- * The commands a kv store deliberately lacks, each carrying its own fix. Keep
- * this in step with {@link createCounterStore} and {@link createStringStore}:
- * a command that moves onto the kv store should lose its entry here.
- */
-type KeyValueViewHints = {
-  readonly incr: ReachThroughAccessor<"counter", "INCR">;
-  readonly incrby: ReachThroughAccessor<"counter", "INCRBY">;
-  readonly incrbyfloat: ReachThroughAccessor<"counter", "INCRBYFLOAT">;
-  readonly decr: ReachThroughAccessor<"counter", "DECR">;
-  readonly decrby: ReachThroughAccessor<"counter", "DECRBY">;
-  readonly append: ReachThroughAccessor<"string", "APPEND">;
-  readonly getrange: ReachThroughAccessor<"string", "GETRANGE">;
-  readonly setrange: ReachThroughAccessor<"string", "SETRANGE">;
-  readonly strlen: ReachThroughAccessor<"string", "STRLEN">;
-};
 
 export function createKeyValueStore<
   TInput,
@@ -109,7 +92,7 @@ export function createKeyValueStore<
   function set(
     id: TId,
     value: TInput,
-    options?: KeyValueSetOptions
+    options?: UnconditionalSetOptions
   ): Promise<void>;
   async function set(
     id: TId,
@@ -136,7 +119,10 @@ export function createKeyValueStore<
       command.push("KEEPTTL");
     }
     const reply = await client.send(command);
-    if (options.nx || options.xx) {
+    // On the flag's presence, not its value, exactly as the overloads read
+    // it: `{ nx: false }` is typed Promise<boolean>, so it resolves `true`
+    // (a SET without NX always writes) rather than undefined.
+    if (options.nx !== undefined || options.xx !== undefined) {
       return decodeConditionalSetReply(reply);
     }
     if (reply !== "OK") {
@@ -149,15 +135,16 @@ export function createKeyValueStore<
     /**
      * `SET key value`. Without `nx`/`xx` resolves once the write is
      * acknowledged. With `nx` (write only if absent) or `xx` (write only if
-     * present) resolves to whether the write happened.
+     * present) resolves to whether the write happened; a computed
+     * `nx: someBoolean` is typed and resolved the same way.
      *
-     * @example redis.kv(profiles).set("greeting", "hi", { ttlSeconds: 60 })
-     * @example const written = await redis.kv(profiles).set("k", "v", { nx: true })
+     * @example redis.query.profiles.set("greeting", "hi", { ttlSeconds: 60 })
+     * @example const written = await redis.query.profiles.set("k", "v", { nx: true })
      */
     set,
     /**
      * GET — read the value, decoded, or `null` if the key is missing.
-     * @example const greeting = await redis.kv(profiles).get("42");
+     * @example const greeting = await redis.query.profiles.get("42");
      */
     async get(id: TId): Promise<TOutput | null> {
       const reply = await client.send(["GET", keyspace.key(id)]);
@@ -173,6 +160,26 @@ export function createKeyValueStore<
       if (reply === null) return null;
       if (typeof reply !== "string") {
         throw replyShapeError("GETDEL", "string or null", reply);
+      }
+      return keyspace.decode(reply);
+    },
+    /**
+     * GETEX — read the value, decoded, while (re)setting its expiry: a bare
+     * number of seconds, or any `ExpiryOptions` mode. `null` if the key is
+     * missing.
+     */
+    async getex(
+      id: TId,
+      ttlOrOptions: number | KeyValueGetExOptions
+    ): Promise<TOutput | null> {
+      const args =
+        typeof ttlOrOptions === "number"
+          ? ["EX", ttlSeconds(ttlOrOptions)]
+          : expiryArgs(ttlOrOptions);
+      const reply = await client.send(["GETEX", keyspace.key(id), ...args]);
+      if (reply === null) return null;
+      if (typeof reply !== "string") {
+        throw replyShapeError("GETEX", "string or null", reply);
       }
       return keyspace.decode(reply);
     },
@@ -192,7 +199,7 @@ export function createKeyValueStore<
     /**
      * MGET — read several keys in order (`null` per missing key). Empty input
      * returns `[]` without a round trip.
-     * @example const [a, b] = await redis.kv(profiles).mget(["1", "2"]);
+     * @example const [a, b] = await redis.query.profiles.mget(["1", "2"]);
      */
     async mget(ids: readonly TId[]): Promise<Array<TOutput | null>> {
       if (ids.length === 0) return [];
@@ -260,28 +267,90 @@ export function createKeyValueStore<
     }
   };
 
-  // The hints are type-only: nothing is added to the object above.
-  return store as typeof store & KeyValueViewHints;
+  return store;
 }
 
+/** The plain kv commands every kv store has, whatever its codec. */
+export type KeyValueStore<
+  TInput,
+  TOutput,
+  TId extends RedisKeyPart = RedisKeyPart
+> = ReturnType<typeof createKeyValueStore<TInput, TOutput, TId>>;
+
 /**
- * The kv resource: the store plus the schema's own typed `key()`.
- * Also serves `redis.query.<name>` for a kv schema.
+ * The commands a kv store carries because of its codec's `format`: the
+ * counter commands for `number()`, the string commands for `string()`,
+ * nothing extra otherwise. Bracketed so a `format` the type does not know
+ * (a plain `Keyspace<number>`) adds nothing rather than a union of both.
+ */
+export type KeyValueFormatCommands<TFormat, TId extends RedisKeyPart> = [
+  TFormat
+] extends ["number"]
+  ? CounterCommands<TId>
+  : [TFormat] extends ["string"]
+    ? StringCommands<TId>
+    : unknown;
+
+/**
+ * What `redis.query.<name>` is for a kv schema: the plain kv commands, the
+ * schema's own typed `key()`, and the commands its codec's `format` brings.
+ */
+export type KvResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined,
+  TFormat
+> = KeyValueStore<TInput, TOutput, TId> &
+  Pick<Keyspace<TInput, TOutput, TPrefix, TId, THashTag>, "key"> &
+  KeyValueFormatCommands<TFormat, TId>;
+
+/**
+ * The kv resource. Also serves `redis.query.<name>` for a kv schema.
+ *
+ * The runtime reads the same `format` the type does, so the object has the
+ * counter or string commands exactly when its type says so.
  */
 export function createKvResource<
   TInput,
   TOutput,
   TPrefix extends string,
   TId extends RedisKeyPart,
-  THashTag extends HashTagLayout | undefined
+  THashTag extends HashTagLayout | undefined,
+  TFormat
 >(
   ctx: StoreContext,
-  schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag>
-) {
-  return withKey(
+  schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag, TFormat>
+): KvResource<TInput, TOutput, TPrefix, TId, THashTag, TFormat> {
+  const store = withKey(
     schema,
     createKeyValueStore(ctx.client, schema, ctx.assertSameSlot)
   );
+  const format: unknown = schema.format;
+  // The casts follow the format check just made: the codec's `format` is the
+  // proof that the values are numbers or plain strings.
+  const extra =
+    format === "number"
+      ? createCounterCommands(
+          ctx,
+          schema as unknown as Keyspace<number, number, string, TId>
+        )
+      : format === "string"
+        ? createStringCommands(
+            ctx.client,
+            schema as unknown as Keyspace<string, string, string, TId>,
+            ctx.assertSameSlot
+          )
+        : {};
+  return { ...store, ...extra } as KvResource<
+    TInput,
+    TOutput,
+    TPrefix,
+    TId,
+    THashTag,
+    TFormat
+  >;
 }
 
 const kvBinding: StoreBinding = { resource: createKvResource };
@@ -291,13 +360,17 @@ export function defineKeyspace<
   TInput,
   TOutput = TInput,
   const TIds extends readonly RedisKeyPart[] = readonly RedisKeyPart[],
-  const THashTag extends HashTagLayout | undefined = undefined
+  const THashTag extends HashTagLayout | undefined = undefined,
+  TFormat = undefined
 >(
   prefix: TPrefix,
-  codec: Codec<TInput, TOutput>,
+  // `format` is read off the codec so the store can carry the commands that
+  // fit what it stores; see `Keyspace`. Codecs without one infer `undefined`.
+  codec: Codec<TInput, TOutput> & { readonly format?: TFormat },
   options?: KeyOptions<TIds, THashTag>
-): Keyspace<TInput, TOutput, TPrefix, TIds[number], THashTag> {
+): Keyspace<TInput, TOutput, TPrefix, TIds[number], THashTag, TFormat> {
   const hashTag = options?.hashTag as THashTag;
+  const format = codec.format;
   // The inference anchor is type-only and never present — cast the literal.
   const schema = {
     kind: "kv",
@@ -305,6 +378,7 @@ export function defineKeyspace<
     // Spread so the property is absent, not `undefined`, on the default
     // layout: a schema still enumerates as the plain data it looks like.
     ...(hashTag === undefined ? {} : { hashTag }),
+    ...(format === undefined ? {} : { format }),
     key: keyBuilder(prefix, hashTag),
     encode(value) {
       return codec.encode(value);
@@ -312,6 +386,6 @@ export function defineKeyspace<
     decode(stored) {
       return codec.decode(stored);
     }
-  } as Keyspace<TInput, TOutput, TPrefix, TIds[number], THashTag>;
+  } as Keyspace<TInput, TOutput, TPrefix, TIds[number], THashTag, TFormat>;
   return withStore(schema, kvBinding);
 }

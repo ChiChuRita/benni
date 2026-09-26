@@ -49,19 +49,20 @@ const bitmapTagged = bitmap("b", pin);
 const geoPlain = geo("g", codecs.string());
 const geoTagged = geo("g", codecs.string(), pin);
 
-const kvOf = (r: Benni, t: boolean) => (t ? r.kv(kvTagged) : r.kv(kvPlain));
+const kvOf = (r: Benni, t: boolean) =>
+  t ? r.store(kvTagged) : r.store(kvPlain);
 const setOf = (r: Benni, t: boolean) =>
-  t ? r.set(setTagged) : r.set(setPlain);
+  t ? r.store(setTagged) : r.store(setPlain);
 const zsetOf = (r: Benni, t: boolean) =>
-  t ? r.zset(zsetTagged) : r.zset(zsetPlain);
+  t ? r.store(zsetTagged) : r.store(zsetPlain);
 const listOf = (r: Benni, t: boolean) =>
-  t ? r.list(listTagged) : r.list(listPlain);
+  t ? r.store(listTagged) : r.store(listPlain);
 const hllOf = (r: Benni, t: boolean) =>
-  t ? r.hll(hllTagged) : r.hll(hllPlain);
+  t ? r.store(hllTagged) : r.store(hllPlain);
 const bitmapOf = (r: Benni, t: boolean) =>
-  t ? r.bitmap(bitmapTagged) : r.bitmap(bitmapPlain);
+  t ? r.store(bitmapTagged) : r.store(bitmapPlain);
 const geoOf = (r: Benni, t: boolean) =>
-  t ? r.geo(geoTagged) : r.geo(geoPlain);
+  t ? r.store(geoTagged) : r.store(geoPlain);
 
 /** Two keys with different hash tags that nonetheless land on one slot. */
 function findSlotCollision(): readonly [string, string] {
@@ -80,7 +81,7 @@ describe("cluster guard", () => {
   it("is off by default: cross-slot mget still sends", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [[null, null]]);
-    await benni({ client: client }).kv(profiles).mget(["a", "b"]);
+    await benni({ client: client }).store(profiles).mget(["a", "b"]);
     expect(commands).toEqual([["MGET", "profile:a", "profile:b"]]);
   });
 
@@ -88,7 +89,7 @@ describe("cluster guard", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
     const redis = benni({ client: client, cluster: assertSameSlot });
-    await expect(redis.kv(profiles).mget(["a", "b"])).rejects.toThrow(
+    await expect(redis.store(profiles).mget(["a", "b"])).rejects.toThrow(
       CrossSlotError
     );
     expect(commands).toEqual([]);
@@ -98,7 +99,7 @@ describe("cluster guard", () => {
     const client = fakeClient([], []);
     const redis = benni({ client: client, cluster: assertSameSlot });
     const error = (await redis
-      .set(tags)
+      .store(tags)
       .sunion("a1", ["b7"])
       .catch((e: unknown) => e)) as CrossSlotError;
     expect(error).toBeInstanceOf(CrossSlotError);
@@ -112,7 +113,7 @@ describe("cluster guard", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [["x"]]);
     const redis = benni({ client: client, cluster: assertSameSlot });
-    await redis.set(tagsPinned).sunion("a1", ["b7"]);
+    await redis.store(tagsPinned).sunion("a1", ["b7"]);
     expect(commands).toEqual([["SUNION", "{tag}:a1", "{tag}:b7"]]);
   });
 
@@ -141,7 +142,7 @@ describe("cluster guard", () => {
     const redis = benni({ client: client, cluster: assertSameSlot });
     const keys: Record<string, string> = { a: "x:{1}", b: "y:{2}" };
     await expect(
-      redis.script(twoKeyScript).run({
+      redis.store(twoKeyScript).run({
         keys: keys as { readonly a: string; readonly b: string },
         args: {}
       })

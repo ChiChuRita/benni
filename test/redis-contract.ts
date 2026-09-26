@@ -2,13 +2,11 @@ import { expect } from "vitest";
 import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
-  createCounterStore,
   createHashStore,
   createKeyValueStore,
   createListStore,
   createSetStore,
   createSortedSetStore,
-  createStringStore,
   type FullRedisClient,
   type RedisClient,
   RedisServerError
@@ -29,6 +27,7 @@ import {
   stringOrNullReply
 } from "../src/core/transaction.js";
 import { benni } from "../src/index.js";
+import { kvResource } from "./fake-client.js";
 
 export type RedisClientFactory = () => RedisClient;
 
@@ -161,17 +160,17 @@ export async function expectPubSubSurvivesReconnect(
       (await pubsubConnections(client)).map((entry) => entry.id)
     );
     for (const [index, channel] of channels.entries()) {
-      await redis.pubsub.channel(channel).subscribe((message) => {
+      await redis.store(channel).subscribe((message) => {
         seen.add(`${index}:${message}`);
       });
     }
     if (options.patterns) {
-      await redis.pubsub.pattern(pattern).subscribe((message, channel) => {
+      await redis.store(pattern).subscribe((message, channel) => {
         seen.add(`${channel}:${message}`);
       });
     }
 
-    await redis.pubsub.channel(channels[0]!).publish("before");
+    await redis.store(channels[0]!).publish("before");
     await waitUntil(() => seen.has("0:before"));
 
     const ours = (await pubsubConnections(client)).filter(
@@ -188,7 +187,7 @@ export async function expectPubSubSurvivesReconnect(
     const deadline = Date.now() + 10_000;
     let receivers = 0;
     while (Date.now() < deadline) {
-      receivers = await redis.pubsub.channel(channels[0]!).publish("probe");
+      receivers = await redis.store(channels[0]!).publish("probe");
       if (receivers === 1) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -196,9 +195,7 @@ export async function expectPubSubSurvivesReconnect(
 
     // Every channel was resubscribed, not only the one probed.
     for (const channel of channels) {
-      await expect(
-        redis.pubsub.channel(channel).publish("after")
-      ).resolves.toBe(1);
+      await expect(redis.store(channel).publish("after")).resolves.toBe(1);
     }
     await waitUntil(() =>
       channels.every((_, index) => seen.has(`${index}:after`))
@@ -233,9 +230,9 @@ export async function expectRedisClientContract(
   });
   const profileStore = createKeyValueStore(client, profiles);
   const texts = defineKeyspace("benni:text", codecs.string());
-  const textStore = createStringStore(client, texts);
+  const textStore = kvResource(client, texts);
   const counters = defineKeyspace("benni:counter", codecs.number());
-  const counterStore = createCounterStore(client, counters);
+  const counterStore = kvResource(client, counters);
   const roles = defineSet("benni:roles", codecs.string());
   const roleStore = createSetStore(client, roles);
   const userStore = createHashStore(client, users);

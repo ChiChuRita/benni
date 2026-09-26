@@ -16,7 +16,7 @@ export const users = hash("user", {
 Writes must match the schema:
 
 ```ts
-await redis.hash(users).hset("42", {
+await redis.query.users.hset("42", {
   name: "Ada",
   score: 10,
   active: true
@@ -26,7 +26,7 @@ await redis.hash(users).hset("42", {
 Reads return decoded values:
 
 ```ts
-const user = await redis.hash(users).hget("42");
+const user = await redis.query.users.hget("42");
 //    ^? { name: string; score: number; active: boolean } | null
 ```
 
@@ -42,10 +42,10 @@ export const accounts = hash("account", {
   nickname: optional(string())
 });
 
-await redis.hash(accounts).hset("7", { email: "ada@example.com" }); // nickname may be left out
-await redis.hash(accounts).hset("7", { nickname: "ada" });           // compile error: email is required
+await redis.query.accounts.hset("7", { email: "ada@example.com" }); // nickname may be left out
+await redis.query.accounts.hset("7", { nickname: "ada" });           // compile error: email is required
 
-const account = await redis.hash(accounts).hget("7");
+const account = await redis.query.accounts.hget("7");
 //    ^? { email: string; nickname?: string } | null
 ```
 
@@ -54,8 +54,8 @@ A missing optional field is absent from the object; `nickname` is never present 
 Hash field methods are typed by field name:
 
 ```ts
-await redis.hash(users).hset("42", "score", 11);
-const score = await redis.hash(users).hget("42", "score");
+await redis.query.users.hset("42", "score", 11);
+const score = await redis.query.users.hget("42", "score");
 //    ^? number | null
 ```
 
@@ -103,7 +103,7 @@ import { z } from "zod";
 const Profile = z.object({ name: z.string(), score: z.number() });
 export const profiles = kv("profile", json(Profile));
 
-const profile = await redis.kv(profiles).get("42");
+const profile = await redis.query.profiles.get("42");
 //    ^? { name: string; score: number } | null (validated at runtime)
 ```
 
@@ -113,17 +113,17 @@ Standard Schema validates reads only; it has no encode direction. To validate wr
 
 ## Typed Keys
 
-Keys keep their literal types. `redis.query.users.key("42")` (and `redis.hash(users).key("42")`) has the type `"user:42"`, not `string`; template-literal key types survive the accessors and the query registry, so key-shaped APIs like `redis.watch([...])` stay precise.
+Keys keep their literal types. `redis.query.users.key("42")` (and `users.key("42")` on the schema itself) has the type `"user:42"`, not `string`; template-literal key types survive the query registry, so key-shaped APIs like `redis.watch([...])` stay precise.
 
 ## Illegal Option Combinations Don't Compile
 
 Mutually exclusive command options are modeled in the types, so an invalid combination is a compile error rather than a runtime throw:
 
 ```ts
-await redis.kv(profiles).set("42", value, { nx: true, xx: true });        // compile error
-await redis.kv(profiles).set("42", value, { ttlSeconds: 60, keepTtl: true }); // compile error
-await redis.zset(board).zadd("global", entry, { nx: true, gt: true });    // compile error
-await redis.hash(users).hsetex("42", fields, { fnx: true, fxx: true });   // compile error
+await redis.query.profiles.set("42", value, { nx: true, xx: true });        // compile error
+await redis.query.profiles.set("42", value, { ttlSeconds: 60, keepTtl: true }); // compile error
+await redis.query.board.zadd("global", entry, { nx: true, gt: true });    // compile error
+await redis.query.users.hsetex("42", fields, { fnx: true, fxx: true });   // compile error
 ```
 
 The same applies to `hsetex`'s expiry modes (at most one of `ttlSeconds` / `ttlMilliseconds` / `expireAtSeconds` / `expireAtMilliseconds` / `keepTtl`) and `geoadd`'s `nx`/`xx`.

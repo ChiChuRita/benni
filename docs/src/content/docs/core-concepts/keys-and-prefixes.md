@@ -11,7 +11,7 @@ export const users = hash("user", {
   score: number()
 });
 
-const key = redis.hash(users).key("42");
+const key = redis.query.users.key("42");
 // "user:42"
 ```
 
@@ -26,7 +26,7 @@ zset("leaderboard", string());
 If an id comes from a route, database row, token, or Redis itself, pass it as a normal `string`, `number`, or `bigint`.
 
 ```ts
-await redis.hash(users).hset(userId, {
+await redis.query.users.hset(userId, {
   name: "Ada",
   score: 10
 });

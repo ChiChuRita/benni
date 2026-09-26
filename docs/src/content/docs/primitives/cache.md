@@ -22,21 +22,24 @@ const profile = await redis.query.profiles.get(userId, () => db.loadProfile(user
 
 The classic failure this prevents: a hot key expires, 500 requests miss at once, and all 500 hit the database together. With `cache`, one of them loads; the other 499 poll Redis for the filled entry, backing off as they wait.
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, `benni/primitives` exports the same cache in its client-taking form, over the same keys:
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no schema module, wrap the client once and reach the same cache, over the same keys, through `store()`:
 
 ```ts
-import { cache } from "benni/primitives";
+import { benni } from "benni";
+import { cache, json } from "benni/schema";
 
-const profiles = cache<Profile>({ client, ttlMs: 60_000 });
+const profiles = benni({ client }).store(
+  cache("profile", { ttlMs: 60_000, codec: json<Profile>() })
+);
 const profile = await profiles.get(userId, () => db.loadProfile(userId));
 ```
 
-`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge: it needs only `GET` and `EVALSHA`.
+It works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge: it needs only `GET` and `EVALSHA`.
 
 ## API
 
 ```ts
-const store = cache<T>({ client, ...options });
+const store = redis.query.profiles; // cache("profile", options)
 
 await store.get(id, loader); // read; run loader once on a miss
 await store.peek(id);        // read without loading (T | null)
@@ -68,7 +71,7 @@ A loader that read its value before the `set` or `del` finds its token gone, so 
 **A waiter gives up after `waitTimeoutMs`** (three lock lifetimes by default) with `CacheWaitTimeoutError`, rather than loading for itself. A live loader still running at that point means the backend is slower than the budget you gave it; every waiter adding a load of its own is precisely the stampede this exists to prevent. Serve a 503 or a fallback, or raise `waitTimeoutMs` if loads legitimately take that long:
 
 ```ts
-import { CacheWaitTimeoutError } from "benni/primitives";
+import { CacheWaitTimeoutError } from "benni";
 
 try {
   return await profiles.get(userId, () => db.loadProfile(userId));

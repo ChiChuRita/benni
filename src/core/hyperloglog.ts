@@ -62,7 +62,7 @@ export function createHyperLogLogStore<
     ...createKeyLifecycleOps(client, (id: TId) => schema.key(id)),
     /**
      * PFADD — add `values`; `true` if the estimated cardinality changed.
-     * @example await redis.hll(visitors).pfadd("2026-07-11", [userId]);
+     * @example await redis.query.visitors.pfadd("2026-07-11", [userId]);
      */
     async pfadd(id: TId, values: readonly TInput[]): Promise<boolean> {
       // Empty input is a no-op: a bare PFADD would create the key.

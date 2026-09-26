@@ -58,7 +58,7 @@ export type BunOptions = {
 /**
  * What {@link bun} returns: transactions, sessions, and channel subscriptions,
  * but no pattern subscriptions (Bun's `psubscribe` is broken upstream), so a
- * handle over it has no `redis.pubsub.pattern()`. Name it when typing a
+ * handle over it has no pattern entries in `redis.query`. Name it when typing a
  * handle by hand: `Benni<typeof schema, BunClient>`.
  */
 export interface BunClient extends RedisClient {

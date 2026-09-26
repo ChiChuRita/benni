@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { benni } from "../src/index.js";
-import { LockNotAcquiredError, lock } from "../src/primitives/index.js";
+import { LockNotAcquiredError } from "../src/primitives/errors.js";
+import { createLock } from "../src/primitives/lock.js";
 import type {
   InferInput,
   InferOutput,
@@ -91,7 +92,7 @@ describe("template-literal keys survive the handle", () => {
       schema: { profiles, users }
     });
     const direct = profiles.key("42");
-    const viaAccessor = redis.kv(profiles).key("42");
+    const viaAccessor = redis.store(profiles).key("42");
     const viaQuery = redis.query.profiles.key("42");
     type _Direct = Expect<Equal<typeof direct, "profile:42">>;
     type _Accessor = Expect<Equal<typeof viaAccessor, "profile:42">>;
@@ -166,14 +167,14 @@ describe("json(standardSchema) validated codec", () => {
 describe("compile-time exclusive options", () => {
   it("forbids the invalid combinations at the type level", async () => {
     const redis = benni({ client: fakeClient([], []) });
-    const store = redis.kv(profiles);
+    const store = redis.store(profiles);
     const nxXx = () =>
       // @ts-expect-error nx and xx are mutually exclusive
       store.set("1", { name: "a", score: 0 }, { nx: true, xx: true });
     const ttl = () =>
       // @ts-expect-error keepTtl and ttlSeconds are mutually exclusive
       store.set("1", { name: "a", score: 0 }, { keepTtl: true, ttlSeconds: 5 });
-    const zs = redis.zset(board);
+    const zs = redis.store(board);
     const gtLt = () =>
       // @ts-expect-error gt and lt are mutually exclusive
       zs.zadd("g", { score: 1, member: "a" }, { gt: true, lt: true });
@@ -189,9 +190,9 @@ describe("compile-time exclusive options", () => {
   it("zadd accepts a single entry and emits condition tokens", async () => {
     const commands: import("../src/core/index.js").RedisCommand[] = [];
     const redis = benni({ client: fakeClient(commands, [1, 1]) });
-    await redis.zset(board).zadd("g", { score: 1, member: "ada" });
+    await redis.store(board).zadd("g", { score: 1, member: "ada" });
     await redis
-      .zset(board)
+      .store(board)
       .zadd("g", [{ score: 2, member: "bo" }], { gt: true, ch: true });
     expect(commands).toEqual([
       ["ZADD", "board:g", 1, "ada"],
@@ -203,7 +204,7 @@ describe("compile-time exclusive options", () => {
 describe("typed lock error", () => {
   it("run() throws LockNotAcquiredError carrying the key", async () => {
     // The acquire script loses (0, no fence) and there are no retries.
-    const locks = lock(fakeClient([], ["sha", 0]));
+    const locks = createLock(fakeClient([], ["sha", 0]));
     const failure = locks.run("order:1", async () => 1);
     await expect(failure).rejects.toBeInstanceOf(LockNotAcquiredError);
     await expect(failure).rejects.toMatchObject({ key: "lock:order:1" });

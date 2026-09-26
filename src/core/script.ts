@@ -52,8 +52,8 @@ export type DefineScriptOptions<TResult> = {
  * then executing cached `EVALSHA`. If the node the keys live on does not have
  * the script (`NOSCRIPT`: after a restart, a `SCRIPT FLUSH`, or on a cluster
  * node the load never reached), it runs it once with `EVAL`, which caches it
- * there. Built by {@link createScriptRunner}; `redis.script(schema)`
- * uses one internally, shared per client.
+ * there. Built by {@link createScriptRunner}; a script schema reached
+ * through `redis.query` uses one internally, shared per handle.
  */
 export type ScriptRunner = {
   run<TArgs extends readonly RedisCommandArgument[], TResult>(
@@ -70,7 +70,7 @@ export type ScriptRunner = {
  *
  * This is the low-level primitive. Application code should prefer {@link script}
  * from `benni/schema`, which adds named keys and per-argument codecs and is run
- * with `redis.script(schema).run({ keys, args })`.
+ * with `redis.query.<name>.run({ keys, args })`.
  *
  * @example
  * ```ts
@@ -273,7 +273,7 @@ const scriptBinding: StoreBinding = { resource: createScriptResource };
 
 /**
  * A Lua script schema with named keys, typed args, and a scalar return codec.
- * Run it with `redis.script(schema).run({ keys, args })` — the runner loads the
+ * Run it with `redis.query.<name>.run({ keys, args })` — the runner loads the
  * script once and executes cached `EVALSHA`.
  * @example
  * ```ts

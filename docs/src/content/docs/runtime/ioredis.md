@@ -113,7 +113,7 @@ Sessions duplicate the connection with reconnection disabled and the offline que
 Pub/Sub delivers every subscription through one connection-level event, so the adapter routes by channel and pattern name internally. You just subscribe:
 
 ```ts
-const subscription = await redis.pubsub.channel(userEvents).subscribe((message) => {
+const subscription = await redis.query.userEvents.subscribe((message) => {
   console.log(message.action);
 });
 ```

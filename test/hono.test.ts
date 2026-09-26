@@ -8,9 +8,22 @@ import {
   rateLimitMiddleware,
   sessionMiddleware
 } from "../src/hono/index.js";
+import { benni } from "../src/index.js";
+import { ratelimit } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
 describe("hono ratelimit", () => {
+  it("refuses the 0.1 { client, limit, windowMs } options, naming the fix", () => {
+    expect(() =>
+      rateLimitMiddleware({
+        client: fakeClient([], []),
+        limit: 5,
+        windowMs: 60_000,
+        key: () => "tester"
+      } as never)
+    ).toThrow(/pass `limiter: redis\.query\.apiLimit`/);
+  });
+
   it("allows a request under the limit and sets the X-RateLimit headers", async () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, resetMs]
@@ -19,9 +32,9 @@ describe("hono ratelimit", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client,
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: client }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester"
       })
     );
@@ -44,9 +57,9 @@ describe("hono ratelimit", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client,
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: client }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester"
       })
     );
@@ -69,9 +82,9 @@ describe("hono ratelimit", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client,
-        limit: 1,
-        windowMs: 1_000,
+        limiter: benni({ client: client }).store(
+          ratelimit("ratelimit", { limit: 1, windowMs: 1_000 })
+        ),
         key: (c) =>
           c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
       })
@@ -363,9 +376,9 @@ describe("hono Redis failure policy", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client: fakeClient([], []),
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: fakeClient([], []) }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester"
       })
     );
@@ -384,9 +397,9 @@ describe("hono Redis failure policy", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client: fakeClient([], []),
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: fakeClient([], []) }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester",
         failOpen: true
       })
@@ -404,9 +417,9 @@ describe("hono Redis failure policy", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client: fakeClient([], []),
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: fakeClient([], []) }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester",
         failOpen: true
       })

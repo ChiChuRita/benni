@@ -14,9 +14,9 @@ export const leaderboards = zset("leaderboard", string());
 Add members with scores; `zadd` takes a single entry or an array:
 
 ```ts
-await redis.zset(leaderboards).zadd("global", { member: "user:42", score: 100 });
+await redis.query.leaderboards.zadd("global", { member: "user:42", score: 100 });
 
-await redis.zset(leaderboards).zadd("global", [
+await redis.query.leaderboards.zadd("global", [
   { member: "user:42", score: 100 },
   { member: "user:7", score: 80 }
 ]);
@@ -25,19 +25,19 @@ await redis.zset(leaderboards).zadd("global", [
 Conditions mirror the Redis tokens: `nx` (only add new members), `xx` (only update existing), `gt`/`lt` (only move a score up/down), and `ch` (count changed members instead of only added ones). Illegal combinations (`nx` with `xx`, `gt`, or `lt`, and `gt` with `lt`) are compile errors:
 
 ```ts
-await redis.zset(leaderboards).zadd("global", entries, { gt: true, ch: true });
+await redis.query.leaderboards.zadd("global", entries, { gt: true, ch: true });
 ```
 
 Read the top members:
 
 ```ts
-const top = await redis.zset(leaderboards).zrange("global", { start: 0, stop: 9, rev: true });
+const top = await redis.query.leaderboards.zrange("global", { start: 0, stop: 9, rev: true });
 ```
 
 Read members with scores:
 
 ```ts
-const entries = await redis.zset(leaderboards).zrange("global", { start: 0, stop: 9, withScores: true });
+const entries = await redis.query.leaderboards.zrange("global", { start: 0, stop: 9, withScores: true });
 //    ^? Array<{ member: string; score: number }>
 ```
 
@@ -48,7 +48,7 @@ Note the call shape: `zrange` takes an **options object**, not positional bounds
 Increment a score:
 
 ```ts
-await redis.zset(leaderboards).zincrby("global", 5, "user:42");
+await redis.query.leaderboards.zincrby("global", 5, "user:42");
 ```
 
 Scores may be `Infinity` or `-Infinity`, which Redis stores as `+inf` and `-inf`. `zscore` reads them back as the JavaScript infinities, and every score bound (`byScore` ranges, `zcount`, `zremrangebyscore`) accepts the same values, so a score can go straight back in as a bound. Only `NaN` is rejected.
@@ -77,7 +77,7 @@ export const names = zset("name-index", string());
 Add every member with the **same score** so ordering is purely lexical:
 
 ```ts
-await redis.zset(names).zadd("directory", [
+await redis.query.names.zadd("directory", [
   { member: "adam", score: 0 },
   { member: "ada", score: 0 },
   { member: "ben", score: 0 },
@@ -89,7 +89,7 @@ await redis.zset(names).zadd("directory", [
 Range over members between two bounds. A bound is either the `"-"` / `"+"` sentinel (lowest / highest possible member) or `{ value }`, which is inclusive by default:
 
 ```ts
-const aToB = await redis.zset(names).zrange("directory", {
+const aToB = await redis.query.names.zrange("directory", {
   byLex: true,
   min: { value: "ada" },
   max: { value: "ben" }
@@ -100,7 +100,7 @@ const aToB = await redis.zset(names).zrange("directory", {
 Set `inclusive: false` on a bound to make it exclusive:
 
 ```ts
-const openEnded = await redis.zset(names).zrange("directory", {
+const openEnded = await redis.query.names.zrange("directory", {
   byLex: true,
   min: { value: "ada", inclusive: false },
   max: { value: "ben", inclusive: false }
@@ -111,7 +111,7 @@ const openEnded = await redis.zset(names).zrange("directory", {
 Use the `"-"` and `"+"` sentinels for open ranges; this reads every member, in order. `offset` and `count` apply a `LIMIT` and must be provided together:
 
 ```ts
-const firstThree = await redis.zset(names).zrange("directory", {
+const firstThree = await redis.query.names.zrange("directory", {
   byLex: true,
   min: "-",
   max: "+",
@@ -124,7 +124,7 @@ const firstThree = await redis.zset(names).zrange("directory", {
 Set `rev: true` to walk the range high-to-low. The `min`/`max` bounds still describe the low and high ends of the range; only the result order flips:
 
 ```ts
-const reversed = await redis.zset(names).zrange("directory", {
+const reversed = await redis.query.names.zrange("directory", {
   byLex: true,
   min: "-",
   max: "+",
@@ -136,7 +136,7 @@ const reversed = await redis.zset(names).zrange("directory", {
 Count the members in a lex range without materializing them:
 
 ```ts
-const inRange = await redis.zset(names).zlexcount(
+const inRange = await redis.query.names.zlexcount(
   "directory",
   { value: "ada" },
   { value: "ben" }
@@ -147,7 +147,7 @@ const inRange = await redis.zset(names).zlexcount(
 Remove every member in a lex range:
 
 ```ts
-const removed = await redis.zset(names).zremrangebylex(
+const removed = await redis.query.names.zremrangebylex(
   "directory",
   { value: "ada" },
   { value: "adam" }
@@ -158,7 +158,7 @@ const removed = await redis.zset(names).zremrangebylex(
 Store a lex slice into another key with `zrangestore` and `byLex: true`. It accepts the same `min`, `max`, `rev`, `offset`, and `count` options as a `byLex` `zrange` and returns the number of members written:
 
 ```ts
-const stored = await redis.zset(names).zrangestore("b-names", "directory", {
+const stored = await redis.query.names.zrangestore("b-names", "directory", {
   byLex: true,
   min: { value: "b" },
   max: { value: "c", inclusive: false }

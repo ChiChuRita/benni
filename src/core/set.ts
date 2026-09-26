@@ -53,7 +53,7 @@ export function createSetStore<
     /**
      * SADD — add `members`, returning how many were newly added. No-op
      * returning 0 when `members` is empty.
-     * @example await redis.set(roles).sadd("42", ["admin", "user"]);
+     * @example await redis.query.roles.sadd("42", ["admin", "user"]);
      */
     async sadd(id: TId, members: readonly TInput[]): Promise<number> {
       if (members.length === 0) return 0;
@@ -117,7 +117,7 @@ export function createSetStore<
     },
     /**
      * SMEMBERS — all members of the set, decoded.
-     * @example const roles = await redis.set(roles).smembers("42");
+     * @example const roles = await redis.query.roles.smembers("42");
      */
     async smembers(id: TId): Promise<TOutput[]> {
       const reply = await client.send(["SMEMBERS", schema.key(id)]);

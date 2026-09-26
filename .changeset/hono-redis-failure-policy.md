@@ -9,6 +9,6 @@ The three middlewares disagreed without saying so: `cacheMiddleware()` swallowed
 ```ts
 app.use(
   "*",
-  rateLimitMiddleware({ client, limit: 100, windowMs: 60_000, key, failOpen: true })
+  rateLimitMiddleware({ limiter: redis.query.apiLimit, key, failOpen: true })
 );
 ```

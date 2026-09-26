@@ -112,7 +112,7 @@ of your own Redis.
 | Runtime validation | No | Yes, via any Standard Schema validator |
 | Schema-derived keys | Manual | Yes |
 | Vendor independence | Upstash | Any Upstash-REST-compatible server |
-| Rate limit / lock / cache / queue | `@upstash/ratelimit` and friends | Built into `benni/primitives` |
+| Rate limit / lock / cache / queue | `@upstash/ratelimit` and friends | Built in, declared in `benni/schema` |
 | Officially supported by Upstash | Yes | No |
 | Dependencies | Zero | Zero on the edge adapter |
 

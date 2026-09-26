@@ -20,17 +20,16 @@ export const redis = benni({
 
 `bun()` returns its client synchronously and connects on the first command. A connect that fails rejects the commands waiting on it with `benni/bun could not connect to Redis: <cause>`, and a later command dials again, backing off from 100 ms to 5 s. Once connected, Bun's `autoReconnect` handles drops; if it gives up (after `maxRetries`), the next command connects afresh. `onError` and `onReconnect` work as on [`benni/node`](/benni/runtime/node/#connection-events); Bun has no error event of its own, so `onError` sees failed connects and a connection that is gone for good. Close the handle with `await redis.close()`.
 
-[Pub/Sub](/benni/data-structures/pubsub/) needs no setup: the Bun adapter can lease a subscriber connection, so `redis.pubsub.channel(...).subscribe(...)` works on the bound client:
+[Pub/Sub](/benni/data-structures/pubsub/) needs no setup: the Bun adapter can lease a subscriber connection, so `redis.query.<channel>.subscribe(...)` works on the bound client:
 
 ```ts
-const subscription = await redis.pubsub
-  .channel(schema.userEvents)
+const subscription = await redis.query.userEvents
   .subscribe((message) => { /* ... */ });
 
 await subscription.unsubscribe();
 ```
 
-Channel subscriptions only, though. The Bun subscriber deliberately omits `psubscribe` because it is broken in Bun 1.3.14 (it hangs rather than resolving), so a handle over `bun()` has no `redis.pubsub.pattern()` in its type (and a pattern subscribe forced through throws `UnsupportedCapabilityError` instead of deadlocking). Subscribe to the individual channels until Bun ships a fix, or run pattern subscriptions on the [Node adapter](/benni/runtime/node/). Publishing is unaffected: it is one stateless `PUBLISH` on the bound client.
+Channel subscriptions only, though. The Bun subscriber deliberately omits `psubscribe` because it is broken in Bun 1.3.14 (it hangs rather than resolving), so a handle over `bun()` has no pattern entries in `redis.query` (and a pattern subscribe forced through throws `UnsupportedCapabilityError` instead of deadlocking). Subscribe to the individual channels until Bun ships a fix, or run pattern subscriptions on the [Node adapter](/benni/runtime/node/). Publishing is unaffected: it is one stateless `PUBLISH` on the bound client.
 
 If the subscriber connection drops, the adapter resubscribes every channel on the reconnect. Bun's own client reconnects a subscriber but comes back with no subscriptions, so without this the handlers would go silent while the connection looked healthy. Messages published during the outage are still lost, as on every adapter: see [Reconnects](/benni/data-structures/pubsub/#reconnects). If Bun gives up reconnecting (after `maxRetries`), the lease reports itself closed and the next subscribe opens a fresh connection.
 

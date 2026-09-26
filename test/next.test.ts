@@ -8,8 +8,11 @@ import {
   vi
 } from "vitest";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
+import { benni } from "../src/index.js";
 import { cacheHandler, rateLimitMiddleware } from "../src/next/index.js";
 import { node } from "../src/node/index.js";
+import { ratelimit } from "../src/schema.js";
+import { upstash } from "../src/upstash/index.js";
 import { fakeClient } from "./fake-client.js";
 import {
   appPageSet,
@@ -46,6 +49,24 @@ function expectBuffer(actual: unknown, expected: Uint8Array) {
   expect(Buffer.isBuffer(actual)).toBe(true);
   expect(Buffer.compare(actual as Buffer, expected)).toBe(0);
 }
+
+describe("cacheHandler over upstash() at build time", () => {
+  it("builds without the env vars, as `next build` imports it, and names them on first use", async () => {
+    // cache-handler.mjs builds its client at module scope; `next build`
+    // imports it in environments that never set these and never send.
+    const Handler = cacheHandler({
+      client: upstash({
+        url: process.env.BENNI_UNSET_UPSTASH_URL as string,
+        token: process.env.BENNI_UNSET_UPSTASH_TOKEN as string
+      })
+    });
+    const handler = new Handler();
+
+    await expect(handler.get("page")).rejects.toThrow(
+      "upstash() requires a url (the REST endpoint)"
+    );
+  });
+});
 
 describe("cacheHandler: values Next.js 16 really sends", () => {
   it("round-trips an APP_PAGE with rscData and segmentData byte for byte", async () => {
@@ -533,14 +554,25 @@ describe("rateLimit", () => {
     vi.useRealTimers();
   });
 
+  it("refuses the 0.1 { client, limit, windowMs } options, naming the fix", () => {
+    expect(() =>
+      rateLimitMiddleware({
+        client: fakeClient([], []),
+        limit: 5,
+        windowMs: 60_000,
+        identify: () => "tester"
+      } as never)
+    ).toThrow(/pass `limiter: redis\.query\.apiLimit`/);
+  });
+
   it("resolves null when the request is allowed", async () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset]
     const client = fakeClient(commands, ["sha1", [1, 9, Date.now() + 60_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 10,
-      windowMs: 60_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 10, windowMs: 60_000 })
+      ),
       identify: (request) =>
         request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
         "anonymous"
@@ -567,9 +599,9 @@ describe("rateLimit", () => {
     // duration, so the local clock is irrelevant to it.
     const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 5,
-      windowMs: 60_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 5, windowMs: 60_000 })
+      ),
       identify: () => "tester"
     });
 
@@ -591,9 +623,9 @@ describe("rateLimit", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 5,
-      windowMs: 1_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 5, windowMs: 1_000 })
+      ),
       identify: (request) =>
         request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
         "anonymous"
@@ -608,9 +640,9 @@ describe("rateLimit", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 5,
-      windowMs: 1_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 5, windowMs: 1_000 })
+      ),
       identify: (request) => request.headers.get("x-api-key") ?? "anonymous"
     });
 
@@ -630,9 +662,9 @@ describe("rateLimit", () => {
       [0, 0, 1_700_000_099_000, 900]
     ]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 3,
-      windowMs: 10_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 3, windowMs: 10_000 })
+      ),
       identify: () => "tester"
     });
 

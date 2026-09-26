@@ -7,9 +7,9 @@ import type {
 } from "../src/core/types.js";
 import {
   SemaphoreLeaseLostError,
-  SemaphoreNotAcquiredError,
-  semaphore
-} from "../src/primitives/index.js";
+  SemaphoreNotAcquiredError
+} from "../src/primitives/errors.js";
+import { createSemaphore } from "../src/primitives/semaphore.js";
 
 // Every test here runs on vitest's fake clock, `performance.now()` included,
 // so a 150ms critical section costs no wall time and renews exactly as often on
@@ -123,7 +123,7 @@ function semaphoreFake(behavior?: {
 }
 
 /**
- * `semaphore().run()` used to acquire with a lease and never renew it, so a
+ * `createSemaphore().run()` used to acquire with a lease and never renew it, so a
  * critical section that outlived `leaseMs` silently lost its slot: the lease
  * lapsed, the next acquire pruned it and admitted another caller, and the
  * original body kept running as though it were still inside the limit. That is
@@ -133,7 +133,7 @@ function semaphoreFake(behavior?: {
 describe("semaphore.run lease renewal", () => {
   it("keeps the slot while a critical section outlives leaseMs", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 5, leaseMs: 60 });
+    const slots = createSemaphore(fake.client, { limit: 5, leaseMs: 60 });
 
     const result = await settle(
       slots.run(
@@ -167,7 +167,7 @@ describe("semaphore.run lease renewal", () => {
 
   it("defaults the renewal interval to a quarter of leaseMs", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 100 }); // 25ms.
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 100 }); // 25ms.
 
     await settle(slots.run("openai", () => sleep(120)));
 
@@ -180,7 +180,7 @@ describe("semaphore.run lease renewal", () => {
 
   it("adds no round trips when the body finishes inside one interval", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3 });
+    const slots = createSemaphore(fake.client, { limit: 3 });
 
     await expect(settle(slots.run("openai", async () => 7))).resolves.toBe(7);
 
@@ -190,7 +190,7 @@ describe("semaphore.run lease renewal", () => {
 
   it("does not renew when renewal is switched off", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3, leaseMs: 20 });
+    const slots = createSemaphore(fake.client, { limit: 3, leaseMs: 20 });
 
     await expect(
       settle(
@@ -204,7 +204,7 @@ describe("semaphore.run lease renewal", () => {
 
   it("validates heartbeatMs before taking a slot", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3 });
+    const slots = createSemaphore(fake.client, { limit: 3 });
 
     await expect(
       settle(slots.run("openai", async () => 1, { heartbeatMs: 0 }))
@@ -218,7 +218,7 @@ describe("semaphore.run lease renewal", () => {
     // into failing healthy work. The deadline moves forward with each successful
     // renewal, so five leases of body is unremarkable.
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 100 }); // 25ms.
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 100 }); // 25ms.
 
     await expect(
       settle(slots.run("openai", () => sleep(500).then(() => "ok")))
@@ -237,7 +237,7 @@ describe("semaphore.run lease renewal", () => {
 describe("semaphore.run heartbeat bounds", () => {
   it("rejects an explicit heartbeatMs that is not meaningfully below leaseMs", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3, leaseMs: 300 });
+    const slots = createSemaphore(fake.client, { limit: 3, leaseMs: 300 });
 
     for (const heartbeatMs of [151, 300, 600]) {
       await expect(
@@ -255,7 +255,7 @@ describe("semaphore.run heartbeat bounds", () => {
 
   it("accepts a heartbeatMs at exactly half of leaseMs", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3, leaseMs: 300 });
+    const slots = createSemaphore(fake.client, { limit: 3, leaseMs: 300 });
 
     // Half still leaves room for one renewal and one retry before expiry.
     await expect(
@@ -265,7 +265,7 @@ describe("semaphore.run heartbeat bounds", () => {
 
   it("checks the heartbeat against this run's leaseMs, not the store default", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3, leaseMs: 10_000 });
+    const slots = createSemaphore(fake.client, { limit: 3, leaseMs: 10_000 });
 
     await expect(
       settle(
@@ -279,7 +279,7 @@ describe("semaphore.run heartbeat bounds", () => {
     // explicitly passed value is checked, so an absurd but working lease keeps
     // working rather than being rejected by a rule about the caller's intent.
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 3, leaseMs: 1 });
+    const slots = createSemaphore(fake.client, { limit: 3, leaseMs: 1 });
 
     const outcome = await slots
       .run("openai", async () => "ok")
@@ -294,7 +294,7 @@ describe("semaphore.run heartbeat bounds", () => {
 describe("semaphore.run lost lease", () => {
   it("rejects with SemaphoreLeaseLostError even when the body resolves", async () => {
     const fake = semaphoreFake({ extend: () => 0 });
-    const slots = semaphore(fake.client, { limit: 4, leaseMs: 60 });
+    const slots = createSemaphore(fake.client, { limit: 4, leaseMs: 60 });
 
     let abortReason: unknown;
     const promise = settle(
@@ -321,7 +321,7 @@ describe("semaphore.run lost lease", () => {
 
   it("aborts the handle's signal so the body can stop early", async () => {
     const fake = semaphoreFake({ extend: () => 0 });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 10_000 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 10_000 });
 
     await expect(
       settle(
@@ -343,7 +343,7 @@ describe("semaphore.run lost lease", () => {
 
   it("aborts the signal when a manual extend finds the slot reclaimed", async () => {
     const fake = semaphoreFake({ extend: () => 0 });
-    const slots = semaphore(fake.client, { limit: 2 });
+    const slots = createSemaphore(fake.client, { limit: 2 });
 
     const held = await slots.acquire("openai");
     expect(held?.signal.aborted).toBe(false);
@@ -359,7 +359,7 @@ describe("semaphore.run lost lease", () => {
         return 1;
       }
     });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 200 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 200 });
     const errors: unknown[] = [];
 
     await expect(
@@ -381,7 +381,7 @@ describe("semaphore.run lost lease", () => {
         throw new Error("unreachable");
       }
     });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 40 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 40 });
     const errors: unknown[] = [];
 
     await expect(
@@ -402,7 +402,7 @@ describe("semaphore.run lost lease", () => {
     const fake = semaphoreFake({
       extend: () => new Promise<RedisReply>(() => {})
     });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 40 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 40 });
 
     await expect(
       settle(
@@ -416,7 +416,7 @@ describe("semaphore.run lost lease", () => {
 
   it("does not report a deliberate release as a lost lease", async () => {
     const fake = semaphoreFake({ extend: () => 0 });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 60 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 60 });
 
     await expect(
       settle(
@@ -443,7 +443,7 @@ describe("semaphore.run lost lease", () => {
     // the next acquire prunes the lapsed member and lets another caller in while
     // this body is still going.
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 60 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 60 });
 
     await expect(
       settle(
@@ -465,7 +465,7 @@ describe("semaphore.run lost lease", () => {
     // knows, because it runs the same ownership check `extend` does. Its answer
     // used to be discarded.
     const fake = semaphoreFake({ release: () => 0 });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 10_000 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 10_000 });
 
     await expect(
       settle(slots.run("openai", async () => "ok"))
@@ -486,7 +486,7 @@ describe("semaphore.run lost lease", () => {
           throw new Error("connection reset");
         }
       });
-      const slots = semaphore(fake.client, { limit: 2, leaseMs: 200 });
+      const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 200 });
       let hookCalls = 0;
 
       await expect(
@@ -521,7 +521,7 @@ describe("semaphore.run lost lease", () => {
           setTimeout(() => reject(new Error("late")), 80);
         })
     });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 200 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 200 });
     const errors: unknown[] = [];
 
     await expect(
@@ -561,7 +561,7 @@ describe("semaphore.run timer hygiene", () => {
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 80 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 80 });
 
     let refDuringBody: boolean | undefined;
     await settle(
@@ -586,7 +586,7 @@ describe("semaphore.run timer hygiene", () => {
   it("starts no timer at all when renewal is switched off", async () => {
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2 });
+    const slots = createSemaphore(fake.client, { limit: 2 });
 
     await settle(slots.run("openai", async () => 1, { heartbeatMs: false }));
 
@@ -611,7 +611,7 @@ describe("semaphore.run timer hygiene", () => {
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 
     const fake = semaphoreFake({ extend: () => 0 });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 10_000 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 10_000 });
 
     let lostReason: unknown;
     // Never settles and never checks the signal, so `run()` stays pending.
@@ -638,7 +638,7 @@ describe("semaphore.run timer hygiene", () => {
 describe("semaphore contention defaults", () => {
   it("still fails fast when the pool is full and retries are default", async () => {
     const fake = semaphoreFake({ acquire: () => 0 });
-    const slots = semaphore(fake.client, { limit: 1 });
+    const slots = createSemaphore(fake.client, { limit: 1 });
 
     await expect(
       settle(slots.run("full", async () => 1))
@@ -654,7 +654,7 @@ describe("semaphore lease deadlines use a monotonic clock", () => {
     // used to put every deadline in the past, so a healthy, renewed slot was
     // reported lost and its body's result thrown away.
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 100 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 100 });
 
     await expect(
       settle(
@@ -672,7 +672,7 @@ describe("semaphore lease deadlines use a monotonic clock", () => {
     const fake = semaphoreFake({
       extend: () => new Promise<RedisReply>(() => {})
     });
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 40 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 40 });
 
     await expect(
       settle(
@@ -693,7 +693,7 @@ describe("semaphore lease deadlines use a monotonic clock", () => {
 describe("semaphore waiting", () => {
   it("jitters each retry delay around retryDelayMs", async () => {
     const fake = semaphoreFake({ acquire: () => 0 });
-    const slots = semaphore(fake.client, { limit: 1 });
+    const slots = createSemaphore(fake.client, { limit: 1 });
     // The first wait draws the bottom of the range, the second the top.
     vi.spyOn(Math, "random").mockReturnValueOnce(0).mockReturnValueOnce(0.999);
     const attempts = () =>
@@ -712,7 +712,7 @@ describe("semaphore waiting", () => {
 
   it("bounds the whole wait with waitTimeoutMs, trying once more at the deadline", async () => {
     const fake = semaphoreFake({ acquire: () => 0 });
-    const slots = semaphore(fake.client, { limit: 1 });
+    const slots = createSemaphore(fake.client, { limit: 1 });
     vi.spyOn(Math, "random").mockReturnValue(0.5); // Exactly retryDelayMs.
 
     let outcome: unknown = "pending";
@@ -733,7 +733,7 @@ describe("semaphore waiting", () => {
   it("gives run a slot that frees up inside waitTimeoutMs", async () => {
     let attempt = 0;
     const fake = semaphoreFake({ acquire: () => (++attempt < 3 ? 0 : 1) });
-    const slots = semaphore(fake.client, { limit: 1 });
+    const slots = createSemaphore(fake.client, { limit: 1 });
 
     await expect(
       settle(slots.run("full", async () => "in", { waitTimeoutMs: 1_000 }))
@@ -742,7 +742,7 @@ describe("semaphore waiting", () => {
 
   it("rejects a negative waitTimeoutMs before taking a slot", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 1 });
+    const slots = createSemaphore(fake.client, { limit: 1 });
 
     await expect(
       slots.acquire("x", { waitTimeoutMs: -5 })
@@ -754,7 +754,7 @@ describe("semaphore waiting", () => {
 describe("semaphore extend", () => {
   it("re-applies this acquisition's leaseMs, not the store default", async () => {
     const fake = semaphoreFake();
-    const slots = semaphore(fake.client, { limit: 2, leaseMs: 60_000 });
+    const slots = createSemaphore(fake.client, { limit: 2, leaseMs: 60_000 });
 
     const held = await slots.acquire("openai", { leaseMs: 5_000 });
     await expect(held?.extend()).resolves.toBe(true);

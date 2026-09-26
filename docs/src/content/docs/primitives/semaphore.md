@@ -19,7 +19,7 @@ export const slots = semaphore("provider", { limit: 20, leaseMs: 60_000 });
 const answer = await redis.query.slots.run("openai", async () => callModel(prompt));
 ```
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. `benni/primitives` exports the same semaphore in its client-taking form for code that holds a client but no handle: `semaphore({ client, limit: 20 })`.
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Code that holds a client but no schema module reaches the same semaphore with `benni({ client }).store(semaphore("openai", { limit: 20 }))`.
 
 At most 20 callers are inside that body at once, across every process pointed at the same Redis. The lease is renewed while the body runs, so a slow call keeps its slot rather than losing it mid-flight.
 
@@ -67,7 +67,7 @@ This is the one place the semaphore differs from a [lock](/benni/primitives/lock
 So `run` renews the lease while `fn` is in flight, every `heartbeatMs`:
 
 ```ts
-const slots = semaphore(client, { limit: 20, leaseMs: 60_000 }); // 15s heartbeat
+const slots = redis.query.slots; // semaphore("slots", { limit: 20, leaseMs: 60_000 }): 15s heartbeat
 
 await slots.run("openai", async () => {
   // a streaming completion that runs for minutes keeps its slot throughout
@@ -105,7 +105,7 @@ If renewal finds the slot gone, `run` rejects with `SemaphoreLeaseLostError`, ca
 It rejects **even when `fn` resolved**. A body that finished without a slot did not finish under the bound it was written against, and resolving would hide exactly the over-admission you added the semaphore to prevent:
 
 ```ts
-import { SemaphoreLeaseLostError } from "benni/primitives";
+import { SemaphoreLeaseLostError } from "benni";
 
 try {
   return await slots.run("openai", () => callModel(prompt));
@@ -194,8 +194,8 @@ This is [`lock`](/benni/primitives/lock/) with a number: same handle shape, same
 
 | Option | Where | Default | What it does |
 | --- | --- | --- | --- |
-| `limit` | `semaphore(client, …)` | required | How many holders at once. |
-| `prefix` | `semaphore(client, …)` | `"semaphore"` | Key namespace; keys are `<prefix>:<id>`. |
+| `limit` | `semaphore(prefix, …)` | required | How many holders at once. |
+| prefix | `semaphore(prefix, …)` | required | The builder's first argument; keys are `<prefix>:<id>`. |
 | `leaseMs` | `semaphore` / `acquire` / `run` | `60000` | How long a slot is held without an `extend`. With `run` it is also the renewal window. |
 | `retries` | `acquire` / `run` | `0` | Attempts when every slot is taken. `0` fails fast; unlimited when only `waitTimeoutMs` is set. |
 | `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries, jittered over 0.5 to 1.5 times this. |

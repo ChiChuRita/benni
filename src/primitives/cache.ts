@@ -1,9 +1,9 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ReplyShapeError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
 import type { Codec, InferAnchors, RedisClient } from "../core/types.js";
+import { CacheWaitTimeoutError } from "./errors.js";
 import {
   assertCoLocated,
   createLease,
@@ -108,28 +108,6 @@ const invalidateScript = defineScript<readonly [], number>({
   decode: (reply) => (typeof reply === "number" ? reply : 0)
 });
 
-/**
- * Thrown by `cache().get()` when another caller's load was still running after
- * `waitTimeoutMs`. Nothing was loaded by this caller.
- *
- * Loading anyway is what every waiter used to do at the deadline, all at once:
- * a backend already too slow to answer inside the budget got one extra load
- * per waiter, which is the stampede the cache exists to prevent. Serve an
- * error (a 503) or a fallback instead, or raise `waitTimeoutMs`.
- */
-export class CacheWaitTimeoutError extends Error {
-  readonly key: string;
-  constructor(key: string, waitedMs: number) {
-    super(
-      `Timed out after ${waitedMs}ms waiting for another caller to load cache ` +
-        `entry "${key}". Its loader is still running; raise waitTimeoutMs if ` +
-        "loads legitimately take this long."
-    );
-    this.name = "CacheWaitTimeoutError";
-    this.key = key;
-  }
-}
-
 export type CacheOptions<T> = {
   /** Entry lifetime in milliseconds. */
   readonly ttlMs: number;
@@ -184,7 +162,7 @@ export type CacheOptions<T> = {
  * const profile = await profiles.get(userId, () => db.loadProfile(userId));
  * ```
  */
-function createCache<T>(client: RedisClient, options: CacheOptions<T>) {
+export function createCache<T>(client: RedisClient, options: CacheOptions<T>) {
   const checkMs = (ms: number, name: string) => positiveMs(ms, name, "cache");
   const ttlMs = checkMs(options.ttlMs, "ttlMs");
   const prefix = options.prefix ?? DEFAULT_PREFIX;
@@ -330,27 +308,8 @@ function createCache<T>(client: RedisClient, options: CacheOptions<T>) {
   };
 }
 
-/** The read-through cache {@link cache} returns. */
+/** A read-through cache, as `redis.query.<name>` returns it for a {@link CacheSchema}. */
 export type CacheStore<T> = ReturnType<typeof createCache<T>>;
-
-/** {@link CacheOptions} plus the client, for the single-argument form. */
-export type CacheConfig<T> = CacheOptions<T> & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-export function cache<T>(config: CacheConfig<T>): CacheStore<T>;
-export function cache<T>(
-  client: ClientSource,
-  options: CacheOptions<T>
-): CacheStore<T>;
-export function cache<T>(
-  source: ClientSource | CacheConfig<T>,
-  options?: CacheOptions<T>
-): CacheStore<T> {
-  const args = clientArgs<CacheOptions<T>>(source, options);
-  return createCache<T>(args.client, args.options);
-}
 
 /**
  * A cache declared as a schema value, so it lands in `redis.query` next to the
@@ -377,7 +336,7 @@ const cacheBinding: StoreBinding = {
 /** Build a {@link CacheSchema}. Exported as `cache` from `benni/schema`. */
 export function defineCache<T>(
   prefix: string,
-  options: CacheOptions<T>
+  options: Omit<CacheOptions<T>, "prefix">
 ): CacheSchema<T> {
   // The $infer* anchors are type-only phantoms — cast the literal.
   const schema = {

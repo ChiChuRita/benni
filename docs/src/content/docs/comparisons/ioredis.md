@@ -42,7 +42,7 @@ The type is gone the moment your data crosses the Redis edge, and the cast you
 write to get it back is unchecked. Benni moves the declaration up front:
 
 ```ts
-const users = hash("user", { name: string(), score: number() });
+export const users = hash("user", { name: string(), score: number() });
 
 const user = await redis.query.users.hget("42");
 //    ^? { name: string; score: number } | null

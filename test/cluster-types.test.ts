@@ -63,15 +63,15 @@ declare const body: (session: never) => Promise<null>;
  */
 function typeLevelChecks() {
   // --- script().run({ keys }) --------------------------------------------
-  void redis.script(move).run({
+  void redis.store(move).run({
     keys: { from: carts.key("u1"), to: orders.key("u1") },
     args: { amount: 1 }
   });
-  void redis.script(move).run({
+  void redis.store(move).run({
     keys: { from: plain.key("a"), to: plain.key("b") }, // untagged: inert
     args: { amount: 1 }
   });
-  void redis.script(move).run({
+  void redis.store(move).run({
     keys: {
       from: carts.key("u1"),
       // @ts-expect-error keys from two different hash tags cannot share a slot
@@ -133,8 +133,8 @@ function docsSnippets() {
     lua: "return 1"
   });
 
-  void redis.zset(featureFlags).zunionstore("all", "beta", ["internal"]);
-  void redis.script(moveItem).run({
+  void redis.store(featureFlags).zunionstore("all", "beta", ["internal"]);
+  void redis.store(moveItem).run({
     // @ts-expect-error keys from two different hash tags cannot share a slot
     keys: { from: carts.key("u1"), to: orders.key("u2") },
     args: { amount: 1 }

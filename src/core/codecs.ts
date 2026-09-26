@@ -5,7 +5,12 @@ import {
   type InferStandardOutput,
   type StandardSchemaV1
 } from "./standard-schema.js";
-import type { Codec, OptionalCodec } from "./types.js";
+import type {
+  Codec,
+  NumberCodec,
+  OptionalCodec,
+  StringCodec
+} from "./types.js";
 
 // Shared with the zod bridge's zodJson() so both JSON codecs refuse the same
 // unrepresentable values; `label` names the offending codec in the message.
@@ -127,8 +132,9 @@ function optional<TInput, TOutput>(
 
 export const codecs = {
   /** Store and read a value as-is. */
-  string(): Codec<string> {
+  string(): StringCodec {
     return {
+      format: "string",
       // Not `String`: that stringifies anything, so a value the types said was
       // a string but was not (an undefined field, a forwarded optional) landed
       // in Redis as "undefined" or "[object Object]" instead of failing. The
@@ -149,8 +155,9 @@ export const codecs = {
    * encode (a symmetric guard to decode's finite-number check) so `NaN` /
    * `Infinity` fail at the write rather than poisoning a later read.
    */
-  number(): Codec<number> {
+  number(): NumberCodec {
     return {
+      format: "number",
       encode(input) {
         if (!Number.isFinite(input)) {
           throw new ValidationError(

@@ -1,11 +1,5 @@
 import { replyShapeError, ValidationError } from "./errors.js";
-import {
-  createKeyLifecycleOps,
-  type ExpiryOptions,
-  expectNumber,
-  expiryArgs,
-  ttlSeconds
-} from "./helpers.js";
+import { expectNumber } from "./helpers.js";
 import type { SlotGuard } from "./slot.js";
 import type {
   Keyspace,
@@ -14,9 +8,6 @@ import type {
   RedisKeyPart,
   RedisReply
 } from "./types.js";
-
-/** GETEX expiry modes; shared with HGETEX (see `ExpiryOptions`). */
-export type StringGetExOptions = ExpiryOptions;
 
 /** Options for the `IDX` form of `lcs` (match positions instead of the string). */
 export type LcsIdxOptions = {
@@ -84,7 +75,13 @@ function decodeLcsIdx(reply: RedisReply): LcsIdxResult {
   };
 }
 
-export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
+/**
+ * The string commands a kv store carries when its codec is `string()`: the
+ * ones that edit or measure the stored bytes in place, which only make sense
+ * when the value is stored as-is. (`enumOf()` stores plain strings too, but an
+ * APPEND would take the value out of its set, so it carries none of these.)
+ */
+export function createStringCommands<TId extends RedisKeyPart = RedisKeyPart>(
   client: RedisClient,
   keyspace: Keyspace<string, string, string, TId>,
   assertSameSlot?: SlotGuard
@@ -135,11 +132,10 @@ export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
   }
 
   return {
-    ...createKeyLifecycleOps(client, (id: TId) => keyspace.key(id)),
     /**
      * APPEND — append `value` to the string (creating it if missing);
      * returns the new length.
-     * @example await redis.string(logs).append("today", "line\n");
+     * @example await redis.query.logs.append("today", "line\n");
      */
     async append(id: TId, value: string): Promise<number> {
       return expectNumber(
@@ -200,29 +196,10 @@ export function createStringStore<TId extends RedisKeyPart = RedisKeyPart>(
         "STRLEN"
       );
     },
-    /**
-     * GETEX — read the value while (re)setting its expiry: a bare number of
-     * seconds, or any `ExpiryOptions` mode. `null` if the key is missing.
-     */
-    async getex(
-      id: TId,
-      ttlOrOptions: number | StringGetExOptions
-    ): Promise<string | null> {
-      const args =
-        typeof ttlOrOptions === "number"
-          ? ["EX", ttlSeconds(ttlOrOptions)]
-          : expiryArgs(ttlOrOptions);
-      const reply = await client.send(["GETEX", keyspace.key(id), ...args]);
-      if (reply === null) return null;
-      if (typeof reply !== "string") {
-        throw replyShapeError("GETEX", "string or null", reply);
-      }
-      return reply;
-    },
-    /** DEL — delete the key. Returns 1 if it existed, 0 otherwise. */
-    async del(id: TId): Promise<number> {
-      return expectNumber(await client.send(["DEL", keyspace.key(id)]), "DEL");
-    },
     lcs
   };
 }
+
+/** What a `string()` kv store carries on top of the plain kv commands. */
+export type StringCommands<TId extends RedisKeyPart = RedisKeyPart> =
+  ReturnType<typeof createStringCommands<TId>>;

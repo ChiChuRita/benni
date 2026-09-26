@@ -319,19 +319,15 @@ describeRedis("pub/sub overlap against a live server", () => {
     const seen: number[] = [];
 
     try {
-      const subscription = await redis.pubsub
-        .channel(first)
-        .subscribe(() => {});
+      const subscription = await redis.store(first).subscribe(() => {});
       await Promise.all([
         subscription.unsubscribe(),
-        redis.pubsub.channel(second).subscribe((message) => {
+        redis.store(second).subscribe((message) => {
           seen.push(message.n);
         })
       ]);
 
-      await expect(
-        redis.pubsub.channel(second).publish({ n: 1 })
-      ).resolves.toBe(1);
+      await expect(redis.store(second).publish({ n: 1 })).resolves.toBe(1);
       await vi.waitUntil(() => seen.length === 1);
       expect(seen).toEqual([1]);
     } finally {

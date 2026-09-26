@@ -17,7 +17,8 @@ import type {
   RedisReply
 } from "../src/core/types.js";
 import { node } from "../src/node/index.js";
-import { CacheWaitTimeoutError, cache } from "../src/primitives/cache.js";
+import { createCache } from "../src/primitives/cache.js";
+import { CacheWaitTimeoutError } from "../src/primitives/errors.js";
 import { fakeClient } from "./fake-client.js";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -88,7 +89,7 @@ describe("cache fill fencing", () => {
     const commands: RedisCommand[] = [];
     // GET miss, claim SCRIPT LOAD + EVALSHA ({2}: lock taken), then the
     // publish SCRIPT LOAD + EVALSHA, which also frees the lock.
-    const store = cache<string>(
+    const store = createCache<string>(
       fakeClient(commands, [null, "sha-claim", [2], "sha-pub", 1]),
       { ttlMs: 60_000 }
     );
@@ -122,7 +123,7 @@ describe("cache fill fencing", () => {
     // still going. It is renewed every quarter of lockTtlMs instead.
     const commands: RedisCommand[] = [];
     const client = cacheFake({ commands, claim: () => [2] });
-    const store = cache<string>(client, { ttlMs: 60_000 });
+    const store = createCache<string>(client, { ttlMs: 60_000 });
 
     const load = store.get("a", () => pause(40_000).then(() => "slow"));
     await vi.advanceTimersByTimeAsync(40_000);
@@ -144,7 +145,7 @@ describe("cache fill fencing", () => {
   it("frees the fill lock at once when the loader throws", async () => {
     const commands: RedisCommand[] = [];
     const client = cacheFake({ commands, claim: () => [2] });
-    const store = cache<string>(client, { ttlMs: 60_000 });
+    const store = createCache<string>(client, { ttlMs: 60_000 });
 
     await expect(
       store.get("a", () => {
@@ -166,7 +167,7 @@ describe("cache fill fencing", () => {
       commands,
       claim: (call) => (call < 6 ? [0] : [2])
     });
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       lockTtlMs: 100,
       pollMs: 5
@@ -190,7 +191,7 @@ describe("cache fill fencing", () => {
     // any del() issued meanwhile.
     const commands: RedisCommand[] = [];
     const client = cacheFake({ commands, claim: () => [0] });
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       lockTtlMs: 100,
       pollMs: 5
@@ -220,7 +221,7 @@ describe("cache fill fencing", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5); // No jitter: exact delays.
     const commands: RedisCommand[] = [];
     const client = cacheFake({ commands, claim: () => [0] });
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       waitTimeoutMs: 2_000
     });
@@ -236,7 +237,7 @@ describe("cache fill fencing", () => {
 
   it("del drops the entry and the fill lease in one script", async () => {
     const commands: RedisCommand[] = [];
-    const store = cache<string>(fakeClient(commands, ["sha-del", 1]), {
+    const store = createCache<string>(fakeClient(commands, ["sha-del", 1]), {
       ttlMs: 5_000
     });
 
@@ -259,7 +260,7 @@ describe("cache keys", () => {
     // itself still spreads, which is the property a cache must keep.
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ['"value"']);
-    const entries = cache<string>(client, {
+    const entries = createCache<string>(client, {
       ttlMs: 1000,
       codec: codecs.json()
     });
@@ -276,7 +277,9 @@ describe("cache keys", () => {
     // ignores and hashes the whole key instead: the entry and its lock then
     // land on different slots and every script for that id is CROSSSLOT.
     const commands: RedisCommand[] = [];
-    const store = cache<string>(fakeClient(commands, []), { ttlMs: 1_000 });
+    const store = createCache<string>(fakeClient(commands, []), {
+      ttlMs: 1_000
+    });
     for (const id of ["", "}x"]) {
       await expect(store.get(id, () => "v")).rejects.toBeInstanceOf(
         ValidationError
@@ -286,7 +289,7 @@ describe("cache keys", () => {
       await expect(store.del(id)).rejects.toBeInstanceOf(ValidationError);
     }
     // So does a prefix whose "{" steals the tag from the id.
-    const stolen = cache<string>(fakeClient(commands, []), {
+    const stolen = createCache<string>(fakeClient(commands, []), {
       ttlMs: 1_000,
       prefix: "a{"
     });
@@ -296,7 +299,7 @@ describe("cache keys", () => {
 
   it("accepts braces that still co-locate the pair", async () => {
     const commands: RedisCommand[] = [];
-    const store = cache<string>(fakeClient(commands, [null, null]), {
+    const store = createCache<string>(fakeClient(commands, [null, null]), {
       ttlMs: 1_000,
       prefix: "{app}:cache"
     });
@@ -350,7 +353,7 @@ describeRedis("cache fill fencing (live)", () => {
     // to lose: the loader's pre-update snapshot landed after the DEL and was
     // republished with a full TTL, so one correct invalidation served stale
     // data for the whole ttlMs.
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       prefix: `${run}:del`
     });
@@ -377,7 +380,7 @@ describeRedis("cache fill fencing (live)", () => {
   it("a direct set() beats a load that is already in flight", async () => {
     // set() neither checked for nor broke the fill lock, so a slower loader
     // holding v1 published over a fresh set(v2) and served v1 for ttlMs.
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       prefix: `${run}:set`
     });
@@ -396,7 +399,7 @@ describeRedis("cache fill fencing (live)", () => {
   it("a slow load keeps its fill lock, so nobody else loads", async () => {
     // A 40s load under a 10s lock, scaled down: the lock used to lapse under
     // the loader and hand the load to a new caller every lockTtlMs.
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       prefix: `${run}:slow`,
       lockTtlMs: 200,
@@ -419,12 +422,12 @@ describeRedis("cache fill fencing (live)", () => {
   });
 
   it("a holder whose lease lapsed cannot overwrite a newer fill", async () => {
-    const stalled = cache<string>(withoutRenewal(client), {
+    const stalled = createCache<string>(withoutRenewal(client), {
       ttlMs: 60_000,
       prefix: `${run}:stale`,
       lockTtlMs: 200
     });
-    const healthy = cache<string>(client, {
+    const healthy = createCache<string>(client, {
       ttlMs: 60_000,
       prefix: `${run}:stale`,
       lockTtlMs: 200,
@@ -445,12 +448,12 @@ describeRedis("cache fill fencing (live)", () => {
   });
 
   it("waiters re-collapse onto the holder that takes over a lapsed lease", async () => {
-    const stalled = cache<string>(withoutRenewal(client), {
+    const stalled = createCache<string>(withoutRenewal(client), {
       ttlMs: 60_000,
       prefix: `${run}:handoff`,
       lockTtlMs: 300
     });
-    const healthy = cache<string>(client, {
+    const healthy = createCache<string>(client, {
       ttlMs: 60_000,
       prefix: `${run}:handoff`,
       lockTtlMs: 300,
@@ -482,7 +485,7 @@ describeRedis("cache fill fencing (live)", () => {
   });
 
   it("waiters give up at waitTimeoutMs instead of stampeding a slow backend", async () => {
-    const store = cache<string>(client, {
+    const store = createCache<string>(client, {
       ttlMs: 60_000,
       prefix: `${run}:deadline`,
       lockTtlMs: 200,
@@ -526,7 +529,7 @@ describeCluster("cache on a cluster-enabled node", () => {
   });
 
   it("runs every script for an id without CROSSSLOT", async () => {
-    const store = cache<string>(client, { ttlMs: 60_000, prefix: run });
+    const store = createCache<string>(client, { ttlMs: 60_000, prefix: run });
     for (const id of ["u1", "a}b", "{nested}"]) {
       await expect(store.get(id, () => `v:${id}`)).resolves.toBe(`v:${id}`);
       await store.set(id, "w");

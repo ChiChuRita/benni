@@ -140,7 +140,7 @@ export function createGeoStore<
     /**
      * GEOADD — add or update members at coordinates; returns how many were
      * newly added (changed members with `ch`). No-op returning 0 when empty.
-     * @example await redis.geo(cities).geoadd("eu", [{ member: "berlin", longitude: 13.4, latitude: 52.5 }]);
+     * @example await redis.query.cities.geoadd("eu", [{ member: "berlin", longitude: 13.4, latitude: 52.5 }]);
      */
     async geoadd(
       id: TId,
@@ -224,7 +224,7 @@ export function createGeoStore<
     /**
      * GEOSEARCH — members within a radius or box around a member or point;
      * `withDistance`/`withCoordinates` enrich each result.
-     * @example await redis.geo(cities).geosearch("eu", { from: { member: "berlin" }, by: { radius: 100, unit: "km" } });
+     * @example await redis.query.cities.geosearch("eu", { from: { member: "berlin" }, by: { radius: 100, unit: "km" } });
      */
     async geosearch(
       id: TId,

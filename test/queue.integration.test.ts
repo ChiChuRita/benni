@@ -4,11 +4,11 @@ import { node } from "../src/node/index.js";
 import {
   JobLeaseLostError,
   JobNotFoundError,
-  queue,
   RetryJobError,
   TerminalJobError,
   WorkerStoppedError
-} from "../src/primitives/index.js";
+} from "../src/primitives/errors.js";
+import { createQueue } from "../src/primitives/queue.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -58,7 +58,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("runs an enqueued job and resolves its result", async () => {
-    const jobs = queue<{ prompt: string }, string>(client, {
+    const jobs = createQueue<{ prompt: string }, string>(client, {
       prefix: nextPrefix()
     });
     const worker = jobs.worker(async (job) => `echo:${job.payload.prompt}`);
@@ -78,7 +78,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("streams chunks and ends the watch on the terminal event", async () => {
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     const worker = jobs.worker(async (job) => {
       for (const token of ["Hel", "lo ", "world"]) {
         await job.emit(token);
@@ -100,7 +100,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("resumes a watch from a cursor without replaying or dropping events", async () => {
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     const worker = jobs.worker(async (job) => {
       for (const token of ["a", "b", "c"]) await job.emit(token);
       return "abc";
@@ -126,7 +126,9 @@ describeRedis("queue (live)", () => {
   });
 
   it("collapses duplicate enqueues behind an idempotency key", async () => {
-    const jobs = queue<{ n: number }, number>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<{ n: number }, number>(client, {
+      prefix: nextPrefix()
+    });
     let runs = 0;
     const worker = jobs.worker(async (job) => {
       runs += 1;
@@ -152,7 +154,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("runs higher priority jobs first", async () => {
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     const order: string[] = [];
 
     // Enqueue before starting the worker so all four are waiting at once.
@@ -172,7 +174,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("holds a delayed job until it comes due", async () => {
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     const { id } = await jobs.enqueue("later", { delayMs: 400 });
 
     expect((await jobs.get(id))?.status).toBe("scheduled");
@@ -187,7 +189,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("retries with backoff and then dead-letters", async () => {
-    const jobs = queue<string, string>(client, {
+    const jobs = createQueue<string, string>(client, {
       prefix: nextPrefix(),
       maxAttempts: 3,
       backoffMs: 10,
@@ -215,7 +217,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("dead-letters a TerminalJobError without retrying", async () => {
-    const jobs = queue<string, string>(client, {
+    const jobs = createQueue<string, string>(client, {
       prefix: nextPrefix(),
       maxAttempts: 5,
       backoffMs: 10
@@ -238,7 +240,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("honours the delay on a RetryJobError, then succeeds", async () => {
-    const jobs = queue<string, string>(client, {
+    const jobs = createQueue<string, string>(client, {
       prefix: nextPrefix(),
       maxAttempts: 3,
       backoffMs: 30_000 // would blow the test if the explicit delay is ignored
@@ -259,7 +261,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("restarts the output stream when an attempt is retried", async () => {
-    const jobs = queue<null, string>(client, {
+    const jobs = createQueue<null, string>(client, {
       prefix: nextPrefix(),
       maxAttempts: 2,
       backoffMs: 10,
@@ -299,7 +301,7 @@ describeRedis("queue (live)", () => {
   }, 10_000);
 
   it("requeues a dead-lettered job on retryDead", async () => {
-    const jobs = queue<string, string>(client, {
+    const jobs = createQueue<string, string>(client, {
       prefix: nextPrefix(),
       maxAttempts: 1,
       backoffMs: 10
@@ -327,7 +329,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("cancels a waiting job before any worker sees it", async () => {
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     const { id } = await jobs.enqueue("never-runs");
 
     await expect(jobs.cancel(id)).resolves.toBe(true);
@@ -346,7 +348,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("aborts a running job's signal on cancel and settles it cancelled", async () => {
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     let aborted = false;
     let started = false;
 
@@ -385,11 +387,14 @@ describeRedis("queue (live)", () => {
     // already stopped.
     const prefix = nextPrefix();
     const link = partitionable(client);
-    const stalling = queue<string, string>(link.client, {
+    const stalling = createQueue<string, string>(link.client, {
       prefix,
       leaseMs: 300
     });
-    const rescuing = queue<string, string>(client, { prefix, leaseMs: 30_000 });
+    const rescuing = createQueue<string, string>(client, {
+      prefix,
+      leaseMs: 30_000
+    });
 
     let firstRuns = 0;
     let secondRuns = 0;
@@ -438,11 +443,14 @@ describeRedis("queue (live)", () => {
     // the lease up itself once it can no longer have been renewed in time.
     const prefix = nextPrefix();
     const link = partitionable(client);
-    const stalling = queue<string, string>(link.client, {
+    const stalling = createQueue<string, string>(link.client, {
       prefix,
       leaseMs: 300
     });
-    const healthy = queue<string, string>(client, { prefix, leaseMs: 30_000 });
+    const healthy = createQueue<string, string>(client, {
+      prefix,
+      leaseMs: 30_000
+    });
 
     let stalledRuns = 0;
     let healthyRuns = 0;
@@ -501,7 +509,7 @@ describeRedis("queue (live)", () => {
   }, 15_000);
 
   it("processes a backlog concurrently and reports stats", async () => {
-    const jobs = queue<number, number>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<number, number>(client, { prefix: nextPrefix() });
     const ids: string[] = [];
     for (let index = 0; index < 12; index += 1) {
       ids.push((await jobs.enqueue(index)).id);
@@ -535,7 +543,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("reports progress on the record and the stream", async () => {
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     const worker = jobs.worker(async (job) => {
       await job.progress(0.5);
       await sleep(30);
@@ -553,7 +561,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("throws JobNotFoundError for an unknown id", async () => {
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     await expect(jobs.get("missing")).resolves.toBeNull();
     await expect(jobs.wait("missing")).rejects.toBeInstanceOf(JobNotFoundError);
     await expect(jobs.cancel("missing")).resolves.toBe(false);
@@ -565,7 +573,10 @@ describeRedis("queue (live)", () => {
     // worker aborted brand-new work on its first heartbeat and threw the
     // result away, and the record could expire while the id was still queued.
     const prefix = nextPrefix();
-    const jobs = queue<string, string>(client, { prefix, resultTtlMs: 1_000 });
+    const jobs = createQueue<string, string>(client, {
+      prefix,
+      resultTtlMs: 1_000
+    });
 
     const first = await jobs.enqueue("one", { id: "job-1" });
     expect(await jobs.cancel(first.id)).toBe(true);
@@ -593,7 +604,7 @@ describeRedis("queue (live)", () => {
     // the throw was classified as a job failure: the side effect ran
     // maxAttempts times and the job still dead-lettered.
     const prefix = nextPrefix();
-    const jobs = queue<{ to: string }, void>(client, { prefix });
+    const jobs = createQueue<{ to: string }, void>(client, { prefix });
     let sends = 0;
     const worker = jobs.worker(async () => {
       sends += 1;
@@ -618,7 +629,7 @@ describeRedis("queue (live)", () => {
     // interval already started, so a zombie timer renewed the lease forever:
     // the job stayed active and was never reclaimed, retried, or dead-lettered.
     const prefix = nextPrefix();
-    const jobs = queue<{ n: number }, string>(client, { prefix });
+    const jobs = createQueue<{ n: number }, string>(client, { prefix });
     const { id } = await jobs.enqueue({ n: 1 });
 
     // Corrupt the stored payload the way an older producer or a codec change
@@ -658,7 +669,10 @@ describeRedis("queue (live)", () => {
     // clock ran fast reclaimed leases their holders were still renewing, and a
     // producer whose clock ran slow scheduled delayed jobs in the past.
     const prefix = nextPrefix();
-    const jobs = queue<string, string>(client, { prefix, leaseMs: 2_000 });
+    const jobs = createQueue<string, string>(client, {
+      prefix,
+      leaseMs: 2_000
+    });
     let holderRuns = 0;
     let skewedRuns = 0;
     const holder = jobs.worker(
@@ -711,7 +725,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("reports output the retention cap trimmed instead of skipping it", async () => {
-    const jobs = queue<null, string>(client, {
+    const jobs = createQueue<null, string>(client, {
       prefix: nextPrefix(),
       eventsMaxLen: 10
     });
@@ -761,7 +775,7 @@ describeRedis("queue (live)", () => {
   it("requeues a running job on stop({ timeoutMs }) so another worker takes it at once", async () => {
     // Default 60s lease: without the requeue the next worker would wait out
     // the whole lease before it could reclaim the job.
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     let emitted = false;
     let reason: unknown;
     const first = jobs.worker(
@@ -803,7 +817,7 @@ describeRedis("queue (live)", () => {
   });
 
   it("settles a cancelled job instead of requeueing it on stop", async () => {
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     let started = false;
     const worker = jobs.worker(
       async (job) => {
@@ -839,7 +853,7 @@ describeRedis("queue (live)", () => {
     // did not, so the set grew for the life of the deployment and dead()
     // returned ids whose records were long gone.
     const prefix = nextPrefix();
-    const jobs = queue<string, string>(client, {
+    const jobs = createQueue<string, string>(client, {
       prefix,
       maxAttempts: 1,
       resultTtlMs: 400
@@ -891,7 +905,7 @@ describeCluster("queue (live, cluster-enabled node)", () => {
     // The scripts declare what they can and derive the rest from the hash
     // tag. Cluster mode rejects any key outside the script's slot, so this
     // walks every script, including each one that derives a key.
-    const jobs = queue<string, string>(client, {
+    const jobs = createQueue<string, string>(client, {
       prefix: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
       maxAttempts: 1
     });

@@ -80,13 +80,13 @@ describe("zodJson", () => {
     const commands: RedisCommand[] = [];
     const redis = benni({ client: fakeClient(commands, ["OK", wire]) });
 
-    await redis.kv(users).set("u1", {
+    await redis.store(users).set("u1", {
       name: "ada",
       created: new Date("2020-01-01T00:00:00.000Z")
     });
     expect(commands).toEqual([["SET", "user:u1", wire]]);
 
-    const found = await redis.kv(users).get("u1");
+    const found = await redis.store(users).get("u1");
     expect(found?.created).toBeInstanceOf(Date);
     expect(found?.created.toISOString()).toBe("2020-01-01T00:00:00.000Z");
   });
@@ -95,7 +95,7 @@ describe("zodJson", () => {
     const commands: RedisCommand[] = [];
     const redis = benni({ client: fakeClient(commands, []) });
     await expect(
-      redis.kv(users).set("u1", { name: 42, created: new Date() } as never)
+      redis.store(users).set("u1", { name: 42, created: new Date() } as never)
     ).rejects.toThrow(ValidationError);
     expect(commands).toEqual([]);
   });

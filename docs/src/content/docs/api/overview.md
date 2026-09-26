@@ -38,13 +38,13 @@ await redis.close();
 Use data-structure resources:
 
 ```ts
-redis.kv(profiles);
-redis.hash(users);
-redis.set(teamMembers);
-redis.list(events);
-redis.zset(leaderboards);
-redis.hll(pageViews);
-redis.pubsub.channel(userEvents);
+redis.query.profiles;
+redis.query.users;
+redis.query.teamMembers;
+redis.query.events;
+redis.query.leaderboards;
+redis.query.pageViews;
+redis.query.userEvents;
 ```
 
 Use `redis.raw` for direct Redis commands:
@@ -57,4 +57,4 @@ await redis.raw.send(["PING"]);
 
 The `benni/core` entrypoint is the adapter-author surface: the `RedisClient` contract and its capability types (`FullRedisClient`, `RedisSession`, `RedisSubscriber`, …), `resolveClient`, the server-error normalizer `redisServerError`, the script runner (`createScriptRunner`, `defineScript`), and the store builders the client is made of (`createKeyValueStore`, `createHashStore`, …). Schemas are declared from `benni/schema` only; `benni/core` does not repeat the builders under `define*` names.
 
-Application code should prefer the schema-first API shown in the guide; every accessor is documented in the [Benni Client reference](/benni/api/benni-client/).
+Application code should prefer the schema-first API shown in the guide; every member of the handle is documented in the [Benni Client reference](/benni/api/benni-client/).

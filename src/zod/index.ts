@@ -130,8 +130,8 @@ export function zodCodec<S extends $ZodType<unknown, string>>(
  * ```ts
  * const user = z.object({ name: z.string(), created: isoDate });
  * const users = kv("user", zodJson(user));
- * await redis.kv(users).set("u1", { name: "ada", created: new Date() });
- * const found = await redis.kv(users).get("u1");
+ * await redis.query.users.set("u1", { name: "ada", created: new Date() });
+ * const found = await redis.query.users.get("u1");
  * //    ^? { name: string; created: Date } | null
  * ```
  */

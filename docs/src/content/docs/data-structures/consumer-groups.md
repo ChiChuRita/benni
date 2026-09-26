@@ -8,7 +8,7 @@ Consumer groups let several workers share a [stream](/benni/data-structures/stre
 Groups hang off the stream **store**, not the schema: group topology changes at deploy time, while the schema stays about data shape. You bind a group by name, then a consumer by name, and the stream id (the schema key id) stays the first argument of every call:
 
 ```ts
-const group = redis.stream(auditEvents).group("processors");
+const group = redis.query.auditEvents.group("processors");
 const me = group.consumer(`c-${process.pid}`);
 ```
 
@@ -114,7 +114,7 @@ A live worker that wants to wait for new deliveries uses `xreadgroup` with a `ti
 
 ```ts
 await redis.session(async (s) => {
-  const live = s.stream(auditEvents).group("processors").consumer(`c-${process.pid}`);
+  const live = s.query.auditEvents.group("processors").consumer(`c-${process.pid}`);
   while (!shutdown.signal.aborted) {
     const batch = await live.xreadgroup("login", { timeoutSeconds: 5, count: 20 });
     for (const entry of batch) await handleEntry(entry.value);
@@ -132,7 +132,7 @@ Blocking `xreadgroup` always reads `>` (new deliveries), because Redis only hono
 The pieces above compose into a worker: recover this consumer's own history, steal from dead peers, then loop on the blocking read.
 
 ```ts
-const group = redis.stream(auditEvents).group("processors");
+const group = redis.query.auditEvents.group("processors");
 const me = group.consumer(`c-${process.pid}`);
 
 await group.create("login", { from: "start" }); // idempotent bootstrap
@@ -158,7 +158,7 @@ do {
 
 // (c) live loop: the blocking group read is only reachable through a session
 await redis.session(async (s) => {
-  const live = s.stream(auditEvents).group("processors").consumer(`c-${process.pid}`);
+  const live = s.query.auditEvents.group("processors").consumer(`c-${process.pid}`);
   while (!shutdown.signal.aborted) {
     const batch = await live.xreadgroup("login", { timeoutSeconds: 5, count: 20 });
     for (const entry of batch) await handleEntry(entry.value);

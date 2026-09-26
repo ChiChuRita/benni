@@ -86,28 +86,28 @@ the handle with `await redis.close()` when you are done.
 Methods are named after the Redis commands they run:
 
 ```js
-await redis.kv(schema.profiles).set("demo:1", { name: "Ada", score: 10 });
-const profile = await redis.kv(schema.profiles).get("demo:1");
+await redis.query.profiles.set("demo:1", { name: "Ada", score: 10 });
+const profile = await redis.query.profiles.get("demo:1");
 
-const visits = await redis.counter(schema.counters).incrby("demo:1", 3);
+const visits = await redis.query.counters.incrby("demo:1", 3);
 
-await redis.hash(schema.users).hset("demo:1", { name: "Ada", score: 10 });
-await redis.hash(schema.users).hincrby("demo:1", "score", 5);
-const user = await redis.hash(schema.users).hget("demo:1");
+await redis.query.users.hset("demo:1", { name: "Ada", score: 10 });
+await redis.query.users.hincrby("demo:1", "score", 5);
+const user = await redis.query.users.hget("demo:1");
 
-await redis.set(schema.roles).sadd("demo:1", ["admin", "editor"]);
+await redis.query.roles.sadd("demo:1", ["admin", "editor"]);
 
-await redis.list(schema.jobs).rpush("demo:1", [
+await redis.query.jobs.rpush("demo:1", [
   { id: "job-1", kind: "email" },
   { id: "job-2", kind: "report" }
 ]);
-const nextJob = await redis.list(schema.jobs).lpop("demo:1");
+const nextJob = await redis.query.jobs.lpop("demo:1");
 
-await redis.zset(schema.leaderboard).zadd("daily", [
+await redis.query.leaderboard.zadd("daily", [
   { member: "ada", score: 15 },
   { member: "grace", score: 12 }
 ]);
-const topScores = await redis.zset(schema.leaderboard).zrange("daily", {
+const topScores = await redis.query.leaderboard.zrange("daily", {
   start: 0,
   stop: -1,
   withScores: true
@@ -123,7 +123,7 @@ Every resource exposes `key(id)` when you need the full Redis key, and the raw
 escape hatch is always there for commands without a typed helper yet:
 
 ```js
-const fullKey = redis.hash(schema.users).key("demo:1"); // "example:user:demo:1"
+const fullKey = redis.query.users.key("demo:1"); // "example:user:demo:1"
 
 await redis.raw.send(["SET", "raw:key", "value"]);
 const value = await redis.raw.send(["GET", "raw:key"]);

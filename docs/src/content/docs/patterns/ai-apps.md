@@ -21,7 +21,7 @@ export const chat = stream("chat", {
 Append each turn, trimming to the last ~200 as you write:
 
 ```ts
-await redis.stream(chat).xadd(
+await redis.query.chat.xadd(
   conversationId,
   { role: "user", content },
   { maxLen: { count: 200, approximate: true } }
@@ -33,8 +33,7 @@ Load the prompt window with `xrevrange` (newest first, so `count` caps the read)
 ```ts
 import { generateText } from "ai";
 
-const recent = await redis
-  .stream(chat)
+const recent = await redis.query.chat
   .xrevrange(conversationId, { count: 20 });
 
 const messages = recent
@@ -52,7 +51,7 @@ const { text } = await generateText({ model: openai("gpt-4o-mini"), messages });
 Entry values are `Partial` because Redis does not enforce stream entry shapes; the `flatMap` guard both narrows the types and skips malformed entries. For abandoned conversations, arm a per-conversation TTL after writing:
 
 ```ts
-await redis.stream(chat).expire(conversationId, 60 * 60 * 24 * 30); // 30 days
+await redis.query.chat.expire(conversationId, 60 * 60 * 24 * 30); // 30 days
 ```
 
 In production, size `maxLen` to your model's context budget, not your UI's history length, and remember `approximate: true` trims in whole macro nodes, so the stream may briefly hold a few more entries than the count. See [Streams](/benni/data-structures/streams/) for the full store API.
@@ -62,12 +61,15 @@ In production, size `maxLen` to your model's context budget, not your UI's histo
 Requests-per-minute alone does not protect an LLM endpoint: twenty small requests and twenty 100k-token requests cost wildly different amounts. Layer two checks: a sliding-window request limit via the [`ratelimit` primitive](/benni/primitives/ratelimit/), and a daily token budget in a plain counter keyed by user and date.
 
 ```ts
-import { kv, number } from "benni/schema";
-import { ratelimit } from "benni/primitives";
+// schema.ts
+import { kv, number, ratelimit } from "benni/schema";
 
 export const dailyTokens = kv("tokens", number());
+export const llmLimit = ratelimit("llm", { limit: 20, windowMs: 60_000 });
+```
 
-const limiter = ratelimit(client, { limit: 20, windowMs: 60_000, prefix: "llm" });
+```ts
+// app/api/generate/route.ts
 const DAILY_TOKEN_BUDGET = 200_000;
 
 export async function POST(request: Request): Promise<Response> {
@@ -77,7 +79,7 @@ export async function POST(request: Request): Promise<Response> {
   };
 
   // Layer 1: requests per minute, sliding window.
-  const { success, retryAfterMs } = await limiter.check(userId);
+  const { success, retryAfterMs } = await redis.query.llmLimit.check(userId);
   if (!success) {
     return new Response("Too Many Requests", {
       status: 429,
@@ -88,7 +90,7 @@ export async function POST(request: Request): Promise<Response> {
   // Layer 2: tokens per day.
   const day = new Date().toISOString().slice(0, 10); // "2026-07-12"
   const budgetId = `${userId}:${day}`;
-  const used = (await redis.kv(dailyTokens).get(budgetId)) ?? 0;
+  const used = (await redis.query.dailyTokens.get(budgetId)) ?? 0;
   if (used >= DAILY_TOKEN_BUDGET) {
     return new Response("Daily token budget exhausted", { status: 429 });
   }
@@ -96,11 +98,12 @@ export async function POST(request: Request): Promise<Response> {
   const result = await generateText({ model: openai("gpt-4o-mini"), prompt });
 
   // Record usage; the increment that creates the key arms its TTL.
-  const total = await redis
-    .counter(dailyTokens)
-    .incrby(budgetId, result.usage.totalTokens);
+  const total = await redis.query.dailyTokens.incrby(
+    budgetId,
+    result.usage.totalTokens
+  );
   if (total === result.usage.totalTokens) {
-    await redis.counter(dailyTokens).expire(budgetId, 60 * 60 * 24 * 2);
+    await redis.query.dailyTokens.expire(budgetId, 60 * 60 * 24 * 2);
   }
 
   return Response.json({ text: result.text, tokensUsedToday: total });
@@ -114,12 +117,14 @@ The sliding window matters here: a fixed window resets all at once, so a caller 
 Identical prompts arrive in bursts (the same trending question, the same retried classification), and every duplicate model call costs real money and seconds of latency. The [`cache` primitive](/benni/primitives/cache/) is single-flight: on a miss, exactly one caller runs the loader while concurrent identical prompts wait for the filled value, so a burst of the same prompt becomes one model call. Key it by a SHA-256 over everything that determines the output: model, system prompt, and user input.
 
 ```ts
-import { cache } from "benni/primitives";
-
-const responses = cache<string>(client, {
+// schema.ts
+export const responses = cache("llm-response", {
   ttlMs: 24 * 60 * 60 * 1000,
-  prefix: "llm-response"
+  codec: string()
 });
+```
+
+```ts
 
 // Web Crypto: works on Node, Bun, Deno, and every edge runtime.
 async function promptHash(model: string, system: string, input: string): Promise<string> {
@@ -131,7 +136,7 @@ async function promptHash(model: string, system: string, input: string): Promise
 }
 
 const id = await promptHash("gpt-4o-mini", SYSTEM_PROMPT, userInput);
-const text = await responses.get(id, async () => {
+const text = await redis.query.responses.get(id, async () => {
   const result = await generateText({
     model: openai("gpt-4o-mini"),
     system: SYSTEM_PROMPT,
@@ -154,12 +159,12 @@ export const generation = stream("generation", { chunk: string() });
 
 // Producer: append chunks as the model streams them.
 for await (const delta of textStream) {
-  await redis.stream(generation).xadd(generationId, { chunk: delta });
+  await redis.query.generation.xadd(generationId, { chunk: delta });
 }
-await redis.stream(generation).expire(generationId, 60 * 60);
+await redis.query.generation.expire(generationId, 60 * 60);
 
 // Reconnecting client: replay everything after the last seen entry ID.
-const missed = await redis.stream(generation).xread(generationId, lastSeenEntryId);
+const missed = await redis.query.generation.xread(generationId, lastSeenEntryId);
 ```
 
 `xread` returns entries newer than the given ID (use `"0"` for a full replay). On a long-lived server, a [session](/benni/advanced/sessions/)'s blocking `xread` with `{ timeoutSeconds }` turns the replay loop into a live tail. Writing one entry per token is chatty, so batch a few chunks per `xadd` under load. See [Streams](/benni/data-structures/streams/) for ranges, trimming, and consumer groups.
@@ -173,8 +178,7 @@ export const generationFeed = channel("feed:generation", json<{ chunk: string }>
 
 // Long-lived server: one watcher per connected viewer.
 const controller = new AbortController();
-for await (const { chunk } of redis.pubsub
-  .channel(generationFeed)
+for await (const { chunk } of redis.query.generationFeed
   .stream({ signal: controller.signal })) {
   writeSse(chunk);
 }
@@ -189,12 +193,11 @@ Retries and double-clicks are the other way to pay twice for one answer. Wrap th
 For a queued generation, prefer the [`queue` primitive](/benni/primitives/queue/)'s `idempotencyKey`, which returns the *original job* rather than a `409`, so the duplicate request can watch or await the answer the first one is already producing.
 
 ```ts
-import { lock, LockNotAcquiredError } from "benni/primitives";
-
-const generating = lock(client, { ttlMs: 60_000, prefix: "generating" });
+// schema.ts: export const generating = lock("generating", { ttlMs: 60_000 });
+import { LockNotAcquiredError } from "benni";
 
 try {
-  return await generating.run(requestId, async () => {
+  return await redis.query.generating.run(requestId, async () => {
     const { text } = await generateText({ model: openai("gpt-4o-mini"), prompt });
     return Response.json({ text });
   });

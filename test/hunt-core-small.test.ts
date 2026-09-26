@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { createBitmapStore, defineBitmap } from "../src/core/bitmap.js";
 import { codecs } from "../src/core/codecs.js";
-import { createCounterStore } from "../src/core/counter.js";
 import { ReplyShapeError, ValidationError } from "../src/core/errors.js";
 import { defineKeyspace } from "../src/core/key-value.js";
 import type { ListPosOptions } from "../src/core/list.js";
@@ -12,7 +11,6 @@ import {
   defineScript,
   script
 } from "../src/core/script.js";
-import { createStringStore } from "../src/core/string.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -21,7 +19,7 @@ import type {
 import { benni } from "../src/database.js";
 import { node } from "../src/node/index.js";
 import * as s from "../src/schema.js";
-import { fakeClient } from "./fake-client.js";
+import { fakeClient, kvResource } from "./fake-client.js";
 
 type Equal<TLeft, TRight> =
   (<T>() => T extends TLeft ? 1 : 2) extends <T>() => T extends TRight ? 1 : 2
@@ -291,10 +289,7 @@ describe("64-bit replies refuse to round", () => {
 
   it("throws on a counter that has run past the safe range", async () => {
     const seq = defineKeyspace("hunt-counter", codecs.number());
-    const store = createCounterStore(
-      fakeClient([], [beyondSafe, beyondSafe]),
-      seq
-    );
+    const store = kvResource(fakeClient([], [beyondSafe, beyondSafe]), seq);
 
     await expect(store.incr("a")).rejects.toThrow(/MAX_SAFE_INTEGER/);
     const failure = await store.incrby("a", 2).catch((error) => error);
@@ -304,7 +299,7 @@ describe("64-bit replies refuse to round", () => {
 
   it("leaves representable values alone", async () => {
     const seq = defineKeyspace("hunt-counter", codecs.number());
-    const store = createCounterStore(
+    const store = kvResource(
       fakeClient([], [Number.MAX_SAFE_INTEGER, -1]),
       seq
     );
@@ -359,7 +354,7 @@ describeRedis("GETRANGE and SETRANGE index bytes (live)", () => {
 
   it("counts and slices in bytes, as the JSDoc now says", async () => {
     client = node({ url: redisUrl });
-    const store = createStringStore(client, texts);
+    const store = kvResource(client, texts);
     const value = "café ☕ résumé";
 
     await client.send(["SET", texts.key("note"), value]);

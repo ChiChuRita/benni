@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { slotOf } from "../src/cluster.js";
 import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
-import { BudgetWindowRolledError, budget } from "../src/primitives/index.js";
+import { createBudget } from "../src/primitives/budget.js";
+import { BudgetWindowRolledError } from "../src/primitives/errors.js";
 
 describe("budget keys", () => {
   it("keeps every budget key for one id in a single slot", () => {
@@ -66,7 +67,7 @@ describeRedis("budget (live)", () => {
         return client.send(command);
       }
     };
-    const b = budget(lossy, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(lossy, { limit: 100, windowMs: 60_000 });
     const id = uid();
     const hold = await b.reserve(id, 10);
     expect(hold).not.toBeNull();
@@ -84,7 +85,7 @@ describeRedis("budget (live)", () => {
     // two-bucket estimate is continuous across it. Reporting the roll sent the
     // caller back at a moment guaranteed to fail.
     const windowMs = 1_000;
-    const b = budget(client, { limit: 100, windowMs });
+    const b = createBudget(client, { limit: 100, windowMs });
     const id = uid();
     await alignToBucket(windowMs);
     expect((await b.charge(id, 100)).ok).toBe(true);
@@ -101,7 +102,7 @@ describeRedis("budget (live)", () => {
     // The mirror image: with the spend in the previous bucket and a small
     // deficit, the units are seconds away, not a whole window.
     const windowMs = 1_000;
-    const b = budget(client, { limit: 100, windowMs });
+    const b = createBudget(client, { limit: 100, windowMs });
     const id = uid();
     await alignToBucket(windowMs);
     expect((await b.charge(id, 100)).ok).toBe(true);
@@ -131,7 +132,7 @@ describeRedis("budget (live)", () => {
         return client.send(command);
       }
     };
-    const b = budget(slow, { limit: 100, windowMs });
+    const b = createBudget(slow, { limit: 100, windowMs });
     const id = uid();
     const hold = await b.reserve(id, 10);
     expect(hold).not.toBeNull();
@@ -153,7 +154,7 @@ describeRedis("budget (live)", () => {
   it("extend finds its own hold for estimates past 14 significant digits", async () => {
     // Lua formats numbers with %.14g, so building the member in the script
     // stored "1e+14" where extend() went looking for the digits.
-    const b = budget(client, {
+    const b = createBudget(client, {
       limit: 9_007_199_254_740_991,
       windowMs: 60_000
     });
@@ -167,7 +168,11 @@ describeRedis("budget (live)", () => {
   it("caps the hold set that every charge and check has to walk", async () => {
     // A zero estimate consumes no headroom, so the limit cannot bound how many
     // holds pile up, and the preamble walks all of them on every call.
-    const b = budget(client, { limit: 100, windowMs: 60_000, maxHolds: 5 });
+    const b = createBudget(client, {
+      limit: 100,
+      windowMs: 60_000,
+      maxHolds: 5
+    });
     const id = uid();
     const holds = [];
     for (let i = 0; i < 5; i++) holds.push(await b.reserve(id, 0));

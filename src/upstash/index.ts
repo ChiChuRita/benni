@@ -90,14 +90,6 @@ export function upstash(options: UpstashOptions): UpstashClient {
       "upstash() requires a global fetch or an explicit fetch option"
     );
   }
-  // An unset environment variable is the usual way these arrive empty, and
-  // the request it produces fails with a 401 that no longer names the cause.
-  if (typeof options.url !== "string" || options.url === "") {
-    throw new TypeError("upstash() requires a url (the REST endpoint)");
-  }
-  if (typeof options.token !== "string" || options.token === "") {
-    throw new TypeError("upstash() requires a token (the REST bearer token)");
-  }
   const { timeoutMs, signal } = options;
   if (
     timeoutMs !== undefined &&
@@ -108,8 +100,31 @@ export function upstash(options: UpstashOptions): UpstashClient {
     );
   }
   const report = reporter(options.onError);
-  const base = options.url.replace(/\/+$/, "");
-  const authorization = `Bearer ${options.token}`;
+  let endpoint: { readonly base: string; readonly authorization: string };
+  /**
+   * The url and token, checked on the first request rather than here. An
+   * unset environment variable is the usual way these arrive empty, and the
+   * request it produces fails with a 401 that no longer names the cause, so
+   * they are still refused with a message that does. But not at
+   * construction: a module that builds the client at top level (a Next.js
+   * `cache-handler.mjs`, a handle in `lib/redis.ts`) is imported by
+   * `next build` in environments that never set them and never send a
+   * command, and the build must not fail there.
+   */
+  function connection() {
+    if (endpoint !== undefined) return endpoint;
+    if (typeof options.url !== "string" || options.url === "") {
+      throw new TypeError("upstash() requires a url (the REST endpoint)");
+    }
+    if (typeof options.token !== "string" || options.token === "") {
+      throw new TypeError("upstash() requires a token (the REST bearer token)");
+    }
+    endpoint = {
+      base: options.url.replace(/\/+$/, ""),
+      authorization: `Bearer ${options.token}`
+    };
+    return endpoint;
+  }
   // HTTP holds no connection, so close() has nothing to tear down. It still
   // has to be final, per the client contract: a command after close() is a
   // shutdown-ordering bug and must fail the same way it does on the TCP
@@ -121,6 +136,7 @@ export function upstash(options: UpstashOptions): UpstashClient {
     body: unknown,
     abortSignal: AbortSignal
   ): Promise<unknown> {
+    const { base, authorization } = connection();
     const response = await doFetch(`${base}${path}`, {
       method: "POST",
       headers: {
@@ -159,6 +175,10 @@ export function upstash(options: UpstashOptions): UpstashClient {
 
   async function post(path: string, body: unknown): Promise<unknown> {
     if (closed) throw new Error("benni/upstash client is closed");
+    // Before the request starts, so a missing url or token rejects as the
+    // configuration error it is rather than reaching `onError` as a failure
+    // in transit.
+    connection();
     const controller = new AbortController();
     // Raced as well as handed to fetch, so a custom `fetch` that ignores its
     // signal still cannot outlive the timeout, and the body read is covered.

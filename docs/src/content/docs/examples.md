@@ -90,22 +90,20 @@ client is made of (`createKeyValueStore`, `createHashStore`, …) live under
 ## Typed JSON Key-Value
 
 ```ts
-import { profiles } from "./schema";
+await redis.query.profiles.set("42", { name: "Ada", score: 10 }, { ttlSeconds: 60 });
 
-await redis.kv(profiles).set("42", { name: "Ada", score: 10 }, { ttlSeconds: 60 });
-
-const profile = await redis.kv(profiles).get("42");
+const profile = await redis.query.profiles.get("42");
 // profile is UserProfile | null
 
-await redis.kv(profiles).mset([
+await redis.query.profiles.mset([
   ["43", { name: "Grace", score: 12 }],
   ["44", { name: "Linus", score: 8 }]
 ]);
 
-const many = await redis.kv(profiles).mget(["42", "43", "missing"]);
+const many = await redis.query.profiles.mget(["42", "43", "missing"]);
 // many is Array<UserProfile | null>
 
-await redis.kv(profiles).del("42");
+await redis.query.profiles.del("42");
 ```
 
 ## Known IDs For Autocomplete
@@ -117,13 +115,15 @@ autocomplete IDs such as `"test1"` and full key strings such as `"demo:test1"`.
 import { type RedisKey } from "benni";
 import { kv, string } from "benni/schema";
 
-const demos = kv("demo", string(), {
+// schema.ts
+export const demos = kv("demo", string(), {
   ids: ["test1", "test2"]
 });
 
-await redis.kv(demos).set("test1", "value");
+// app.ts
+await redis.query.demos.set("test1", "value");
 
-const key = redis.kv(demos).key("test1");
+const key = redis.query.demos.key("test1");
 // key is "demo:test1"
 
 type DemoKey = RedisKey<"demo", "test1" | "test2">;
@@ -135,117 +135,109 @@ accepts normal `string | number | bigint` IDs.
 
 ## Integer Counter
 
-```ts
-import { counters } from "./schema";
+A `kv` declared with `number()` carries the counter commands on the same
+store as `get` and `set`.
 
-await redis.counter(counters).incr("page-views");
-await redis.counter(counters).incrby("page-views", 5);
-await redis.counter(counters).decr("page-views");
+```ts
+await redis.query.counters.incr("page-views");
+await redis.query.counters.incrby("page-views", 5);
+await redis.query.counters.decr("page-views");
+
+// Increment and start a 60-second window in one atomic step.
+await redis.query.counters.incr("login:1.2.3.4", { ttlMs: 60_000 });
 ```
 
 ## String Commands
 
-`redis.string()` exposes the Redis string commands that only make sense for
-plain string values.
+A `kv` declared with `string()` carries the Redis string commands that only
+make sense for plain string values.
 
 ```ts
-import { texts } from "./schema";
+await redis.query.texts.append("welcome", "hello");
+await redis.query.texts.append("welcome", " world");
 
-await redis.string(texts).append("welcome", "hello");
-await redis.string(texts).append("welcome", " world");
-
-const firstWord = await redis.string(texts).getrange("welcome", 0, 4);
-const length = await redis.string(texts).strlen("welcome");
-const value = await redis.string(texts).getex("welcome", 60);
+const firstWord = await redis.query.texts.getrange("welcome", 0, 4);
+const length = await redis.query.texts.strlen("welcome");
+const value = await redis.query.texts.getex("welcome", 60);
 ```
 
 ## Typed Hash
 
 ```ts
-import { users } from "./schema";
+await redis.query.users.hset("42", { name: "Ada", score: 10 }, { ttlSeconds: 300 });
 
-await redis.hash(users).hset("42", { name: "Ada", score: 10 }, { ttlSeconds: 300 });
-
-const user = await redis.hash(users).hget("42");
+const user = await redis.query.users.hget("42");
 // user is { name: string; score: number } | null
 
-await redis.hash(users).hset("42", "name", "Grace");
-const score = await redis.hash(users).hincrby("42", "score", 1);
-const hasName = await redis.hash(users).hexists("42", "name");
+await redis.query.users.hset("42", "name", "Grace");
+const score = await redis.query.users.hincrby("42", "score", 1);
+const hasName = await redis.query.users.hexists("42", "name");
 
-await redis.hash(users).del("42");
+await redis.query.users.del("42");
 ```
 
 ## Typed Set
 
 ```ts
-import { roles } from "./schema";
+await redis.query.roles.sadd("user:42", ["admin", "editor"]);
 
-await redis.set(roles).sadd("user:42", ["admin", "editor"]);
+const isAdmin = await redis.query.roles.sismember("user:42", "admin");
+const allRoles = await redis.query.roles.smembers("user:42");
 
-const isAdmin = await redis.set(roles).sismember("user:42", "admin");
-const allRoles = await redis.set(roles).smembers("user:42");
-
-await redis.set(roles).srem("user:42", ["editor"]);
-await redis.set(roles).del("user:42");
+await redis.query.roles.srem("user:42", ["editor"]);
+await redis.query.roles.del("user:42");
 ```
 
 ## Typed List
 
 ```ts
-import { jobs } from "./schema";
-
-await redis.list(jobs).rpush("pending", [
+await redis.query.jobs.rpush("pending", [
   { id: "job-1", kind: "email" },
   { id: "job-2", kind: "report" }
 ]);
 
-const nextJob = await redis.list(jobs).lpop("pending");
+const nextJob = await redis.query.jobs.lpop("pending");
 // nextJob is { id: string; kind: "email" | "report" } | null
 
-const remaining = await redis.list(jobs).lrange("pending", 0, -1);
+const remaining = await redis.query.jobs.lrange("pending", 0, -1);
 // remaining is Array<{ id: string; kind: "email" | "report" }>
 
-await redis.list(jobs).del("pending");
+await redis.query.jobs.del("pending");
 ```
 
 ## Typed Sorted Set
 
 ```ts
-import { leaderboard } from "./schema";
-
-await redis.zset(leaderboard).zadd("daily", [
+await redis.query.leaderboard.zadd("daily", [
   { member: "alice", score: 10 },
   { member: "bob", score: 20 }
 ]);
 
-const top = await redis.zset(leaderboard).zrange("daily", {
+const top = await redis.query.leaderboard.zrange("daily", {
   start: 0,
   stop: -1,
   withScores: true
 });
 // top is Array<{ readonly member: string; readonly score: number }>
 
-await redis.zset(leaderboard).zincrby("daily", 5, "alice");
-const aliceScore = await redis.zset(leaderboard).zscore("daily", "alice");
+await redis.query.leaderboard.zincrby("daily", 5, "alice");
+const aliceScore = await redis.query.leaderboard.zscore("daily", "alice");
 
-await redis.zset(leaderboard).del("daily");
+await redis.query.leaderboard.del("daily");
 ```
 
 ## Typed Stream
 
 ```ts
-import { events } from "./schema";
-
-const entryId = await redis.stream(events).xadd("audit", {
+const entryId = await redis.query.events.xadd("audit", {
   type: "login",
   userId: "42"
 });
 
-const latest = await redis.stream(events).xread("audit", "0-0", { count: 10 });
-const history = await redis.stream(events).xrange("audit", { count: 10 });
+const latest = await redis.query.events.xread("audit", "0-0", { count: 10 });
+const history = await redis.query.events.xrange("audit", { count: 10 });
 
-await redis.stream(events).del("audit");
+await redis.query.events.del("audit");
 ```
 
 An entry is `{ id, value }`, and `value` is a `Partial` of the declared fields,
@@ -263,46 +255,40 @@ for (const entry of history) {
 ## Typed Bitmap
 
 ```ts
-import { activity } from "./schema";
+await redis.query.activity.setbit("2026-07-04", 42, true);
 
-await redis.bitmap(activity).setbit("2026-07-04", 42, true);
+const active = await redis.query.activity.getbit("2026-07-04", 42);
+const activeCount = await redis.query.activity.bitcount("2026-07-04");
 
-const active = await redis.bitmap(activity).getbit("2026-07-04", 42);
-const activeCount = await redis.bitmap(activity).bitcount("2026-07-04");
-
-await redis.bitmap(activity).del("2026-07-04");
+await redis.query.activity.del("2026-07-04");
 ```
 
 ## Typed Geo
 
 ```ts
-import { cities } from "./schema";
-
-await redis.geo(cities).geoadd("europe", [
+await redis.query.cities.geoadd("europe", [
   { member: "Berlin", longitude: 13.405, latitude: 52.52 },
   { member: "Paris", longitude: 2.3522, latitude: 48.8566 }
 ]);
 
-const nearby = await redis.geo(cities).geosearch("europe", {
+const nearby = await redis.query.cities.geosearch("europe", {
   from: { longitude: 13.405, latitude: 52.52 },
   by: { radius: 1000, unit: "km" },
   withDistance: true,
   withCoordinates: true
 });
 
-await redis.geo(cities).del("europe");
+await redis.query.cities.del("europe");
 ```
 
 ## Typed HyperLogLog
 
 ```ts
-import { visitors } from "./schema";
+await redis.query.visitors.pfadd("today", ["user:1", "user:2", "user:1"]);
 
-await redis.hll(visitors).pfadd("today", ["user:1", "user:2", "user:1"]);
+const approximateVisitors = await redis.query.visitors.pfcount("today");
 
-const approximateVisitors = await redis.hll(visitors).pfcount("today");
-
-await redis.hll(visitors).del("today");
+await redis.query.visitors.del("today");
 ```
 
 ## Cursor Scans
@@ -326,14 +312,14 @@ connection from the bound client and closes it again when the last subscription
 goes away.
 
 ```ts
-const subscription = await redis.pubsub.channel(schema.userEvents).subscribe(
+const subscription = await redis.query.userEvents.subscribe(
   (message) => {
     // message is { id: string; action: "created" | "deleted" }
     console.log(message);
   }
 );
 
-await redis.pubsub.channel(schema.userEvents).publish({
+await redis.query.userEvents.publish({
   id: "42",
   action: "created"
 });
@@ -344,8 +330,7 @@ await subscription.unsubscribe();
 Use a typed pattern when one handler should receive several matching channels:
 
 ```ts
-const patternSubscription = await redis.pubsub
-  .pattern(schema.userEventPattern)
+const patternSubscription = await redis.query.userEventPattern
   .subscribe((message, channel) => {
     // message is decoded; channel is the concrete channel name
   });
@@ -359,8 +344,7 @@ ends:
 ```ts
 const controller = new AbortController();
 
-for await (const message of redis.pubsub
-  .channel(schema.userEvents)
+for await (const message of redis.query.userEvents
   .stream({ signal: controller.signal })) {
   console.log(message.action);
 }
@@ -396,9 +380,7 @@ The `script()` schema names its keys and types its args; the first run loads
 the script and later runs send cached `EVALSHA`:
 
 ```ts
-import { incrementBy } from "./schema";
-
-const value = await redis.script(incrementBy).run({
+const value = await redis.query.incrementBy.run({
   keys: { counter: "script:counter" },
   args: { amount: 5 }
 });
@@ -446,14 +428,14 @@ function fakeClient(commands: RedisCommand[], replies: RedisReply[]): RedisClien
 }
 
 const commands: RedisCommand[] = [];
-const profiles = kv("user", json<{ name: string }>());
+export const profiles = kv("user", json<{ name: string }>());
 const redis = benni({
   client: fakeClient(commands, ["OK", "{\"name\":\"Ada\"}"]),
   schema: { profiles }
 });
 
-await redis.kv(profiles).set("42", { name: "Ada" });
-const user = await redis.kv(profiles).get("42");
+await redis.query.profiles.set("42", { name: "Ada" });
+const user = await redis.query.profiles.get("42");
 
 console.log(commands);
 console.log(user);

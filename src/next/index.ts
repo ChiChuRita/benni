@@ -1,13 +1,17 @@
 import { type ClientSource, resolveClient } from "../core/client-source.js";
 import type { RedisClient, RedisCommand } from "../core/index.js";
-import { type RatelimitResult, ratelimit } from "../primitives/index.js";
+// Type-only: the limiter arrives already built, from the handle, so this
+// module never pulls the rate-limit primitive in itself.
+import type {
+  RatelimitResult,
+  RatelimitStore
+} from "../primitives/ratelimit.js";
 
-export type { RatelimitResult } from "../primitives/index.js";
+export type { RatelimitResult } from "../primitives/ratelimit.js";
 
 const DEFAULT_CACHE_PREFIX = "next-cache";
 /** Keys per DEL in revalidateTag, so one popular tag cannot block the server. */
 const DEL_CHUNK = 500;
-const DEFAULT_RATELIMIT_PREFIX = "next-ratelimit";
 /**
  * The header Next.js records a page's or route handler's tags in, implicit
  * path tags (`_N_T_/blog`) included. Their `set()` context carries no tags.
@@ -495,14 +499,12 @@ function unpackFields(
 
 /** Options for {@link rateLimitMiddleware}. */
 export type NextRateLimitOptions = {
-  /** A {@link RedisClient} from a benni adapter, or a benni handle. */
-  readonly client: RedisClientSource;
-  /** Maximum requests allowed within the window. */
-  readonly limit: number;
-  /** Window length in milliseconds. */
-  readonly windowMs: number;
-  /** Key namespace; keys are `<prefix>:<identity>`. Default `"next-ratelimit"`. */
-  readonly prefix?: string;
+  /**
+   * The limiter to count requests against: a `ratelimit` schema reached
+   * through the handle, e.g. `redis.query.apiLimit`. Its limit, window, and
+   * key prefix are the ones declared on the schema.
+   */
+  readonly limiter: RatelimitStore;
   /**
    * Extract the identity to limit on from the `Request`. Required, and
    * deliberately so: there is no request property a limiter can trust without
@@ -538,8 +540,8 @@ export type NextRateLimitHandler = ((
 
 /**
  * A sliding-window rate limiter for Next.js middleware, route handlers, and
- * Server Actions, built on the [`ratelimit`](../primitives/ratelimit.js)
- * primitive (one atomic Lua round trip per check).
+ * Server Actions, over a `ratelimit` schema reached through the handle (one
+ * atomic Lua round trip per check).
  *
  * The returned function takes a web-standard `Request` and resolves `null`
  * when the request is allowed, or a ready-to-return `429 Response` with
@@ -550,17 +552,18 @@ export type NextRateLimitHandler = ((
  *
  * @example
  * ```ts
+ * // schema.ts
+ * export const apiLimit = ratelimit("api", { limit: 20, windowMs: 10_000 });
+ *
  * // middleware.ts
  * import { rateLimitMiddleware } from "benni/next";
- * import { upstash } from "benni/upstash";
+ * import { redis } from "./redis";
  *
  * const limiter = rateLimitMiddleware({
- *   client: upstash({
- *     url: process.env.UPSTASH_URL,
- *     token: process.env.UPSTASH_TOKEN
- *   }),
- *   limit: 20,
- *   windowMs: 10_000
+ *   limiter: redis.query.apiLimit,
+ *   // On Vercel, which overwrites the header at the edge.
+ *   identify: (request) =>
+ *     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
  * });
  *
  * export async function middleware(request: Request) {
@@ -588,31 +591,20 @@ export type NextRateLimitHandler = ((
 export function rateLimitMiddleware(
   options: NextRateLimitOptions
 ): NextRateLimitHandler {
-  const prefix = options.prefix ?? DEFAULT_RATELIMIT_PREFIX;
+  const limiter: unknown = options.limiter;
+  // Checked here, not on the first request, so a 0.1-style
+  // `{ client, limit, windowMs }` config fails at startup with the fix in the
+  // message rather than as "check is not a function" under traffic.
+  if (
+    typeof (limiter as Partial<RatelimitStore> | null)?.check !== "function"
+  ) {
+    throw new TypeError(
+      'rateLimitMiddleware() takes the limiter itself: declare `export const apiLimit = ratelimit("api", { limit, windowMs })` in your schema module and pass `limiter: redis.query.apiLimit`. The { client, limit, windowMs, prefix } options were removed in 0.2.'
+    );
+  }
   const identify = options.identify;
-  const getClient = createClientResolver(options.client);
-
-  let limiter: Promise<ReturnType<typeof ratelimit>> | undefined;
-  const getLimiter = () => {
-    if (!limiter) {
-      limiter = getClient().then((client) =>
-        ratelimit(client, {
-          limit: options.limit,
-          windowMs: options.windowMs,
-          prefix
-        })
-      );
-      limiter.catch(() => {
-        limiter = undefined;
-      });
-    }
-    return limiter;
-  };
-
-  const check = async (identity: string): Promise<RatelimitResult> => {
-    const instance = await getLimiter();
-    return instance.check(identity);
-  };
+  const check = (identity: string): Promise<RatelimitResult> =>
+    options.limiter.check(identity);
 
   const handler = async (request: Request): Promise<Response | null> => {
     const result = await check(await identify(request));

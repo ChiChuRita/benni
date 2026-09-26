@@ -18,7 +18,7 @@ describe("schema store bindings", () => {
     expect(JSON.parse(JSON.stringify(users))).toEqual({
       kind: "hash",
       prefix: "user",
-      fields: { name: {}, score: {} }
+      fields: { name: { format: "string" }, score: { format: "number" } }
     });
     expect(Object.getOwnPropertyNames(users)).not.toContain(
       "Symbol(benni.store)"
@@ -61,7 +61,9 @@ describe("schema store bindings", () => {
 
   it("rejects a copied schema passed to an accessor", () => {
     const redis = benni({ client: fakeClient([], []) });
-    expect(() => redis.hash({ ...users })).toThrow(/hash schema/);
+    expect(() => redis.store({ ...users })).toThrow(
+      /redis.store\(\) schema was not built/
+    );
   });
 
   it("still ignores non-schema exports on the schema module", () => {

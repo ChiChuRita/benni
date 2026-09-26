@@ -117,8 +117,12 @@ await redis.query.profiles.set("42", { name: "Ada", score: 10 }, {
 });
 ```
 
-`redis.query.<exportName>` is the idiom to prefer: it dispatches on the schema's
-kind, so you never pick an accessor by hand.
+`redis.query.<exportName>` is the one way to reach a store or primitive: it
+dispatches on the schema's kind. A schema the bound module does not declare (a
+library's own, or any schema on a handle built without `schema`) goes through
+`redis.store(schema)`, which returns the same resource; for a schema that is in
+the module it is the very object `redis.query` holds. There are no per-kind
+accessors (`redis.hash(x)`, `redis.kv(x)`, … were removed in 0.2).
 
 Argument shape follows the command, so guess it that way rather than assuming one
 style per store. A command with one fixed form takes positional arguments in the
@@ -129,22 +133,28 @@ instead (`zrange(id, { start, stop, rev, withScores })`, `bitcount(id, { start,
 end, unit })`). `zrange` keeps its bounds in the object because they are indexes,
 scores, or lex bounds depending on the modifier beside them.
 
-**The one exception: counters and raw strings.** `counter` and `string` are
-alternate views over a plain `kv` keyspace, not kinds of their own, so
-`redis.query` cannot dispatch to them. A `kv(prefix, number())` reached through
-`redis.query` is the string store: `get`/`set`/`del`, and **no `incr`**. Switch
-accessors by hand for those:
+**A kv store carries its codec's commands.** A `kv` declared with `number()`
+has the counter commands next to `get`/`set`; one declared with `string()` has
+the string commands. Any other codec (`json`, `enumOf`, `boolean`, …) gets
+neither, since INCR or APPEND would corrupt what it stores:
 
 ```ts
 export const views = kv("views", number()); // schema.ts
+export const logs = kv("log", string());
 
-await redis.counter(views).incr("post-1"); // 1, typed as number
-await redis.counter(views).incrby("post-1", 5);
-const total = await redis.query.views.get("post-1"); // number | null, no incr here
+await redis.query.views.incr("post-1"); // 1, typed as number
+await redis.query.views.incrby("post-1", 5);
+await redis.query.views.incr(ip, { ttlMs: 60_000 }); // + expiry if none, atomic
+const total = await redis.query.views.get("post-1"); // number | null
+await redis.query.logs.append("today", "line\n");
 ```
 
-Same for `redis.string(x)` on a `kv(prefix, string())` when you want the
-string-specific commands (`append`, `getrange`, …).
+Every kv also has `getex(id, ttlSeconds | expiry)`, decoded through its codec.
+
+Inside `redis.session()` and `redis.watch()` bodies the session has the same
+registry: `s.query.<name>` (data stores only, bound to the session connection,
+with the blocking commands on lists, sorted sets, and streams) and
+`s.store(schema)`.
 
 To pass the handle around, type it with `Benni<typeof schema>`:
 
@@ -159,23 +169,25 @@ All from `benni/schema`. Each takes a key prefix and (except `bitmap`) a codec.
 
 | Builder | Redis type | Reached via |
 |---|---|---|
-| `kv(prefix, codec)` | string | `redis.query.x` / `redis.kv(x)` |
-| `hash(prefix, fields)` | hash | `redis.query.x` / `redis.hash(x)` |
-| `set(prefix, codec)` | set | `redis.query.x` / `redis.set(x)` |
-| `list(prefix, codec)` | list | `redis.query.x` / `redis.list(x)` |
-| `zset(prefix, codec)` | sorted set | `redis.query.x` / `redis.zset(x)` |
-| `stream(prefix, fields)` | stream | `redis.query.x` / `redis.stream(x)` |
-| `bitmap(prefix)` | string (bits) | `redis.query.x` / `redis.bitmap(x)` |
-| `geo(prefix, codec)` | sorted set (geo) | `redis.query.x` / `redis.geo(x)` |
-| `hll(prefix, codec)` | string (HLL) | `redis.query.x` / `redis.hll(x)` |
-| `channel(prefix, codec)` | pub/sub channel | `redis.pubsub.channel(x)` |
-| `pattern(prefix, codec)` | pub/sub pattern | `redis.pubsub.pattern(x)` |
-| `script(name, options)` | Lua script | `redis.script(x)` |
+| `kv(prefix, codec)` | string | `redis.query.<name>` |
+| `hash(prefix, fields)` | hash | `redis.query.<name>` |
+| `set(prefix, codec)` | set | `redis.query.<name>` |
+| `list(prefix, codec)` | list | `redis.query.<name>` |
+| `zset(prefix, codec)` | sorted set | `redis.query.<name>` |
+| `stream(prefix, fields)` | stream | `redis.query.<name>` |
+| `bitmap(prefix)` | string (bits) | `redis.query.<name>` |
+| `geo(prefix, codec)` | sorted set (geo) | `redis.query.<name>` |
+| `hll(prefix, codec)` | string (HLL) | `redis.query.<name>` |
+| `channel(prefix, codec)` | pub/sub channel | `redis.query.<name>`, `.at(id)` per entity |
+| `pattern(prefix, codec)` | pub/sub pattern | `redis.query.<name>` |
+| `script(name, options)` | Lua script | `redis.query.<name>` |
+
+A schema outside the bound module: `redis.store(schema)`, same resource.
 
 Codecs: `string()`, `number()`, `boolean()`, `json(validator)`, `json<T>()`,
-`enumOf([...])`, `bytes()`, and `optional(codec)` for hash fields. There are
-also `redis.counter(x)` and `redis.string(x)` accessors for `kv` schemas whose
-codec is `number()` / `string()`.
+`enumOf([...])`, `bytes()`, and `optional(codec)` for hash fields. A `kv` over
+`number()` carries the counter commands and one over `string()` the string
+commands.
 
 ### Hashes
 
@@ -262,15 +274,19 @@ const profile = await redis.query.profiles.get(userId, () => db.loadProfile(user
 const { id } = await redis.query.generate.enqueue({ prompt }, { idempotencyKey: requestId });
 ```
 
-`benni/primitives` keeps a client-taking form for code that holds a client but no
-handle, such as a middleware factory. It is one options object, and `client`
-accepts a client, a promise of one, a factory, or a benni handle:
+Code that holds a client but no schema module wraps it once and uses `store()`;
+there is no client-taking form (`benni/primitives` was removed in 0.2):
 
 ```ts
-import { ratelimit } from "benni/primitives";
+import { benni } from "benni";
+import { ratelimit } from "benni/schema";
 
-const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
+const limiter = benni({ client }).store(ratelimit("api", { limit: 10, windowMs: 60_000 }));
 ```
+
+Every primitive's error class (`LockNotAcquiredError`, `JobFailedError`,
+`CacheWaitTimeoutError`, and the rest) is exported from `benni`, as are the
+store types (`LockStore`, `QueueStore<P, R>`, ...) for your own signatures.
 
 The lock never frees a lock that expired and was re-acquired, gives every holder
 a strictly increasing `handle.fence` to check at the store it writes to, and
@@ -327,7 +343,7 @@ adapter (`benni/upstash`) covers the whole stateless surface, including pub/sub
 and `benni/ioredis`: Bun's `psubscribe` hangs upstream, so the Bun adapter
 leaves patterns out. The handle's type follows the adapter: over `upstash()`
 there is no `redis.session()`/`redis.watch()`/`subscribe()`, over `bun()` no
-`redis.pubsub.pattern()`. `Benni<typeof schema>` assumes a node/ioredis client;
+pattern entries in `redis.query`. `Benni<typeof schema>` assumes a node/ioredis client;
 on another adapter write `Benni<typeof schema, UpstashClient>` (or `BunClient`),
 and take `AnyBenni` in a library.
 
@@ -367,21 +383,21 @@ do. Single commands and pipelines are unaffected.
    `json<T>()` is the same cast with nicer syntax: prefer `json(validator)`.
 2. **Close the handle.** `await redis.close()` (or `await using redis = …`),
    otherwise Node never exits. This matters in tests and scripts.
-3. **Prefer declaring primitives in the schema module** (`cache("profile", …)`
-   from `benni/schema`) and reaching them through `redis.query`. The
-   client-taking form in `benni/primitives` is one options object whose
-   `client` accepts an adapter's client or the `benni()` handle:
-   `cache({ client, ttlMs })`.
+3. **Declare primitives in the schema module** (`cache("profile", ...)` from
+   `benni/schema`) and reach them through `redis.query`. Holding only a client:
+   `benni({ client }).store(cache("profile", { ttlMs }))`.
 4. **Keys are derived, not written.** `redis.query.users.key("42")` returns
    `"user:42"`. Do not build key strings by hand.
 5. **Don't reach for `benni/core`** unless you are writing an adapter. The public
-   surface is `benni`, `benni/schema`, `benni/primitives`, and one adapter.
+   surface is `benni`, `benni/schema`, and one adapter.
    The client contract types (`RedisClient`, `RedisReply`, …), `resolveClient`,
    `redisServerError`, and `defineScript`/`createScriptRunner` live there.
 6. **Binary args are TCP-only.** Over the edge adapter, use the `bytes()` codec
    (base64) instead of passing `Uint8Array`.
-7. **`redis.query` covers kinds, not views.** No `incr` on a `kv(_, number())`
-   through `redis.query`; use `redis.counter(x)` (see above).
+7. **One path per store.** `redis.query.<name>`, or `redis.store(schema)` for a
+   schema outside the bound module; inside a session, `s.query.<name>`. The
+   codec decides a kv's extra commands: `incr` needs `number()`, `append` needs
+   `string()`.
 8. **Catch `RedisServerError` and branch on `.code`; never match message text.**
    Every adapter normalizes a Redis error reply to `RedisServerError` (exported
    from `benni`), with the reply's leading code on `.code` (`"WRONGTYPE"`,
@@ -410,7 +426,7 @@ const [clicks] = await redis
 
 10. **Inside `multi()` and `watch()`, writes are hand-built commands, so the
     schema is the only thing keeping them honest.** Reads still go through typed
-    stores (`s.kv(balances).get(id)`), but there is no typed setter that enrolls
+    stores (`s.query.balances.get(id)`), but there is no typed setter that enrolls
     in a transaction. Derive every key with `schema.key(id)` and every value with
     `schema.encode(value)` (or `schema.fields.<name>.encode(value)`), never
     `String(value)`: a wrong type then fails at the encode call rather than

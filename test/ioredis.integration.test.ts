@@ -4,7 +4,7 @@ import { codecs, type RedisClient } from "../src/core/index.js";
 import { definePubSubChannel } from "../src/core/pubsub.js";
 import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
-import { queue } from "../src/primitives/index.js";
+import { createQueue } from "../src/primitives/queue.js";
 import { json, kv, number, script } from "../src/schema.js";
 import { freePort } from "./free-port.js";
 import {
@@ -351,7 +351,7 @@ describeRedis("ioredis: typed client and primitives", () => {
     const redis = benni({ client: client });
     const id = unique("kv");
     try {
-      const profiles = redis.kv(
+      const profiles = redis.store(
         kv("benni:test:profile", json<{ name: string; n: number }>())
       );
       await profiles.set(id, { name: "Ada", n: 1 });
@@ -371,7 +371,7 @@ describeRedis("ioredis: typed client and primitives", () => {
     );
     const seen: Array<{ id: string; action: string }> = [];
     const first = new Promise<void>((resolve) => {
-      void redis.pubsub.channel(channel).subscribe((message) => {
+      void redis.store(channel).subscribe((message) => {
         seen.push(message);
         resolve();
       });
@@ -380,7 +380,7 @@ describeRedis("ioredis: typed client and primitives", () => {
     try {
       // Give the subscribe round trip time to land before publishing.
       await new Promise((resolve) => setTimeout(resolve, 100));
-      await redis.pubsub.channel(channel).publish({ id: "1", action: "made" });
+      await redis.store(channel).publish({ id: "1", action: "made" });
       await first;
       expect(seen).toEqual([{ id: "1", action: "made" }]);
     } finally {
@@ -390,7 +390,7 @@ describeRedis("ioredis: typed client and primitives", () => {
 
   it("runs the AI job queue, Lua and all", async () => {
     const client: RedisClient = ioredis({ url: redisUrl });
-    const jobs = queue<{ prompt: string }, string>(client, {
+    const jobs = createQueue<{ prompt: string }, string>(client, {
       prefix: unique("queue")
     });
     const worker = jobs.worker(async (job) => {

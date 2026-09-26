@@ -81,9 +81,10 @@ const pong = await redis.raw.send(["PING"]);
 ```
 
 Binding the schema module makes every store reachable by its export name through
-`redis.query`. The explicit `redis.hash(users)` / `redis.kv(profiles)` accessors
-return the same store, and a few operations only exist there: a `kv` schema is a
-string keyspace, so counters live on `redis.counter(x)` (`incr`, `incrby`, …).
+`redis.query`, and that is the one path: a schema declared elsewhere goes through
+`redis.store(schema)`, which returns the same resource. A `kv` store carries the
+commands its codec supports, so `kv("views", number())` has `incr` next to `get`
+and `set`, and `kv("log", string())` has `append`.
 
 Prefer `json(validator)` over `json<T>()`. The first validates every read and
 throws `ReplyShapeError` with the offending value attached. The second is a pure
@@ -230,9 +231,9 @@ pattern onto it, and closes it when the last subscription goes away.
 ```ts
 import { channel, json } from "benni/schema";
 
-const userEvents = channel("events:user", json<{ action: "created" | "deleted" }>());
+export const userEvents = channel("events:user", json<{ action: "created" | "deleted" }>());
 
-await redis.pubsub.channel(userEvents).subscribe((message) => {
+await redis.query.userEvents.subscribe((message) => {
   console.log(message.action);
   //          ^? "created" | "deleted"
 });
@@ -240,7 +241,7 @@ await redis.pubsub.channel(userEvents).subscribe((message) => {
 
 The handle's type follows the adapter: over `benni/upstash` there is no
 `redis.session()`, `redis.watch()`, or `subscribe()` to call, and over `benni/bun`
-no `redis.pubsub.pattern()` (Bun 1.3.14's `psubscribe` hangs upstream), so these
+no pattern subscriptions (Bun 1.3.14's `psubscribe` hangs upstream), so these
 are compile errors rather than runtime surprises. A dropped subscriber connection is reconnected and
 resubscribed on every adapter, but messages published while it was down are
 lost: Redis Pub/Sub is at-most-once, so use a stream when that matters.
@@ -291,8 +292,9 @@ const { success } = await redis.query.apiLimit.check(userId);
 const profile = await redis.query.profiles.get(userId, () => db.loadProfile(userId));
 ```
 
-`benni/primitives` keeps the client-taking form for code that holds a client but
-no handle, such as a middleware factory: `ratelimit({ client, limit, windowMs })`.
+Code that holds a client but no schema module reaches the same primitive with
+`benni({ client }).store(ratelimit("api", { limit, windowMs }))`. Every error
+class, the primitives' included, is exported from `benni`.
 
 The queue is built for model calls: heartbeat leases so a ten-minute generation
 is ordinary, a resumable output stream per job, and cancellation that aborts the
