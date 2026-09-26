@@ -21,7 +21,9 @@ const LANDING_PATH = "docs/src/pages/index.astro";
 const SVG_PATHS = ["docs/src/assets/logo.svg", "docs/public/favicon.svg"];
 
 const brandFromTokens = () => {
-  const match = read(TOKENS_PATH).match(/--benni-brand:\s*(#[0-9a-fA-F]{3,8})\s*;/);
+  const match = read(TOKENS_PATH).match(
+    /--benni-brand:\s*(#[0-9a-fA-F]{3,8})\s*;/
+  );
   if (!match) {
     throw new Error(`--benni-brand not found in ${TOKENS_PATH}`);
   }
@@ -31,9 +33,10 @@ const brandFromTokens = () => {
 // Colour literals only, so a token value never gets inlined at a call site.
 // Excludes HTML entities such as &#123;, whose digits would otherwise read as a
 // three-digit hex.
-const hexLiterals = (source: string) => [
-  ...source.matchAll(/(?<!&)#[0-9a-fA-F]{3,8}\b/g)
-].map((m) => m[0].toLowerCase());
+const hexLiterals = (source: string) =>
+  [...source.matchAll(/(?<!&)#[0-9a-fA-F]{3,8}\b/g)].map((m) =>
+    m[0].toLowerCase()
+  );
 
 const landingStyleBlock = () => {
   const match = read(LANDING_PATH).match(/<style>([\s\S]*)<\/style>/);
