@@ -1,131 +1,416 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
 import { cacheHandler, rateLimit } from "../src/next/index.js";
+import { node } from "../src/node/index.js";
 import { fakeClient } from "./fake-client.js";
+import {
+  appPageSet,
+  appRouteSet,
+  fetchGet,
+  fetchSet
+} from "./fixtures/next-16-payloads.js";
 
-describe("cacheHandler", () => {
-  it("stores an entry with EX from revalidate and one SADD per tag", async () => {
-    const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK", 1, 1, 1, 1]);
-    const Handler = cacheHandler({ client });
-    const handler = new Handler();
+/** Runs one set() against a fake client; returns what it sent. */
+async function recordSet(
+  key: string,
+  data: unknown,
+  ctx?: Parameters<InstanceType<ReturnType<typeof cacheHandler>>["set"]>[2],
+  options: { defaultTtlSeconds?: number } = {}
+) {
+  const commands: RedisCommand[] = [];
+  const Handler = cacheHandler({
+    client: fakeClient(commands, []),
+    ...options
+  });
+  await new Handler().set(key, data, ctx);
+  const [set, ...tagCalls] = commands;
+  return { set, tagCalls, payload: set?.[2] as string };
+}
 
-    await handler.set(
-      "/blog",
-      { kind: "PAGE" },
-      { revalidate: 60, tags: ["posts", "layout"] }
+/** Feeds a stored payload back through get() and returns the entry. */
+async function readBack(payload: string) {
+  const Handler = cacheHandler({ client: fakeClient([], [payload]) });
+  return new Handler().get("any");
+}
+
+/** Buffers compared as bytes, so a Uint8Array that merely looks right fails. */
+function expectBuffer(actual: unknown, expected: Uint8Array) {
+  expect(Buffer.isBuffer(actual)).toBe(true);
+  expect(Buffer.compare(actual as Buffer, expected)).toBe(0);
+}
+
+describe("cacheHandler: values Next.js 16 really sends", () => {
+  it("round-trips an APP_PAGE with rscData and segmentData byte for byte", async () => {
+    const { payload } = await recordSet(
+      appPageSet.key,
+      appPageSet.data,
+      appPageSet.ctx
+    );
+    const entry = await readBack(payload);
+    const value = entry?.value as typeof appPageSet.data;
+
+    expect(value.kind).toBe("APP_PAGE");
+    expect(value.html).toBe(appPageSet.data.html);
+    expect(value.headers).toEqual(appPageSet.data.headers);
+    expectBuffer(value.rscData, appPageSet.data.rscData);
+    // Plain JSON turned this Map into {} and Next.js lost every prefetch
+    // segment; it has to come back a Map of Buffers.
+    expect(value.segmentData).toBeInstanceOf(Map);
+    expect([...value.segmentData.keys()]).toEqual([
+      ...appPageSet.data.segmentData.keys()
+    ]);
+    for (const [segment, bytes] of appPageSet.data.segmentData) {
+      expectBuffer(value.segmentData.get(segment), bytes);
+    }
+  });
+
+  it("round-trips an APP_ROUTE body that is not valid UTF-8", async () => {
+    const { payload } = await recordSet(
+      appRouteSet.key,
+      appRouteSet.data,
+      appRouteSet.ctx
+    );
+    const value = (await readBack(payload))?.value as typeof appRouteSet.data;
+
+    expect(value.status).toBe(200);
+    expect(value.headers).toEqual(appRouteSet.data.headers);
+    expectBuffer(value.body, appRouteSet.data.body);
+  });
+
+  it("round-trips a FETCH entry unchanged", async () => {
+    const { payload } = await recordSet(
+      fetchSet.key,
+      fetchSet.data,
+      fetchSet.ctx
     );
 
-    expect(commands).toHaveLength(3);
-    const [set, ...rest] = commands;
-    expect(set?.slice(0, 2)).toEqual(["SET", "{next-cache}:entry:/blog"]);
-    expect(set?.slice(3)).toEqual(["EX", 60]);
-    const entry = JSON.parse(set?.[2] as string);
-    expect(entry.value).toEqual({ kind: "PAGE" });
-    expect(entry.tags).toEqual(["posts", "layout"]);
-    expect(typeof entry.lastModified).toBe("number");
-    // Each tag set is expired alongside its member, extended but never
-    // shortened. The SADD and the expiry have to be one script: EXPIRE ... GT
-    // refuses to install the first TTL on the TTL-less set the SADD just
-    // created, so only next to the SADD can a fresh set be told from one a
-    // permanent entry deliberately PERSISTed.
-    expect(rest.map((command) => command[0])).toEqual(["EVAL", "EVAL"]);
-    expect(rest.map((command) => command.slice(3))).toEqual([
-      ["{next-cache}:tag:posts", "/blog", 60],
-      ["{next-cache}:tag:layout", "/blog", 60]
+    expect((await readBack(payload))?.value).toEqual(fetchSet.data);
+  });
+
+  it("gives a page its cacheControl.expire as TTL, so Next.js can serve it stale", async () => {
+    // Next.js only re-renders before responding once `expire` has passed;
+    // between `revalidate` and `expire` it serves the entry stale and
+    // regenerates in the background. Expiring at `revalidate` would turn
+    // every revalidation into a blocking render.
+    const { set } = await recordSet(
+      appPageSet.key,
+      appPageSet.data,
+      appPageSet.ctx
+    );
+
+    expect(set?.slice(0, 2)).toEqual(["SET", "{next-cache}:entry:/static"]);
+    expect(set?.slice(3)).toEqual(["EX", 31_536_000]);
+  });
+
+  it("indexes a page under the tags in its x-next-cache-tags header", async () => {
+    // A page's set() context carries no tags at all; without the header the
+    // page was unreachable by revalidateTag, and by revalidatePath, whose
+    // implicit `_N_T_` tag lives only there.
+    const { tagCalls } = await recordSet(
+      appPageSet.key,
+      appPageSet.data,
+      appPageSet.ctx
+    );
+
+    expect(tagCalls.map((command) => command[0])).toEqual(
+      Array(5).fill("EVAL")
+    );
+    expect(tagCalls.map((command) => command.slice(3))).toEqual(
+      [
+        "_N_T_/layout",
+        "_N_T_/static/layout",
+        "_N_T_/static/page",
+        "_N_T_/static",
+        "posts"
+      ].map((tag) => [`{next-cache}:tag:${tag}`, "/static", 31_536_000])
+    );
+  });
+
+  it("gives a fetch entry its data.revalidate as TTL and indexes ctx.tags", async () => {
+    const { set, tagCalls } = await recordSet(
+      fetchSet.key,
+      fetchSet.data,
+      fetchSet.ctx
+    );
+
+    expect(set?.slice(3)).toEqual(["EX", 600]);
+    expect(tagCalls.map((command) => command.slice(3))).toEqual([
+      ["{next-cache}:tag:posts", fetchSet.key, 600]
     ]);
+  });
+
+  it("caps a fetch entry at one year, the longest a revalidation is remembered", async () => {
+    const { set } = await recordSet(
+      "k",
+      { ...fetchSet.data, revalidate: 10 * 31_536_000 },
+      fetchSet.ctx
+    );
+
+    expect(set?.slice(3)).toEqual(["EX", 31_536_000]);
+  });
+});
+
+describe("cacheHandler: Next.js 15 shapes", () => {
+  it("reads ctx.revalidate, which 15.0-15.2 send instead of cacheControl", async () => {
+    const { set } = await recordSet(
+      "/blog",
+      { kind: "APP_PAGE", html: "<p/>", headers: {} },
+      { revalidate: 60, isFallback: false } as never
+    );
+
+    expect(set?.slice(3)).toEqual(["EX", 60]);
+  });
+
+  it("falls back to cacheControl.revalidate when there is no expire (15.3-15.5)", async () => {
+    // Captured from Next.js 15.5.26 for the same /static page that 16 sends
+    // `expire: 31536000` for: 15.x keeps expire in its prerender manifest
+    // and never hands it to the cache handler.
+    const { set } = await recordSet("/static", appPageSet.data, {
+      cacheControl: { revalidate: 600, expire: undefined },
+      isRoutePPREnabled: false,
+      isFallback: false
+    } as never);
+
+    expect(set?.slice(3)).toEqual(["EX", 600]);
+  });
+
+  it("round-trips 15.0's segmentData, a record of strings", async () => {
+    const value = {
+      kind: "APP_PAGE",
+      html: "<p/>",
+      rscData: Buffer.from([0, 255, 128]),
+      segmentData: { "/_tree": "0:tree", "/blog/__PAGE__": "1:page" }
+    };
+    const { payload } = await recordSet("/blog", value, { revalidate: 60 });
+
+    expect((await readBack(payload))?.value).toEqual(value);
+  });
+});
+
+describe("cacheHandler: lifetimes", () => {
+  it("stores without EX when Next.js gives no lifetime", async () => {
+    const { set } = await recordSet(
+      "/page",
+      { kind: "APP_PAGE", html: "" },
+      { cacheControl: { revalidate: false, expire: undefined } }
+    );
+
+    expect(set).toHaveLength(3); // SET key payload, no EX
+  });
+
+  it("applies defaultTtlSeconds only when Next.js gives no lifetime", async () => {
+    const forever = await recordSet(
+      "/page",
+      { kind: "APP_PAGE", html: "" },
+      { cacheControl: { revalidate: false, expire: undefined } },
+      { defaultTtlSeconds: 300 }
+    );
+    const timed = await recordSet("/page", appPageSet.data, appPageSet.ctx, {
+      defaultTtlSeconds: 300
+    });
+
+    expect(forever.set?.slice(3)).toEqual(["EX", 300]);
+    expect(timed.set?.slice(3)).toEqual(["EX", 31_536_000]);
   });
 
   it("makes a tag set permanent when its entry never expires", async () => {
     // GT never clears an existing expiry, so a permanent entry needs an
     // explicit PERSIST: otherwise a tag set that earlier held a short-lived
     // entry would expire out from under this one, and the page could never be
-    // revalidated by tag again.
-    const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK", 1]);
-    const Handler = cacheHandler({ client });
-
-    await new Handler().set(
+    // revalidated by tag again. ttl 0 is the script's signal to PERSIST.
+    const { tagCalls } = await recordSet(
       "/page",
-      { kind: "PAGE" },
-      { revalidate: false, tags: ["static"] }
+      { kind: "APP_PAGE", html: "", headers: { "x-next-cache-tags": "a" } },
+      { cacheControl: { revalidate: false, expire: undefined } }
     );
 
-    // ttl 0 is the script's signal to PERSIST rather than expire the set.
-    const [tagCall] = commands.slice(1);
-    expect(tagCall?.[0]).toBe("EVAL");
-    expect(tagCall?.slice(3)).toEqual(["{next-cache}:tag:static", "/page", 0]);
+    expect(tagCalls[0]?.slice(3)).toEqual(["{next-cache}:tag:a", "/page", 0]);
   });
+});
 
-  it("stores without EX when revalidate is false", async () => {
-    const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK"]);
-    const Handler = cacheHandler({ client });
-
-    await new Handler().set("/page", { kind: "PAGE" }, { revalidate: false });
-
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toHaveLength(3); // SET key payload — no EX
-    expect(commands[0]?.[0]).toBe("SET");
-  });
-
-  it("applies defaultTtlSeconds when revalidate is absent", async () => {
-    const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK"]);
-    const Handler = cacheHandler({ client, defaultTtlSeconds: 300 });
-
-    await new Handler().set("/page", { kind: "PAGE" });
-
-    expect(commands[0]?.slice(3)).toEqual(["EX", 300]);
-  });
-
-  it("returns the decoded entry on a hit", async () => {
-    const commands: RedisCommand[] = [];
-    const stored = {
-      value: { kind: "FETCH", data: [1, 2] },
-      lastModified: 1_700_000_000_000,
-      tags: ["posts"]
+describe("cacheHandler: encoding", () => {
+  it("keeps caller data that looks like its own tags intact", async () => {
+    // Pages Router pageData is whatever getStaticProps returned, so it can
+    // hold any shape, including the encoding's own markers.
+    const pageData = {
+      a: { $b: "AAEC" },
+      m: { $m: [["k", 1]] },
+      o: { $o: { $b: "x" } },
+      nested: [{ $b: "not bytes" }, { $b: "x", other: 1 }],
+      own: JSON.parse('{"__proto__": {"polluted": true}}') as object
     };
-    const client = fakeClient(commands, [JSON.stringify(stored)]);
-    const Handler = cacheHandler({ client });
+    const { payload } = await recordSet(
+      "/p",
+      { kind: "PAGES", html: "", pageData },
+      { revalidate: 60 }
+    );
+    const value = (await readBack(payload))?.value as { pageData: unknown };
 
-    const entry = await new Handler().get("/blog");
-
-    expect(commands).toEqual([["GET", "{next-cache}:entry:/blog"]]);
-    expect(entry).toEqual(stored);
+    expect(value.pageData).toEqual(pageData);
+    const own = (value.pageData as { own: object }).own;
+    expect(Object.hasOwn(own, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(own)).toBe(Object.prototype);
   });
 
-  it("returns null on a miss", async () => {
-    const client = fakeClient([], [null]);
-    const Handler = cacheHandler({ client });
+  it("drops undefined members the way JSON does, without miscounting keys", async () => {
+    // { $b, other: undefined } lands in Redis as { $b }; it must be escaped
+    // on that basis or it would come back as bytes.
+    const value = {
+      kind: "PAGES",
+      pageData: { x: { $b: "AAEC", other: undefined } }
+    };
+    const { payload } = await recordSet("/p", value, { revalidate: 60 });
 
-    expect(await new Handler().get("/missing")).toBeNull();
+    expect((await readBack(payload))?.value).toEqual({
+      kind: "PAGES",
+      pageData: { x: { $b: "AAEC" } }
+    });
   });
 
-  it("fails open on corrupt JSON", async () => {
-    const client = fakeClient([], ["{not json"]);
-    const Handler = cacheHandler({ client });
+  it("stores and returns a null value (a notFound route)", async () => {
+    const { payload } = await recordSet("/gone", null, {
+      cacheControl: { revalidate: 60, expire: 600 }
+    });
 
-    expect(await new Handler().get("/corrupt")).toBeNull();
+    const entry = await readBack(payload);
+    expect(entry).not.toBeNull();
+    expect(entry?.value).toBeNull();
   });
 
-  it("revalidateTag deletes entries and SREMs only the members it saw", async () => {
+  it("skips caching a value JSON cannot hold", async () => {
+    const { set } = await recordSet("/p", { kind: "FETCH", big: 1n });
+    expect(set).toBeUndefined();
+  });
+
+  it("treats a 0.1.0 entry as a miss rather than a corrupt hit", async () => {
+    // 0.1.0 stored plain JSON: rscData as { type: "Buffer", data } and
+    // segmentData as {}. Handing that back would break the page for good.
+    const legacy = JSON.stringify({
+      value: { kind: "APP_PAGE", rscData: { type: "Buffer", data: [1] } },
+      lastModified: 1,
+      tags: []
+    });
+
+    expect(await readBack(legacy)).toBeNull();
+  });
+
+  it("returns null on a miss and on corrupt JSON", async () => {
+    expect(await readBack(null as never)).toBeNull();
+    expect(await readBack("{not json")).toBeNull();
+  });
+});
+
+describe("cacheHandler: revalidation", () => {
+  it("checks a fetch's own and implicit tags in the same round trip as the GET", async () => {
+    const { payload } = await recordSet(
+      fetchSet.key,
+      fetchSet.data,
+      fetchSet.ctx
+    );
     const commands: RedisCommand[] = [];
-    // pipeline: SMEMBERS -> members; send: DEL, then SREM
-    const client = fakeClient(commands, [["/blog", "/blog/post-1"], 3, 2]);
-    const Handler = cacheHandler({ client });
+    const Handler = cacheHandler({
+      client: fakeClient(commands, [payload, [null, null, null, null, null]])
+    });
 
-    await new Handler().revalidateTag("posts");
+    const entry = await new Handler().get(fetchGet.key, fetchGet.ctx);
 
+    expect(entry?.value).toEqual(fetchSet.data);
+    expect(commands).toEqual([
+      ["GET", `{next-cache}:entry:${fetchSet.key}`],
+      [
+        "MGET",
+        "{next-cache}:revalidated:posts",
+        "{next-cache}:revalidated:_N_T_/layout",
+        "{next-cache}:revalidated:_N_T_/static/layout",
+        "{next-cache}:revalidated:_N_T_/static/page",
+        "{next-cache}:revalidated:_N_T_/static"
+      ]
+    ]);
+  });
+
+  it("misses a fetch whose route was revalidated after it was written", async () => {
+    // revalidatePath("/static") is revalidateTag("_N_T_/static"). A fetch
+    // entry is only ever indexed under its explicit tags, so the implicit
+    // one reaches it through this check, on every instance.
+    const { payload } = await recordSet(
+      fetchSet.key,
+      fetchSet.data,
+      fetchSet.ctx
+    );
+    const { lastModified } = JSON.parse(payload) as { lastModified: number };
+    const at = (offset: number) => String(lastModified + offset);
+    const get = (markers: (string | null)[]) =>
+      new (cacheHandler({ client: fakeClient([], [payload, markers]) }))().get(
+        fetchGet.key,
+        fetchGet.ctx
+      );
+
+    expect(await get([null, null, null, null, at(5)])).toBeNull();
+    expect(await get([at(0), null, null, null, null])).toBeNull();
+    expect(await get([at(-5), null, null, null, null])).not.toBeNull();
+  });
+
+  it("revalidateTag stamps each tag, then deletes its entries and SREMs only the members it saw", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [["/blog", "/blog/post-1"], "OK"]);
+
+    await new (cacheHandler({ client }))().revalidateTag("posts");
+
+    expect(commands[0]).toEqual(["SMEMBERS", "{next-cache}:tag:posts"]);
+    expect(commands[1]?.slice(0, 2)).toEqual([
+      "SET",
+      "{next-cache}:revalidated:posts"
+    ]);
+    expect(commands[1]?.slice(3)).toEqual(["EX", 31_536_000]);
     // SREM of the observed members, never DEL of the tag set: a set() racing
     // between the SMEMBERS and this point would otherwise lose its tag
     // membership while its entry survived, leaving a page that can never be
     // revalidated again.
-    expect(commands).toEqual([
-      ["SMEMBERS", "{next-cache}:tag:posts"],
+    expect(commands.slice(2)).toEqual([
       ["DEL", "{next-cache}:entry:/blog", "{next-cache}:entry:/blog/post-1"],
       ["SREM", "{next-cache}:tag:posts", "/blog", "/blog/post-1"]
     ]);
+  });
+
+  it("revalidateTag takes two round trips however many tags and keys", async () => {
+    const members = Array.from({ length: 1_200 }, (_, index) => `/p/${index}`);
+    const pipelines: (readonly RedisCommand[])[] = [];
+    const client: RedisClient = {
+      async send() {
+        throw new Error("revalidateTag should only pipeline");
+      },
+      async pipeline(commands) {
+        pipelines.push(commands);
+        return pipelines.length === 1 ? [members, ["/x"], "OK", "OK"] : [];
+      },
+      async close() {}
+    };
+
+    await new (cacheHandler({ client }))().revalidateTag(["one", "two"], {
+      expire: 3600
+    });
+
+    expect(pipelines).toHaveLength(2);
+    // Chunked so no single command blocks the server; still one flight.
+    expect(pipelines[1]?.map((command) => command[0])).toEqual([
+      "DEL",
+      "DEL",
+      "DEL",
+      "SREM",
+      "SREM",
+      "SREM",
+      "SREM"
+    ]);
+    expect(pipelines[1]?.[0]).toHaveLength(501);
+    expect(pipelines[1]?.[2]).toHaveLength(202);
   });
 
   it("revalidateTag keeps a member added while it was running", async () => {
@@ -133,13 +418,15 @@ describe("cacheHandler", () => {
     // ["/a"]. DEL-ing the tag set dropped /b's membership while /b itself
     // stayed cached, so no later revalidateTag could ever reach it.
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, [["/a"], 1, 1]);
-    const Handler = cacheHandler({ client });
+    const client = fakeClient(commands, [["/a"], "OK"]);
 
-    await new Handler().revalidateTag("posts");
+    await new (cacheHandler({ client }))().revalidateTag("posts");
 
-    const srem = commands.find((command) => command[0] === "SREM");
-    expect(srem).toEqual(["SREM", "{next-cache}:tag:posts", "/a"]);
+    expect(commands.find((command) => command[0] === "SREM")).toEqual([
+      "SREM",
+      "{next-cache}:tag:posts",
+      "/a"
+    ]);
     expect(
       commands.some(
         (command) =>
@@ -148,20 +435,14 @@ describe("cacheHandler", () => {
     ).toBe(false);
   });
 
-  it("revalidateTag accepts an array of tags", async () => {
+  it("revalidateTag of an empty tag set only stamps it", async () => {
     const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, [["/a"], ["/b"], 4, 1, 1]);
-    const Handler = cacheHandler({ client });
+    const client = fakeClient(commands, [[], "OK"]);
 
-    await new Handler().revalidateTag(["one", "two"]);
+    await new (cacheHandler({ client }))().revalidateTag(["gone"]);
+    await new (cacheHandler({ client }))().revalidateTag([]);
 
-    expect(commands).toEqual([
-      ["SMEMBERS", "{next-cache}:tag:one"],
-      ["SMEMBERS", "{next-cache}:tag:two"],
-      ["DEL", "{next-cache}:entry:/a", "{next-cache}:entry:/b"],
-      ["SREM", "{next-cache}:tag:one", "/a"],
-      ["SREM", "{next-cache}:tag:two", "/b"]
-    ]);
+    expect(commands.map((command) => command[0])).toEqual(["SMEMBERS", "SET"]);
   });
 
   it("awaits a lazy client factory exactly once across operations", async () => {
@@ -172,10 +453,9 @@ describe("cacheHandler", () => {
       calls += 1;
       return client;
     };
-    const Handler = cacheHandler({ client: factory });
-    const handler = new Handler();
+    const handler = new (cacheHandler({ client: factory }))();
 
-    await handler.set("/page", { kind: "PAGE" }, { revalidate: false });
+    await handler.set("/page", { kind: "APP_PAGE" }, {});
     await handler.get("/page");
 
     expect(calls).toBe(1);
@@ -185,6 +465,83 @@ describe("cacheHandler", () => {
   it("resetRequestCache is a no-op", () => {
     const Handler = cacheHandler({ client: fakeClient([], []) });
     expect(new Handler().resetRequestCache()).toBeUndefined();
+  });
+});
+
+const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
+const describeRedis = redisUrl ? describe : describe.skip;
+
+describeRedis("cacheHandler (live)", () => {
+  let client: RedisClient;
+  const prefix = `next-live:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const key = (suffix: string) => `{${prefix}}:${suffix}`;
+
+  beforeAll(async () => {
+    client = await node({ url: redisUrl });
+  });
+  afterAll(async () => {
+    const keys = (await client.send(["KEYS", `{${prefix}}:*`])) as string[];
+    if (keys.length > 0) await client.send(["DEL", ...keys]);
+    await client.close();
+  });
+
+  it("stores real payloads with Next's TTLs and reads them back exactly", async () => {
+    const handler = new (cacheHandler({ client, prefix }))();
+
+    await handler.set(appPageSet.key, appPageSet.data, appPageSet.ctx);
+    await handler.set(appRouteSet.key, appRouteSet.data, appRouteSet.ctx);
+    await handler.set(fetchSet.key, fetchSet.data, fetchSet.ctx);
+
+    const ttl = async (suffix: string) =>
+      Number(await client.send(["TTL", key(suffix)]));
+    expect(await ttl("entry:/static")).toBeGreaterThan(31_536_000 - 5);
+    expect(await ttl("entry:/api/binary")).toBeGreaterThan(31_536_000 - 5);
+    expect(await ttl(`entry:${fetchSet.key}`)).toBeGreaterThan(595);
+    expect(await ttl(`entry:${fetchSet.key}`)).toBeLessThanOrEqual(600);
+    expect(await ttl("tag:_N_T_/static")).toBeGreaterThan(0);
+
+    const route = (await handler.get(appRouteSet.key))?.value as {
+      body: Buffer;
+    };
+    expectBuffer(route.body, appRouteSet.data.body);
+    const page = (await handler.get(appPageSet.key))?.value as {
+      segmentData: Map<string, Buffer>;
+    };
+    expect(page.segmentData.size).toBe(appPageSet.data.segmentData.size);
+    expect((await handler.get(fetchGet.key, fetchGet.ctx))?.value).toEqual(
+      fetchSet.data
+    );
+  });
+
+  it("revalidatePath's implicit tag drops the page and misses its fetch", async () => {
+    const handler = new (cacheHandler({ client, prefix }))();
+    await handler.set(appPageSet.key, appPageSet.data, appPageSet.ctx);
+    await handler.set(fetchSet.key, fetchSet.data, fetchSet.ctx);
+
+    await handler.revalidateTag("_N_T_/static");
+
+    expect(await handler.get(appPageSet.key)).toBeNull();
+    // The fetch entry is still stored (it is not indexed under the implicit
+    // tag), but a lookup from the revalidated route no longer returns it.
+    expect(await client.send(["EXISTS", key(`entry:${fetchSet.key}`)])).toBe(1);
+    expect(await handler.get(fetchGet.key, fetchGet.ctx)).toBeNull();
+
+    // A write after the revalidation is fresh again.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await handler.set(fetchSet.key, fetchSet.data, fetchSet.ctx);
+    expect(await handler.get(fetchGet.key, fetchGet.ctx)).not.toBeNull();
+  });
+
+  it("revalidateTag drops both the page and the fetch that share an explicit tag", async () => {
+    const handler = new (cacheHandler({ client, prefix }))();
+    await handler.set(appPageSet.key, appPageSet.data, appPageSet.ctx);
+    await handler.set(fetchSet.key, fetchSet.data, fetchSet.ctx);
+
+    await handler.revalidateTag("posts");
+
+    expect(await client.send(["EXISTS", key("entry:/static")])).toBe(0);
+    expect(await client.send(["EXISTS", key(`entry:${fetchSet.key}`)])).toBe(0);
+    expect(await client.send(["EXISTS", key("tag:posts")])).toBe(0);
   });
 });
 

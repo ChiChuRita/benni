@@ -8,6 +8,26 @@ const DEFAULT_CACHE_PREFIX = "next-cache";
 /** Keys per DEL in revalidateTag, so one popular tag cannot block the server. */
 const DEL_CHUNK = 500;
 const DEFAULT_RATELIMIT_PREFIX = "next-ratelimit";
+/**
+ * The header Next.js records a page's or route handler's tags in, implicit
+ * path tags (`_N_T_/blog`) included. Their `set()` context carries no tags.
+ */
+const CACHE_TAGS_HEADER = "x-next-cache-tags";
+/**
+ * How long a tag's revalidation is remembered: Next.js's
+ * `CACHE_ONE_YEAR_SECONDS`, the longest `revalidate` it ever writes on a
+ * fetch entry (`force-cache` and `revalidate: false` both become one year).
+ * Fetch entries are capped to it too, so a marker always outlives every entry
+ * written before it.
+ */
+const MARKER_TTL_SECONDS = 31_536_000;
+/**
+ * Bumped whenever the stored layout changes, so `get` treats an entry written
+ * by an older layout as a miss instead of handing Next.js something it cannot
+ * render. 0.1.0 stored plain JSON (no `v`), which turned every Buffer into
+ * `{ type, data }` and every Map into `{}`.
+ */
+const FORMAT_VERSION = 2;
 
 /**
  * Adds one key to a tag set and gives the set the expiry it should have, in a
@@ -46,16 +66,16 @@ return 1`;
 export type RedisClientSource = ClientSource;
 
 /**
- * The stored shape of one cache entry, mirroring what Next.js hands to
- * `set()` and expects back from `get()`: the payload, its write timestamp,
- * and the tags it was written under.
+ * The shape `get()` resolves to and Next.js reads back: the payload exactly
+ * as `set()` received it (Buffers and Maps included), its write timestamp,
+ * and the tags it was indexed under.
  */
 export type NextCacheEntry = {
-  /** The Next.js cache payload (PAGE, ROUTE, and FETCH kinds), stored as-is. */
+  /** The Next.js cache value (APP_PAGE, APP_ROUTE, PAGES, FETCH, ...). */
   readonly value: unknown;
   /** Epoch-ms timestamp of the write; Next.js uses it for staleness checks. */
   readonly lastModified: number;
-  /** The tags the entry was written under (from `ctx.tags`). */
+  /** The tags the entry was indexed under. */
   readonly tags: readonly string[];
 };
 
@@ -64,24 +84,41 @@ export type NextCacheEntry = {
  * properties; they are ignored.
  */
 export type NextCacheHandlerContext = {
-  /** Cache tags for the entry (explicit and implicit). */
+  /** Fetch entries: the tags given to `fetch(url, { next: { tags } })`. */
   readonly tags?: readonly string[];
-  /** Revalidate period in seconds, or `false` for "cache forever". */
+  /** Next.js 15.3+, pages and route handlers: seconds, `false` = never. */
+  readonly cacheControl?: {
+    readonly revalidate: number | false;
+    readonly expire?: number | undefined;
+  };
+  /** Next.js 15.0-15.2, pages and route handlers: seconds, `false` = never. */
   readonly revalidate?: number | false;
+  /** `true` for a fetch entry. */
+  readonly fetchCache?: boolean;
 };
 
 /**
- * A minimal structural interface for a Next.js custom cache handler. Matches
- * the shape Next.js 14.1+ expects (`ctx.tags: string[]`,
- * `ctx.revalidate?: number | false`, entries as
- * `{ value, lastModified, tags }`); `resetRequestCache()` is called by
- * Next.js 15 and is a harmless no-op on 14. Deliberately not imported from
- * `"next"` so `benni/next` has zero dependencies.
+ * The subset of the `get()` context the handler reads: for a fetch entry,
+ * its own tags and the implicit tags of the route doing the fetching.
+ */
+export type NextCacheGetContext = {
+  readonly kind?: string;
+  readonly tags?: readonly string[];
+  readonly softTags?: readonly string[];
+};
+
+/**
+ * A minimal structural interface for a Next.js custom cache handler, matching
+ * the `cacheHandler` contract of Next.js 15 and 16. Deliberately not imported
+ * from `"next"` so `benni/next` has zero dependencies.
  */
 export interface NextCacheHandler {
-  get(key: string): Promise<NextCacheEntry | null>;
+  get(key: string, ctx?: NextCacheGetContext): Promise<NextCacheEntry | null>;
   set(key: string, data: unknown, ctx?: NextCacheHandlerContext): Promise<void>;
-  revalidateTag(tag: string | readonly string[]): Promise<void>;
+  revalidateTag(
+    tag: string | readonly string[],
+    durations?: { readonly expire?: number }
+  ): Promise<void>;
   resetRequestCache(): void;
 }
 
@@ -92,8 +129,9 @@ export type CacheHandlerOptions = {
   /** Key namespace. Default `"next-cache"`. */
   readonly prefix?: string;
   /**
-   * Extra safety cap on entry TTL in seconds, applied when `ctx.revalidate`
-   * is absent or `false`. Without it those entries live forever.
+   * TTL in seconds for an entry Next.js gives no lifetime (`revalidate:
+   * false` with no `expire`). Without it those entries live until evicted
+   * or revalidated.
    */
   readonly defaultTtlSeconds?: number;
 };
@@ -101,22 +139,31 @@ export type CacheHandlerOptions = {
 /**
  * A Next.js ISR/App-Router cache handler backed by Redis, so cached pages,
  * route handlers, and `fetch` data survive deploys and are shared across
- * every instance of the app.
+ * every instance of the app. Supports Next.js 15 and 16.
  *
  * Returns a **class** (Next.js instantiates the default export of the
  * cache-handler module) closed over the options. Entries live at
- * `<prefix>:entry:<key>` as JSON; each tag keeps a set of its keys at
- * `<prefix>:tag:<tag>`, so `revalidateTag` is a set lookup plus one `DEL`.
- * Entries with a numeric `revalidate` get that TTL via `SET ... EX`, and a tag
- * set expires with its longest-lived member, or never if one of them never
- * expires.
+ * `<prefix>:entry:<key>`; each tag keeps a set of its keys at
+ * `<prefix>:tag:<tag>`, so `revalidateTag` (and `revalidatePath`, which is a
+ * tag underneath) is a set lookup plus a `DEL`.
+ *
+ * - **Values round-trip exactly.** Buffers (`rscData`, route `body`), Maps
+ *   (`segmentData`), and everything nested are stored in a tagged JSON
+ *   encoding, and come back as Buffers and Maps.
+ * - **TTL follows Next.js.** A page or route handler expires at its
+ *   `cacheControl.expire` (the point where Next.js would stop serving it
+ *   stale), falling back to `revalidate` on Next.js 15, which does not pass
+ *   `expire`; a fetch entry expires at its `revalidate`.
+ * - **Tags come from where Next.js puts them:** the fetch's `ctx.tags`, and
+ *   the `x-next-cache-tags` header of a page or route value.
+ * - **Fetch entries honour implicit tags.** `revalidateTag` also records when
+ *   each tag was revalidated, and a fetch `get` checks its own and its
+ *   route's tags against that in the same round trip, so `revalidatePath`
+ *   reaches the fetches a page made, on every instance.
  *
  * Only `send`/`pipeline` are used, so it works over every adapter —
- * including [`benni/upstash`](../upstash/index.js). PAGE, ROUTE, and FETCH
- * payloads all round-trip as JSON (Next.js base64-encodes route bodies
- * itself). Reads fail open: an entry that does not decode is a miss, never an
- * error. Only `ctx.tags` feeds the tag index — tags carried solely in
- * response headers of externally-revalidated payloads are not indexed.
+ * including [`benni/upstash`](../upstash/index.js). Reads fail open: an entry
+ * that does not decode is a miss, never an error.
  *
  * @example
  * ```ts
@@ -131,9 +178,9 @@ export type CacheHandlerOptions = {
  *   })
  * });
  *
- * // next.config.ts
+ * // next.config.mjs
  * const nextConfig = {
- *   cacheHandler: require.resolve("./cache-handler.mjs"),
+ *   cacheHandler: fileURLToPath(new URL("./cache-handler.mjs", import.meta.url)),
  *   cacheMaxMemorySize: 0 // disable the in-memory cache
  * };
  * ```
@@ -152,8 +199,27 @@ export function cacheHandler(
   const base = `{${prefix}}`;
   const entryKey = (key: string) => `${base}:entry:${key}`;
   const tagKey = (tag: string) => `${base}:tag:${tag}`;
+  const markerKey = (tag: string) => `${base}:revalidated:${tag}`;
 
-  const ttlSecondsFor = (revalidate: number | false | undefined) => {
+  const ttlSecondsFor = (
+    data: unknown,
+    ctx: NextCacheHandlerContext | undefined
+  ): number | undefined => {
+    if (isFetchValue(data) || ctx?.fetchCache === true) {
+      const revalidate = isFetchValue(data) ? data.revalidate : undefined;
+      return typeof revalidate === "number" && revalidate > 0
+        ? Math.min(Math.ceil(revalidate), MARKER_TTL_SECONDS)
+        : MARKER_TTL_SECONDS;
+    }
+    // Past `expire` Next.js re-renders before responding; before it, a stale
+    // entry is still served while it regenerates in the background. So the
+    // entry has to live until `expire`, not `revalidate`, or every
+    // revalidation turns into a blocking render. Next.js 15 keeps `expire`
+    // in its prerender manifest and never passes it, so there the entry can
+    // only go at `revalidate`: the first request after that renders fresh.
+    const expire = ctx?.cacheControl?.expire;
+    if (typeof expire === "number" && expire > 0) return Math.ceil(expire);
+    const revalidate = ctx?.cacheControl?.revalidate ?? ctx?.revalidate;
     if (typeof revalidate === "number" && revalidate > 0) {
       return Math.ceil(revalidate);
     }
@@ -161,18 +227,32 @@ export function cacheHandler(
   };
 
   return class BenniCacheHandler implements NextCacheHandler {
-    async get(key: string): Promise<NextCacheEntry | null> {
+    async get(
+      key: string,
+      ctx?: NextCacheGetContext
+    ): Promise<NextCacheEntry | null> {
+      const tags = unique([...(ctx?.tags ?? []), ...(ctx?.softTags ?? [])]);
       const client = await getClient();
-      const reply = await client.send(["GET", entryKey(key)]);
-      if (typeof reply !== "string") return null;
-      // A cache must fail open: anything that does not decode is a miss.
-      try {
-        const parsed: unknown = JSON.parse(reply);
-        if (typeof parsed !== "object" || parsed === null) return null;
-        return parsed as NextCacheEntry;
-      } catch {
-        return null;
+      const [reply, markers] =
+        tags.length === 0
+          ? [await client.send(["GET", entryKey(key)]), undefined]
+          : await client.pipeline([
+              ["GET", entryKey(key)],
+              ["MGET", ...tags.map(markerKey)]
+            ]);
+      const entry = decodeEntry(reply);
+      if (!entry) return null;
+      // A tag revalidated at or after this write means the data predates it.
+      // Only fetch lookups carry tags here: page and route entries are found
+      // and deleted through their tag sets instead.
+      if (Array.isArray(markers)) {
+        for (const marker of markers) {
+          if (marker != null && Number(marker) >= entry.lastModified) {
+            return null;
+          }
+        }
       }
+      return entry;
     }
 
     async set(
@@ -180,20 +260,21 @@ export function cacheHandler(
       data: unknown,
       ctx?: NextCacheHandlerContext
     ): Promise<void> {
-      const tags = [...(ctx?.tags ?? [])];
-      const entry: NextCacheEntry = {
+      const tags = unique([...(ctx?.tags ?? []), ...headerTags(data)]);
+      const entry: NextCacheEntry & { readonly v: number } = {
+        v: FORMAT_VERSION,
         value: data,
         lastModified: Date.now(),
         tags
       };
       let payload: string;
       try {
-        payload = JSON.stringify(entry);
+        payload = JSON.stringify(pack(entry));
       } catch {
         // Unserializable payload (circular, BigInt, ...): skip caching.
         return;
       }
-      const ttl = ttlSecondsFor(ctx?.revalidate);
+      const ttl = ttlSecondsFor(data, ctx);
       const commands: RedisCommand[] = [
         ttl === undefined
           ? ["SET", entryKey(key), payload]
@@ -209,26 +290,48 @@ export function cacheHandler(
       await client.pipeline(commands);
     }
 
+    /**
+     * Deletes every entry indexed under the tags. Next.js 16 also passes
+     * `durations` for a stale-while-revalidate profile (`revalidateTag(tag,
+     * "max")`); this handler expires immediately either way, so the next
+     * request renders fresh rather than being served stale once.
+     */
     async revalidateTag(tag: string | readonly string[]): Promise<void> {
       const tags = typeof tag === "string" ? [tag] : [...tag];
       if (tags.length === 0) return;
       const client = await getClient();
       const tagKeys = tags.map(tagKey);
-      const memberReplies = await client.pipeline(
-        tagKeys.map((key): RedisCommand => ["SMEMBERS", key])
-      );
+      const now = Date.now();
+      // TODO: the markers compare this clock with the writer's `lastModified`,
+      // so instances skewed by more than the gap between a write and a
+      // revalidation can keep that write alive; stamp both from Redis TIME
+      // inside scripts if deployments turn out to need it.
+      const replies = await client.pipeline([
+        ...tagKeys.map((key): RedisCommand => ["SMEMBERS", key]),
+        ...tags.map(
+          (name): RedisCommand => [
+            "SET",
+            markerKey(name),
+            now,
+            "EX",
+            MARKER_TTL_SECONDS
+          ]
+        )
+      ]);
       const perTag = tagKeys.map((key, index) => ({
         key,
-        members: iterateMembers(memberReplies[index])
+        members: iterateMembers(replies[index])
       }));
       const doomed = perTag.flatMap(({ members }) => members.map(entryKey));
-      // Entries first, then the tag memberships. A popular tag can name tens of
-      // thousands of entries, and one DEL over all of them is a multi-megabyte
-      // command that blocks the server, so chunk it. The order matters if we
-      // die partway: a tag pointing at already-deleted entries is harmless and
-      // self-healing, while entries whose tag is gone can never be revalidated.
+      // Entries first, then the tag memberships, as one pipeline. A popular
+      // tag can name tens of thousands of entries, and one DEL over all of
+      // them is a multi-megabyte command that blocks the server, so chunk it.
+      // The order matters if we die partway: a tag pointing at already-deleted
+      // entries is harmless and self-healing, while entries whose tag is gone
+      // can never be revalidated.
+      const commands: RedisCommand[] = [];
       for (let index = 0; index < doomed.length; index += DEL_CHUNK) {
-        await client.send(["DEL", ...doomed.slice(index, index + DEL_CHUNK)]);
+        commands.push(["DEL", ...doomed.slice(index, index + DEL_CHUNK)]);
       }
       // SREM exactly what SMEMBERS returned, rather than DEL-ing the set. A
       // concurrent set() can SADD to this tag between the read above and here,
@@ -237,17 +340,18 @@ export function cacheHandler(
       // Redis drops a set once its last member goes, so this still cleans up.
       for (const { key, members } of perTag) {
         for (let index = 0; index < members.length; index += DEL_CHUNK) {
-          await client.send([
+          commands.push([
             "SREM",
             key,
             ...members.slice(index, index + DEL_CHUNK)
           ]);
         }
       }
+      if (commands.length > 0) await client.pipeline(commands);
     }
 
     resetRequestCache(): void {
-      // Next.js 15 resets its per-request in-memory cache here; this handler
+      // Next.js resets its per-request in-memory cache here; this handler
       // keeps no request-local state, so there is nothing to reset.
     }
   };
@@ -258,6 +362,136 @@ function iterateMembers(reply: unknown): string[] {
     return [...reply].filter((member) => typeof member === "string");
   }
   return [];
+}
+
+function unique(tags: readonly string[]): string[] {
+  return [...new Set(tags)].filter((tag) => tag.length > 0);
+}
+
+function isFetchValue(data: unknown): data is { revalidate?: unknown } {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as { kind?: unknown }).kind === "FETCH"
+  );
+}
+
+/** The tags Next.js recorded on a page or route value, implicit ones included. */
+function headerTags(data: unknown): string[] {
+  if (typeof data !== "object" || data === null) return [];
+  const headers = (data as { headers?: unknown }).headers;
+  if (typeof headers !== "object" || headers === null) return [];
+  const value = (headers as Record<string, unknown>)[CACHE_TAGS_HEADER];
+  return typeof value === "string" ? value.split(",") : [];
+}
+
+function decodeEntry(reply: unknown): NextCacheEntry | null {
+  if (typeof reply !== "string") return null;
+  // A cache must fail open: anything that does not decode is a miss.
+  try {
+    const parsed = unpack(JSON.parse(reply)) as Partial<
+      NextCacheEntry & { v: number }
+    > | null;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      parsed.v !== FORMAT_VERSION ||
+      typeof parsed.lastModified !== "number"
+    ) {
+      return null;
+    }
+    return {
+      value: parsed.value ?? null,
+      lastModified: parsed.lastModified,
+      tags: Array.isArray(parsed.tags) ? parsed.tags : []
+    };
+  } catch {
+    return null;
+  }
+}
+
+// The tagged encoding. Plain JSON turns a Buffer into `{ type, data }` and a
+// Map into `{}`, and Next.js cache values are full of both: `rscData`, a route
+// handler's `body`, and `segmentData: Map<string, Buffer>`. So a Buffer (any
+// Uint8Array) becomes `{ "$b": base64 }` and a Map `{ "$m": [[k, v], ...] }`.
+// A plain object that happens to look like one of those, a single key named
+// `$b`, `$m`, or `$o`, is wrapped as `{ "$o": object }`, so nothing a caller
+// stores can be mistaken for a tag on the way back.
+const BYTES = "$b";
+const MAP = "$m";
+const OBJECT = "$o";
+
+function isTagShaped(keys: readonly string[]): boolean {
+  return (
+    keys.length === 1 &&
+    (keys[0] === BYTES || keys[0] === MAP || keys[0] === OBJECT)
+  );
+}
+
+function pack(value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    // Next.js runs cache handlers on the Node.js runtime, where Buffer exists.
+    const bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    return { [BYTES]: bytes.toString("base64") };
+  }
+  if (value instanceof Map) {
+    return {
+      [MAP]: Array.from(value, ([key, item]) => [pack(key), pack(item)])
+    };
+  }
+  if (Array.isArray(value)) return value.map(pack);
+  if (typeof value !== "object" || value === null) return value;
+  // Anything with its own JSON form (a Date, say) keeps it.
+  if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+    return value;
+  }
+  // Skip what JSON.stringify would drop, so the key count checked below is
+  // the key count that lands in Redis.
+  const fields = Object.entries(value)
+    .filter(
+      ([, item]) =>
+        item !== undefined &&
+        typeof item !== "function" &&
+        typeof item !== "symbol"
+    )
+    .map(([key, item]) => [key, pack(item)] as const);
+  // fromEntries defines keys rather than assigning them, so an own
+  // `__proto__` key stays data instead of becoming the object's prototype.
+  const out = Object.fromEntries(fields);
+  return isTagShaped(fields.map(([key]) => key)) ? { [OBJECT]: out } : out;
+}
+
+function unpack(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(unpack);
+  if (typeof value !== "object" || value === null) return value;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (isTagShaped(keys)) {
+    const inner = record[keys[0] as string];
+    if (keys[0] === BYTES && typeof inner === "string") {
+      return Buffer.from(inner, "base64");
+    }
+    if (keys[0] === MAP && Array.isArray(inner)) {
+      return new Map(
+        inner.map((pair) => {
+          const [key, item] = Array.isArray(pair) ? pair : [];
+          return [unpack(key), unpack(item)];
+        })
+      );
+    }
+    if (keys[0] === OBJECT && typeof inner === "object" && inner !== null) {
+      return unpackFields(inner as Record<string, unknown>);
+    }
+  }
+  return unpackFields(record);
+}
+
+function unpackFields(
+  record: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record).map(([key, item]) => [key, unpack(item)])
+  );
 }
 
 /** Options for {@link rateLimit}. */
