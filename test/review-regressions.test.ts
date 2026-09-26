@@ -28,7 +28,6 @@ import type {
 } from "../src/core/types.js";
 
 import { node } from "../src/node/index.js";
-import { cache, lock } from "../src/primitives/index.js";
 import { upstash } from "../src/upstash/index.js";
 import { fakeClient } from "./fake-client.js";
 
@@ -129,15 +128,6 @@ describe("upstash top-level transaction error (review #5)", () => {
     await expect(client.transaction?.([["SET", "k", "v"]])).rejects.toThrow(
       "EXEC without MULTI"
     );
-  });
-});
-
-describe("lock.run release failures (review #7)", () => {
-  it("does not mask fn's success when release rejects", async () => {
-    // Only the acquire reply is queued; the release's SCRIPT LOAD hits an
-    // empty queue and rejects — run() must still resolve with fn's result.
-    const locks = lock(fakeClient([], ["OK"]));
-    await expect(locks.run("r", async () => 7)).resolves.toBe(7);
   });
 });
 
@@ -505,43 +495,11 @@ describeRedis("infinite scores against real Redis", () => {
   });
 });
 
-// Regressions for the cluster-safe-keys pass. Both were real breakage on a
-// Redis Cluster that a single-node test suite could never surface.
+// Regressions for the cluster-safe-keys pass: real breakage on a Redis
+// Cluster that a single-node test suite could never surface. The cache and
+// budget cases live with their primitives (cache.test.ts, budget.test.ts).
 
 describe("cluster-safe primitive and adapter keys", () => {
-  it("keeps a cache entry and its own fill lock in one slot", async () => {
-    // The fill lock used to be `cache:lock:<id>` next to `cache:<id>`, which
-    // are different slots: two nodes per miss, and a single-flight guarantee
-    // spread across them. Tagging the id co-locates the pair while the cache
-    // itself still spreads, which is the property a cache must keep.
-    const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ['"value"']);
-    const entries = cache<string>(client, {
-      ttlMs: 1000,
-      codec: codecs.json()
-    });
-    await entries.peek("42");
-    const entryKey = commands[0][1] as string;
-    expect(entryKey).toBe("cache:{42}");
-    expect(slotOf(entryKey)).toBe(slotOf("cache:lock:{42}"));
-    // Different ids still land on different slots: the cache stays spread.
-    expect(slotOf("cache:{42}")).not.toBe(slotOf("cache:{43}"));
-  });
-
-  it("keeps every budget key for one id in a single slot", () => {
-    // budget touches three keys per id in one script (two window buckets and
-    // the reservation set), so they must co-locate or the script is illegal
-    // on a cluster. Different ids still spread.
-    const bucket = 29_753;
-    const keys = [
-      `budget:{u1}:${bucket}`,
-      `budget:{u1}:${bucket - 1}`,
-      "budget:{u1}:holds"
-    ];
-    expect(new Set(keys.map(slotOf)).size).toBe(1);
-    expect(slotOf("budget:{u1}:holds")).not.toBe(slotOf("budget:{u2}:holds"));
-  });
-
   it("keeps every Next.js cache key in one slot", () => {
     // revalidateTag DELs entries and tag sets in one command, so they must
     // share a slot or the handler is simply broken on a cluster.

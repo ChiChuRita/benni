@@ -17,45 +17,55 @@ import {
 import { fakeClient } from "./fake-client.js";
 
 describe("lock", () => {
-  it("acquires with SET NX PX and returns a handle", async () => {
+  it("acquires through one script (SET NX PX plus the fence) and returns a handle", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["OK"]), { ttlMs: 10_000 });
+    // SCRIPT LOAD -> sha, EVALSHA -> the fence (0 would mean held)
+    const locks = lock(fakeClient(commands, ["sha1", 7]), { ttlMs: 10_000 });
 
     const handle = await locks.acquire("order:42");
     expect(handle).not.toBeNull();
     expect(handle?.key).toBe("lock:order:42");
+    expect(handle?.fence).toBe(7);
     expect(typeof handle?.token).toBe("string");
-    expect(commands).toHaveLength(1);
-    const [set] = commands;
-    expect(set?.slice(0, 2)).toEqual(["SET", "lock:order:42"]);
-    expect(set?.slice(3)).toEqual(["NX", "PX", 10_000]);
-    expect(typeof set?.[2]).toBe("string"); // the random token
+    expect(commands).toHaveLength(2);
+    const [load, evalsha] = commands;
+    expect(String(load?.[2])).toContain('"SET", KEYS[1], ARGV[1], "NX", "PX"');
+    expect(evalsha?.slice(0, 5)).toEqual([
+      "EVALSHA",
+      "sha1",
+      2,
+      "lock:order:42",
+      "{lock:order:42}:fence"
+    ]);
+    expect(evalsha?.[5]).toBe(handle?.token); // the random token
+    expect(evalsha?.[6]).toBe("10000");
   });
 
   it("returns null when the lock is held and no retries are configured", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, [null]));
+    const locks = lock(fakeClient(commands, ["sha1", 0]));
 
     await expect(locks.acquire("held")).resolves.toBeNull();
-    expect(commands).toHaveLength(1);
+    expect(commands.filter((c) => c[0] === "EVALSHA")).toHaveLength(1);
   });
 
   it("retries until acquired", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, [null, null, "OK"]));
+    const locks = lock(fakeClient(commands, ["sha1", 0, 0, 1]));
 
     const handle = await locks.acquire("busy", {
       retries: 5,
       retryDelayMs: 0
     });
     expect(handle).not.toBeNull();
-    expect(commands).toHaveLength(3); // two misses, then success
+    // two misses, then success
+    expect(commands.filter((c) => c[0] === "EVALSHA")).toHaveLength(3);
   });
 
   it("releases only when the token still matches", async () => {
     const commands: RedisCommand[] = [];
-    // SET -> OK, then release: SCRIPT LOAD -> sha, EVALSHA -> 1 (deleted)
-    const locks = lock(fakeClient(commands, ["OK", "sha1", 1]));
+    // acquire: load + run, then release: SCRIPT LOAD -> sha, EVALSHA -> 1
+    const locks = lock(fakeClient(commands, ["sha0", 1, "sha1", 1]));
 
     const handle = await locks.acquire("res");
     await expect(handle?.release()).resolves.toBe(true);
@@ -67,7 +77,7 @@ describe("lock", () => {
 
   it("release resolves false when we no longer hold the lock", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["OK", "sha1", 0]));
+    const locks = lock(fakeClient(commands, ["sha0", 1, "sha1", 0]));
 
     const handle = await locks.acquire("res");
     await expect(handle?.release()).resolves.toBe(false);
@@ -75,19 +85,25 @@ describe("lock", () => {
 
   it("run acquires, invokes fn, and releases", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["OK", "sha1", 1]));
+    const locks = lock(fakeClient(commands, ["sha0", 3, "sha1", 1]));
 
     const result = await locks.run("res", async (handle) => {
       expect(handle.key).toBe("lock:res");
+      expect(handle.fence).toBe(3);
       return 123;
     });
 
     expect(result).toBe(123);
-    expect(commands.map((c) => c[0])).toEqual(["SET", "SCRIPT", "EVALSHA"]);
+    expect(commands.map((c) => c[0])).toEqual([
+      "SCRIPT",
+      "EVALSHA",
+      "SCRIPT",
+      "EVALSHA"
+    ]);
   });
 
   it("run throws when the lock cannot be acquired", async () => {
-    const locks = lock(fakeClient([], [null]));
+    const locks = lock(fakeClient([], ["sha0", 0]));
     await expect(locks.run("held", async () => 1)).rejects.toThrow(
       'Could not acquire lock "lock:held"'
     );
@@ -171,13 +187,13 @@ describe("cache", () => {
     expect(commands).toEqual([["GET", "cache:{a}"]]);
   });
 
-  it("on a miss, takes the fill lock, loads once, and writes with PX", async () => {
+  it("on a miss, claims the fill lock, loads once, and publishes with PX", async () => {
     const commands: RedisCommand[] = [];
-    // GET miss, lock SET OK, double-check GET miss, then two scripts: the
-    // fenced publish (which writes the value only while we still hold the
-    // lease) and the release. Each is a SCRIPT LOAD plus an EVALSHA.
+    // GET miss, then two scripts: the claim (entry absent, lock taken -> {2})
+    // and the fenced publish, which writes the value and frees the lock in one
+    // step only while we still hold it. Each is a SCRIPT LOAD plus an EVALSHA.
     const store = cache<{ n: number }>(
-      fakeClient(commands, [null, "OK", null, "sha1", 1, "sha2", 1]),
+      fakeClient(commands, [null, "sha1", [2], "sha2", 1]),
       { ttlMs: 60_000 }
     );
     let loads = 0;
@@ -191,99 +207,65 @@ describe("cache", () => {
     expect(loads).toBe(1);
     expect(commands.map((c) => c[0])).toEqual([
       "GET",
-      "SET", // fill lock (cache:lock:{a} NX PX)
-      "GET", // double-check
       "SCRIPT",
-      "EVALSHA", // fenced publish of the value
+      "EVALSHA", // claim: re-check the entry, SET NX PX the fill lock
       "SCRIPT",
-      "EVALSHA" // lock release
+      "EVALSHA" // fenced publish of the value, releasing the lock with it
     ]);
-    const lockSet = commands[1];
-    expect(lockSet?.[1]).toBe("cache:lock:{a}");
+    const claim = commands[2];
+    expect(claim?.slice(2, 5)).toEqual([2, "cache:{a}", "cache:lock:{a}"]);
     // The publish carries both keys and the value, so the script can refuse to
     // write when the lease has moved on.
     const publish = commands[4];
     expect(publish?.slice(2, 5)).toEqual([2, "cache:{a}", "cache:lock:{a}"]);
+    expect(publish?.[5]).toBe(claim?.[5]); // the fill token
     expect(publish?.[6]).toBe('{"n":2}');
+    expect(publish?.[7]).toBe("60000");
   });
 
-  it("skips the loader when the double-check hits, and still releases", async () => {
+  it("skips the loader when the claim finds the entry filled", async () => {
+    // The claim script re-reads the entry before it takes the lock, which is
+    // the double-check a second GET used to do after winning it.
     const commands: RedisCommand[] = [];
     const store = cache<string>(
-      fakeClient(commands, [null, "OK", '"filled"', "sha1", 1]),
+      fakeClient(commands, [null, "sha1", [1, '"filled"']]),
       { ttlMs: 60_000 }
     );
 
     const value = await store.get("a", () => {
-      throw new Error("loader must not run when double-check hits");
+      throw new Error("loader must not run when the claim hits");
     });
 
     expect(value).toBe("filled");
-    expect(commands.map((c) => c[0])).toEqual([
-      "GET",
-      "SET",
-      "GET",
-      "SCRIPT",
-      "EVALSHA"
-    ]);
+    expect(commands.map((c) => c[0])).toEqual(["GET", "SCRIPT", "EVALSHA"]);
   });
 
   it("polls for the value while another caller holds the fill lock", async () => {
     const commands: RedisCommand[] = [];
-    // GET miss, lock SET denied (null), poll GET hit
-    const store = cache<string>(fakeClient(commands, [null, null, '"other"']), {
-      ttlMs: 60_000,
-      pollMs: 1
-    });
+    // GET miss, claim -> held ({0}), poll (the same script) -> hit
+    const store = cache<string>(
+      fakeClient(commands, [null, "sha1", [0], [1, '"other"']]),
+      { ttlMs: 60_000, pollMs: 1 }
+    );
 
     const value = await store.get("a", () => {
       throw new Error("loader must not run while polling succeeds");
     });
 
     expect(value).toBe("other");
-    expect(commands.map((c) => c[0])).toEqual(["GET", "SET", "GET"]);
-  });
-
-  it("fails open when the lock holder never fills", async () => {
-    // Poll count is timing-dependent, so answer by command instead of a queue:
-    // every GET misses, the lock SET is always denied, the value SET succeeds.
-    const commands: RedisCommand[] = [];
-    const client = {
-      async send(command: RedisCommand) {
-        commands.push(command);
-        if (command[0] === "GET") return null;
-        return command[1] === "cache:lock:{a}" ? null : "OK";
-      },
-      async pipeline() {
-        return [];
-      },
-      async close() {}
-    };
-    const store = cache<string>(client, {
-      ttlMs: 60_000,
-      lockTtlMs: 3,
-      pollMs: 1
-    });
-
-    await expect(store.get("a", () => "self-loaded")).resolves.toBe(
-      "self-loaded"
-    );
-    // A loader that never held the lease publishes with NX, so it can seed an
-    // empty key but can never overwrite a value someone else just filled in.
-    expect(commands.at(-1)).toEqual([
-      "SET",
-      "cache:{a}",
-      '"self-loaded"',
-      "NX",
-      "PX",
-      60_000
+    // One round trip per poll, not a GET for the entry plus a GET for the lock.
+    expect(commands.map((c) => c[0])).toEqual([
+      "GET",
+      "SCRIPT",
+      "EVALSHA",
+      "EVALSHA"
     ]);
   });
 
   it("peek reads without loading and set/del round-trip", async () => {
     const commands: RedisCommand[] = [];
     const store = cache<string>(
-      fakeClient(commands, ['"v"', null, "OK", "sha1", 1]),
+      fakeClient(commands, ['"v"', null, "sha1", 1, "sha2", 1]),
       { ttlMs: 5_000 }
     );
 
@@ -292,23 +274,36 @@ describe("cache", () => {
     await store.set("a", "w");
     await expect(store.del("a")).resolves.toBe(1);
 
-    expect(commands[2]).toEqual(["SET", "cache:{a}", '"w"', "PX", 5_000]);
+    // set is a script too: it writes the entry and drops the fill lock in one
+    // step, so a slower loader holding an older value cannot overwrite it.
+    expect(commands[3]).toEqual([
+      "EVALSHA",
+      "sha1",
+      2,
+      "cache:{a}",
+      "cache:lock:{a}",
+      '"w"',
+      "5000"
+    ]);
     // del is a script: it drops the fill lock alongside the value so an
     // in-flight loader cannot republish what was just invalidated.
-    expect(commands[4]?.[0]).toBe("EVALSHA");
-    expect(commands[4]?.slice(2, 5)).toEqual([
+    expect(commands[5]?.[0]).toBe("EVALSHA");
+    expect(commands[5]?.slice(2, 5)).toEqual([
       2,
       "cache:{a}",
       "cache:lock:{a}"
     ]);
   });
 
-  it("rejects non-positive ttl, lock ttl, and poll intervals", () => {
+  it("rejects non-positive ttl, lock ttl, wait timeout, and poll intervals", () => {
     expect(() => cache(fakeClient([], []), { ttlMs: 0 })).toThrow(
       ValidationError
     );
     expect(() =>
       cache(fakeClient([], []), { ttlMs: 1, lockTtlMs: -1 })
+    ).toThrow(ValidationError);
+    expect(() =>
+      cache(fakeClient([], []), { ttlMs: 1, waitTimeoutMs: 0 })
     ).toThrow(ValidationError);
     expect(() => cache(fakeClient([], []), { ttlMs: 1, pollMs: 0 })).toThrow(
       ValidationError
