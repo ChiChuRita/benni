@@ -93,6 +93,8 @@ const subscription = await redis.pubsub.channel(userEvents).subscribe((message) 
 });
 ```
 
+If the subscriber connection drops, ioredis reconnects it and resubscribes every channel and pattern on its own. Only when ioredis gives up (it reaches its final `"end"` state, for example because a `retryStrategy` you passed returned `null`) does the lease report itself closed, and the next subscribe then opens a fresh connection. Messages published while the connection was down are lost, as on every adapter: see [Reconnects](/benni/data-structures/pubsub/#reconnects).
+
 ## ioredis or node-redis?
 
 Both adapters expose the identical typed API and pass the same client-contract suite, so this is a question about your app, not about Benni:

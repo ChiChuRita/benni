@@ -240,9 +240,11 @@ await redis.pubsub.channel(userEvents).subscribe((message) => {
 });
 ```
 
-Pattern subscriptions are Node-only for now; Bun 1.3.14's `psubscribe` hangs
-upstream, so the Bun adapter reports patterns as unsupported instead of
-deadlocking.
+Pattern subscriptions work on `benni/node` and `benni/ioredis`; Bun 1.3.14's
+`psubscribe` hangs upstream, so the Bun adapter reports patterns as unsupported
+instead of deadlocking. A dropped subscriber connection is reconnected and
+resubscribed on every adapter, but messages published while it was down are
+lost: Redis Pub/Sub is at-most-once, so use a stream when that matters.
 
 **Server compatibility.** CI runs the integration suite against Redis 8 and an
 Upstash-REST-compatible endpoint; the other rows are verified manually.
