@@ -253,17 +253,26 @@ export type Keyspace<
 
 export type FieldCodecs = Record<string, Codec<any, any>>;
 
+// The phantom key behind InferInput/InferOutput. `declare`d, so it is never
+// emitted, and not exported, so no code can index a schema with it: the
+// anchor exists in the type system only, and it is optional, so the type does
+// not claim a property the runtime object lacks.
+declare const inferTypes: unique symbol;
+
 /**
- * Type-only inference anchors, present on every value-carrying schema.
- * `typeof profiles.$inferInput` / `.$inferOutput` name the schema's value
- * types the way Drizzle's `$inferSelect` does. The properties never exist at
- * runtime — accessing them outside a type position is always a bug.
+ * Type-only inference anchor, for schemas whose value types are not an
+ * `encode`/`decode` pair of their own (hash, stream, the primitives) and the
+ * codec-backed stores built alongside them. {@link InferInput} and
+ * {@link InferOutput} read it where it exists and fall back to
+ * `encode`/`decode` where it does not (geo, hll, channel, pattern, a bare
+ * codec), so they work on every schema that carries values. There is no
+ * property to access at runtime.
  */
 export type InferAnchors<TInput, TOutput> = {
-  /** Type-only: the write-side value type. Never exists at runtime. */
-  readonly $inferInput: TInput;
-  /** Type-only: the read-side value type. Never exists at runtime. */
-  readonly $inferOutput: TOutput;
+  readonly [inferTypes]?: {
+    readonly input: TInput;
+    readonly output: TOutput;
+  };
 };
 
 /**
@@ -274,10 +283,10 @@ export type InferAnchors<TInput, TOutput> = {
  * type NewUser = InferInput<typeof users>; // { name: string; score: number }
  * ```
  */
-export type InferInput<TSchema> = TSchema extends {
-  readonly $inferInput: infer TInput;
-}
-  ? TInput
+export type InferInput<TSchema> = typeof inferTypes extends keyof TSchema
+  ? TSchema extends { readonly [inferTypes]?: { readonly input: infer TInput } }
+    ? TInput
+    : never
   : TSchema extends { encode(input: infer TInput): string }
     ? TInput
     : never;
@@ -286,14 +295,16 @@ export type InferInput<TSchema> = TSchema extends {
  * The read-side value type of any Benni schema or codec.
  * @example
  * ```ts
- * const profiles = kv("profile", json<Profile>());
+ * const profiles = kv("profile", json(Profile));
  * type StoredProfile = InferOutput<typeof profiles>; // Profile
  * ```
  */
-export type InferOutput<TSchema> = TSchema extends {
-  readonly $inferOutput: infer TOutput;
-}
-  ? TOutput
+export type InferOutput<TSchema> = typeof inferTypes extends keyof TSchema
+  ? TSchema extends {
+      readonly [inferTypes]?: { readonly output: infer TOutput };
+    }
+    ? TOutput
+    : never
   : TSchema extends { decode(stored: string): infer TOutput }
     ? TOutput
     : never;

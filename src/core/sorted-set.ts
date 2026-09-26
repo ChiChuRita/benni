@@ -1272,7 +1272,7 @@ export function defineSortedSet<
   options?: KeyOptions<TIds, THashTag>
 ): SortedSetSchema<TInput, TOutput, TPrefix, TIds[number], THashTag> {
   const hashTag = options?.hashTag as THashTag;
-  // The $infer* anchors are type-only phantoms — cast the literal.
+  // The inference anchor is type-only and never present — cast the literal.
   const schema = {
     kind: "zset",
     prefix,

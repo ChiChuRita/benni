@@ -8,7 +8,10 @@ import type {
 } from "../src/schema.js";
 import {
   boolean,
+  channel,
+  geo,
   hash,
+  hll,
   json,
   kv,
   number,
@@ -36,30 +39,48 @@ const users = hash("user", {
   active: boolean()
 });
 const board = zset("board", string());
+const places = geo("place", string());
+const visitors = hll("visitors", string());
+const pings = channel("ping", json<Profile>());
 
-describe("schema type inference ($infer / Infer*)", () => {
+describe("schema type inference (InferInput / InferOutput)", () => {
   it("derives value types from schemas without runtime cost", () => {
-    type _KvOut = Expect<Equal<typeof profiles.$inferOutput, Profile>>;
-    type _KvIn = Expect<Equal<typeof profiles.$inferInput, Profile>>;
+    type _KvOut = Expect<Equal<InferOutput<typeof profiles>, Profile>>;
+    type _KvIn = Expect<Equal<InferInput<typeof profiles>, Profile>>;
     type _HashOut = Expect<
       Equal<
-        typeof users.$inferOutput,
+        InferOutput<typeof users>,
         { name: string; score: number; active: boolean }
       >
     >;
-    type _UtilOut = Expect<
-      Equal<InferOutput<typeof users>, typeof users.$inferOutput>
+    type _HashIn = Expect<
+      Equal<
+        InferInput<typeof users>,
+        { name: string; score: number; active: boolean }
+      >
     >;
-    type _UtilIn = Expect<Equal<InferInput<typeof profiles>, Profile>>;
     type _ZsetOut = Expect<Equal<InferOutput<typeof board>, string>>;
+    // Schemas without the anchor infer from their own encode/decode.
+    type _GeoIn = Expect<Equal<InferInput<typeof places>, string>>;
+    type _GeoOut = Expect<Equal<InferOutput<typeof places>, string>>;
+    type _HllIn = Expect<Equal<InferInput<typeof visitors>, string>>;
+    type _ChannelOut = Expect<Equal<InferOutput<typeof pings>, Profile>>;
     // Codecs infer too (they expose decode).
     type _CodecOut = Expect<
       Equal<InferOutput<ReturnType<typeof number>>, number>
     >;
 
-    // The anchors are phantoms: they must NOT exist at runtime.
-    expect(Object.keys(profiles)).not.toContain("$inferInput");
-    expect(Object.keys(users)).not.toContain("$inferOutput");
+    // The anchor is type-only: no property, string- or symbol-keyed, exists
+    // at runtime, and the type no longer claims one a caller could read.
+    // @ts-expect-error the old $inferOutput property is gone from the type
+    void users.$inferOutput;
+    // (The one symbol is the non-enumerable store binding.)
+    for (const schema of [users, profiles]) {
+      expect(
+        Object.getOwnPropertySymbols(schema).map((key) => key.description)
+      ).toEqual(["benni.store"]);
+      expect(Object.keys(schema)).not.toContain("$inferOutput");
+    }
   });
 });
 
