@@ -145,7 +145,7 @@ describe("createKeyValueStore conditional writes", () => {
   });
 });
 
-describe("createStringStore getEx modes", () => {
+describe("kv getex modes", () => {
   it("keeps accepting plain seconds", async () => {
     const commands: RedisCommand[] = [];
     const strings = kvResource(fakeClient(commands, ["hello"]), texts);
@@ -248,7 +248,7 @@ describe("createStringStore getEx modes", () => {
   });
 });
 
-describe("createStringStore lcs", () => {
+describe("string() kv lcs", () => {
   it("returns the subsequence string by default", async () => {
     const commands: RedisCommand[] = [];
     const strings = kvResource(fakeClient(commands, ["mytext"]), texts);
@@ -365,7 +365,7 @@ describe("createStringStore lcs", () => {
   });
 });
 
-describe("createCounterStore incrByFloat", () => {
+describe("number() kv incrbyfloat", () => {
   it("emits INCRBYFLOAT and parses the bulk string reply", async () => {
     const commands: RedisCommand[] = [];
     const store = kvResource(fakeClient(commands, ["3.7"]), counters);

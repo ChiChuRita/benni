@@ -234,7 +234,7 @@ describe("createKeyValueStore", () => {
   });
 });
 
-describe("createCounterStore", () => {
+describe("counter commands on a number() kv", () => {
   it("supports typed INCR, INCRBY, DECR, and DECRBY", async () => {
     const commands: RedisCommand[] = [];
     const counters = kvResource(
@@ -270,7 +270,7 @@ describe("createCounterStore", () => {
   });
 });
 
-describe("createStringStore", () => {
+describe("string commands on a string() kv", () => {
   it("supports typed APPEND, GETRANGE, SETRANGE, STRLEN, and GETEX", async () => {
     const commands: RedisCommand[] = [];
     const strings = kvResource(

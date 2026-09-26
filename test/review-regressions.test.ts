@@ -184,7 +184,7 @@ describe("field names that collide with Object.prototype (review #6)", () => {
 
 describe("LCS is a multi-key command (review #8)", () => {
   it("runs the cross-slot guard on its two keys", async () => {
-    // createStringStore never received the guard, so LCS — the one two-key
+    // The string store never received the guard, so LCS — the one two-key
     // command in the string store — was sent unchecked even with the cluster
     // guard installed. On a single node it just works; on a real cluster the
     // server rejects it with a raw CROSSSLOT.
