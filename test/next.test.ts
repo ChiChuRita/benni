@@ -12,6 +12,7 @@ import { benni } from "../src/index.js";
 import { cacheHandler, rateLimitMiddleware } from "../src/next/index.js";
 import { node } from "../src/node/index.js";
 import { ratelimit } from "../src/schema.js";
+import { upstash } from "../src/upstash/index.js";
 import { fakeClient } from "./fake-client.js";
 import {
   appPageSet,
@@ -48,6 +49,24 @@ function expectBuffer(actual: unknown, expected: Uint8Array) {
   expect(Buffer.isBuffer(actual)).toBe(true);
   expect(Buffer.compare(actual as Buffer, expected)).toBe(0);
 }
+
+describe("cacheHandler over upstash() at build time", () => {
+  it("builds without the env vars, as `next build` imports it, and names them on first use", async () => {
+    // cache-handler.mjs builds its client at module scope; `next build`
+    // imports it in environments that never set these and never send.
+    const Handler = cacheHandler({
+      client: upstash({
+        url: process.env.BENNI_UNSET_UPSTASH_URL as string,
+        token: process.env.BENNI_UNSET_UPSTASH_TOKEN as string
+      })
+    });
+    const handler = new Handler();
+
+    await expect(handler.get("page")).rejects.toThrow(
+      "upstash() requires a url (the REST endpoint)"
+    );
+  });
+});
 
 describe("cacheHandler: values Next.js 16 really sends", () => {
   it("round-trips an APP_PAGE with rscData and segmentData byte for byte", async () => {

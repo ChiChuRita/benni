@@ -107,6 +107,42 @@ describe("redis.close()", () => {
     ]);
   });
 
+  it("passes timeoutMs on to every worker's stop()", async () => {
+    const received: unknown[] = [];
+    const redis = benni({ client: recordingClient([]), schema: { jobs } });
+    for (let index = 0; index < 2; index++) {
+      const worker = redis.query.jobs.worker(async () => 1, {
+        pollMs: 5,
+        onError: () => {}
+      });
+      const stop = worker.stop;
+      worker.stop = async (options) => {
+        received.push(options);
+        await stop(options);
+      };
+    }
+
+    await redis.close({ timeoutMs: 250 });
+    expect(received).toEqual([{ timeoutMs: 250 }, { timeoutMs: 250 }]);
+  });
+
+  it("stops workers with no limit when close() gets no timeoutMs", async () => {
+    const received: unknown[] = [];
+    const redis = benni({ client: recordingClient([]), schema: { jobs } });
+    const worker = redis.query.jobs.worker(async () => 1, {
+      pollMs: 5,
+      onError: () => {}
+    });
+    const stop = worker.stop;
+    worker.stop = async (options) => {
+      received.push(options);
+      await stop(options);
+    };
+
+    await redis[Symbol.asyncDispose]();
+    expect(received).toEqual([undefined]);
+  });
+
   it("does not stop a worker twice once its own stop() completed", async () => {
     const events: string[] = [];
     const redis = benni({ client: recordingClient(events), schema: { jobs } });
