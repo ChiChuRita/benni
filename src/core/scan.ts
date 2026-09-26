@@ -3,8 +3,8 @@ import { decodeSortedSetEntries } from "./helpers.js";
 import { keyspaceGlob } from "./keys.js";
 import type {
   FieldCodecs,
+  HashFieldOutput,
   HashSchema,
-  InferHashOutput,
   Keyspace,
   RedisClient,
   RedisCommand,
@@ -12,6 +12,7 @@ import type {
   RedisKeyPart,
   RedisReply,
   SetSchema,
+  Simplify,
   SortedSetEntry,
   SortedSetSchema
 } from "./types.js";
@@ -27,12 +28,14 @@ export type ScanMemberOptions = {
   readonly count?: number;
 };
 
-export type HashScanEntry<TFields extends FieldCodecs> = {
-  [K in keyof TFields & string]: {
-    readonly field: K;
-    readonly value: InferHashOutput<TFields>[K];
-  };
-}[keyof TFields & string];
+export type HashScanEntry<TFields extends FieldCodecs> = Simplify<
+  {
+    [K in keyof TFields & string]: {
+      readonly field: K;
+      readonly value: HashFieldOutput<TFields, K>;
+    };
+  }[keyof TFields & string]
+>;
 
 function scanCount(count: number): number {
   if (!Number.isSafeInteger(count) || count < 1) {

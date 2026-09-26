@@ -12,11 +12,12 @@ import {
 } from "./stream.js";
 import type {
   FieldCodecs,
-  InferHashOutput,
+  PartialHashOutput,
   RedisClient,
   RedisCommandArgument,
   RedisKeyPart,
-  RedisReply
+  RedisReply,
+  Simplify
 } from "./types.js";
 
 /**
@@ -25,11 +26,11 @@ import type {
  * clear the PEL. Live reads (`>`) never see tombstones and keep the plain
  * StreamEntry type.
  */
-export type PendingStreamEntry<TFields extends FieldCodecs> = {
+export type PendingStreamEntry<TFields extends FieldCodecs> = Simplify<{
   readonly id: string;
   /** `null` = deleted upstream; ack and move on. */
-  readonly value: Partial<InferHashOutput<TFields>> | null;
-};
+  readonly value: PartialHashOutput<TFields> | null;
+}>;
 
 export type StreamPendingSummary = {
   readonly count: number;

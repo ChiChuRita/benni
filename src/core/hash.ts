@@ -26,14 +26,17 @@ import {
 import type {
   Codec,
   FieldCodecs,
+  HashFieldOutput,
   HashSchema,
   InferHashInput,
   InferHashOutput,
+  PartialHashOutput,
   RedisClient,
   RedisCommand,
   RedisCommandArgument,
   RedisKeyPart,
   RedisReply,
+  Simplify,
   StoreSetOptions
 } from "./types.js";
 
@@ -202,10 +205,6 @@ type NumberHashField<TFields extends FieldCodecs> = {
 }[keyof TFields] &
   string;
 
-export type PartialHashOutput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]?: InferHashOutput<TFields>[K];
-};
-
 // Optional, not required: HMGET/HGETEX/HGETDEL fill only the field names the
 // call actually asked for, and a caller can pass a narrowed subset of the union
 // at runtime. Declaring every member of TField as a present key promised data
@@ -213,9 +212,9 @@ export type PartialHashOutput<TFields extends FieldCodecs> = {
 export type PickedHashOutput<
   TFields extends FieldCodecs,
   TField extends keyof TFields & string
-> = {
-  [K in TField]?: InferHashOutput<TFields>[K] | null;
-};
+> = Simplify<{
+  [K in TField]?: HashFieldOutput<TFields, K> | null;
+}>;
 
 function expectNumberArray(reply: RedisReply, command: string): number[] {
   if (!Array.isArray(reply)) {

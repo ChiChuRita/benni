@@ -253,6 +253,14 @@ export type Keyspace<
 
 export type FieldCodecs = Record<string, Codec<any, any>>;
 
+/**
+ * Flattens an alias instantiation or an intersection into one object literal
+ * type. Type-only: it changes what an editor hover prints (`{ name: string }`
+ * rather than `InferHashOutput<{ name: Codec<string, string> }>`), never what
+ * is assignable to what.
+ */
+export type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
 // The phantom key behind InferInput/InferOutput. `declare`d, so it is never
 // emitted, and not exported, so no code can index a schema with it: the
 // anchor exists in the type system only, and it is optional, so the type does
@@ -309,17 +317,35 @@ export type InferOutput<TSchema> = typeof inferTypes extends keyof TSchema
     ? TOutput
     : never;
 
+type FieldInput<TCodec> = TCodec extends Codec<infer TInput, any>
+  ? TInput
+  : never;
+
+type FieldOutput<TCodec> = TCodec extends Codec<any, infer TOutput>
+  ? TOutput
+  : never;
+
 export type InferHashInput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]: TFields[K] extends Codec<infer TInput, any>
-    ? TInput
-    : never;
-};
+  [K in keyof TFields]: FieldInput<TFields[K]>;
+} & {};
 
 export type InferHashOutput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]: TFields[K] extends Codec<any, infer TOutput>
-    ? TOutput
-    : never;
-};
+  [K in keyof TFields]: FieldOutput<TFields[K]>;
+} & {};
+
+/** One declared field's read-side type. */
+export type HashFieldOutput<
+  TFields extends FieldCodecs,
+  TField extends keyof TFields
+> = FieldOutput<TFields[TField]>;
+
+/**
+ * Any subset of a hash's fields, each at its own read-side type, absent when
+ * not stored: what `hgetall` returns.
+ */
+export type PartialHashOutput<TFields extends FieldCodecs> = {
+  [K in keyof TFields]?: FieldOutput<TFields[K]>;
+} & {};
 
 export type HashSchema<
   TFields extends FieldCodecs,
