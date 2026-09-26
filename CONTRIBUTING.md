@@ -7,7 +7,7 @@ applications.
 
 Requirements:
 
-- Node.js 20 or newer
+- Node.js 22 or newer (the `engines` floor; pnpm 11 itself needs 22.13+)
 - pnpm 11
 - Docker for Redis-backed integration tests
 - Bun for the Bun adapter contract
