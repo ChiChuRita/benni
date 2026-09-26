@@ -61,11 +61,56 @@ describeRedis("ioredis", () => {
       /keyPrefix/
     );
 
-    const raw = new IORedis(redisUrl as string, { keyPrefix: "app:" });
+    const raw = new IORedis(redisUrl as string, {
+      keyPrefix: "app:",
+      protocol: 2
+    });
     try {
       await expect(ioredis(raw)).rejects.toThrow(/keyPrefix/);
     } finally {
       raw.disconnect();
+    }
+  });
+
+  it("pins the clients it creates to RESP2", async () => {
+    // ioredis 6 defaults to RESP3, whose XREAD reply is a map: every stream
+    // read then failed with ReplyShapeError. Ask the server what it speaks.
+    for (const client of [
+      await ioredis(redisUrl as string),
+      await ioredis({ url: redisUrl, protocol: undefined })
+    ]) {
+      try {
+        await expect(client.send(["CLIENT", "INFO"])).resolves.toMatch(
+          / resp=2 /
+        );
+      } finally {
+        await client.close();
+      }
+    }
+  });
+
+  it("refuses RESP3 instead of failing on the first stream read", async () => {
+    await expect(ioredis({ url: redisUrl, protocol: 3 })).rejects.toThrow(
+      /protocol: 2/
+    );
+    await expect(ioredis(`${redisUrl}?protocol=3`)).rejects.toThrow(
+      /protocol: 2/
+    );
+
+    const raw = new IORedis(redisUrl as string, {
+      lazyConnect: true,
+      protocol: 3
+    });
+    const cluster = new IORedis.Cluster([], {
+      lazyConnect: true,
+      redisOptions: { protocol: 3 }
+    });
+    try {
+      await expect(ioredis(raw)).rejects.toThrow(/protocol: 2/);
+      await expect(ioredis(cluster)).rejects.toThrow(/protocol: 2/);
+    } finally {
+      raw.disconnect();
+      cluster.disconnect();
     }
   });
 
@@ -117,7 +162,9 @@ describeCluster("ioredis (adopted Cluster)", () => {
   };
 
   async function adopt() {
-    const cluster = new IORedis.Cluster([nodeOf(clusterUrl as string)]);
+    const cluster = new IORedis.Cluster([nodeOf(clusterUrl as string)], {
+      redisOptions: { protocol: 2 }
+    });
     cluster.on("error", () => {});
     await new Promise((resolve) => cluster.once("ready", resolve));
     return { cluster, client: await ioredis(cluster) };
@@ -165,7 +212,10 @@ describeCluster("ioredis (adopted Cluster)", () => {
 });
 
 describeRedis("ioredis (adopted client)", () => {
-  const owned = new IORedis(redisUrl as string, { lazyConnect: true });
+  const owned = new IORedis(redisUrl as string, {
+    lazyConnect: true,
+    protocol: 2
+  });
   owned.on("error", () => {});
 
   afterAll(() => {

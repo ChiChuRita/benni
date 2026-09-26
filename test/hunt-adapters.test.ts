@@ -125,7 +125,9 @@ describeCluster("benni/ioredis session on an adopted Cluster", () => {
     const parsed = new URL(clusterUrl as string);
     const host = parsed.hostname;
     const port = Number(parsed.port || 6379);
-    const cluster = new IORedis.Cluster([{ host, port }]);
+    const cluster = new IORedis.Cluster([{ host, port }], {
+      redisOptions: { protocol: 2 }
+    });
     cluster.on("error", () => {});
     await new Promise((resolve) => cluster.once("ready", resolve));
     const client = await ioredis(cluster);

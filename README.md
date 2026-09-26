@@ -220,6 +220,9 @@ import { ioredis } from "benni/ioredis";
 const client = await ioredis(myExistingRedis); // or a URL, or options
 ```
 
+On ioredis 6, create the client you adopt with `protocol: 2`: its RESP3 default
+changes reply shapes the typed stores decode, so Benni refuses it up front.
+
 Blocking commands, sessions, `WATCH`, and Pub/Sub *subscribing* need a persistent
 connection (Node/Bun/Deno). The edge adapter covers the stateless surface, which
 is the whole typed API minus those. Publishing is one stateless `PUBLISH`, so it

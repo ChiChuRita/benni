@@ -42,7 +42,9 @@ Or an ioredis instance you already have, which is the important one:
 ```ts
 import Redis from "ioredis";
 
-const existing = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379"); // yours, already configured
+const existing = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", {
+  protocol: 2 // needed on ioredis 6, which defaults to RESP3
+}); // yours, already configured
 const client = await ioredis(existing);
 ```
 
@@ -61,6 +63,15 @@ A client Benni created from a URL or options is **owned**, and `close()` quits i
 
 One consequence worth knowing: Benni attaches an `"error"` listener only to clients it created. An adopted client keeps whatever error handling you gave it, and Benni will not silently swallow errors on a client it does not own. Make sure yours has a listener, or an idle network blip will crash the process (that is ioredis behaviour, not Benni's).
 
+### RESP2 only
+
+Benni's typed stores decode RESP2 reply shapes. ioredis 6 switched its default to RESP3, which reshapes some of them even in its RESP2-compatible mapping: `XREAD` answers with a map, so every stream read would fail with `ReplyShapeError`. So:
+
+- A client Benni creates from a URL or options is pinned to `protocol: 2`. You don't need to do anything, and ioredis 5 (RESP2 only) is unaffected.
+- Adopting a RESP3 client throws a `TypeError` up front, telling you to pass `protocol: 2`. On ioredis 6, create the client you hand over with `new Redis(url, { protocol: 2 })`, or `new Redis.Cluster(nodes, { redisOptions: { protocol: 2 } })` for a cluster. Passing `protocol: 3` to `ioredis({ ... })` throws the same way.
+
+Both ioredis 5 and 6 are supported and tested.
+
 ### `keyPrefix` is not supported
 
 `ioredis({ keyPrefix })`, and adopting a client that sets it, both throw. ioredis rewrites key *arguments* but leaves `SCAN`/`MATCH` patterns alone, so a prefixed client stores at `<prefix><key>` while `schema.key()` and every scan still say `<key>`. Scans would return nothing at all, without an error.
@@ -73,7 +84,7 @@ const users = hash(prefix + "user", { name: string() });
 
 ## What's supported
 
-Everything. ioredis speaks RESP2, whose flat reply shapes are exactly what the typed stores decode, so replies pass through with no normalization:
+Everything. Over RESP2 the flat reply shapes are exactly what the typed stores decode, so replies pass through with no normalization:
 
 | Feature | Supported |
 |---|---|
