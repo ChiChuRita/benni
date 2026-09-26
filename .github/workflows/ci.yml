@@ -4,13 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release job dispatches this workflow against the release PR's branch;
+  # see "Validate the release pull request" below.
+  workflow_dispatch:
+
+# Jobs that need more ask for it themselves (the release job).
+permissions:
+  contents: read
 
 # Cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
-  # PR validation can be superseded safely. Main runs include the release job,
-  # so cancelling one mid-publish could leave a partial release.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # PR and dispatched validation can be superseded safely. Main runs include
+  # the release job, so cancelling one mid-publish could leave a partial release.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   compatibility:
@@ -277,7 +284,19 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # npm trusted publishing: the job's OIDC token is exchanged for a
+      # short-lived publish token, and provenance is attached automatically
+      # because the repo and package are public. No NPM_TOKEN secret.
+      #
+      # OWNER-ONLY SETUP, not expressible in this file: on npmjs.com, package
+      # benni -> Settings -> Trusted Publisher -> GitHub Actions, with
+      # organization/user "ChiChuRita", repository "benni", workflow filename
+      # "ci.yml", no environment, and `npm publish` allowed. Until that exists
+      # the token exchange fails and the publish is rejected, so configure it
+      # before merging a release PR. The NPM_TOKEN secret can then be deleted.
       id-token: write
+      # To dispatch this workflow against the release PR's branch.
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -286,17 +305,27 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
+      # No `registry-url`: that writes an .npmrc whose auth token is
+      # ${NODE_AUTH_TOKEN}, which trusted publishing leaves unset.
+      #
+      # The publish itself is `changeset publish` -> `pnpm publish`, and pnpm
+      # (11.9, from packageManager) does the OIDC exchange and provenance
+      # natively; it has since 11.1.3. npm documents trusted publishing as
+      # needing npm >= 11.5.1 and Node >= 22.14 when npm publishes; Node 24
+      # ships an npm past that, so a switch to `npm publish` would hold too.
       - name: Install Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # changesets/action@v1 (1.6+) writes no npm auth when NPM_TOKEN is unset
+      # and OIDC is available, which is what lets trusted publishing through.
       - name: Create release pull request or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           publish: pnpm release
@@ -304,5 +333,23 @@ jobs:
           commit: "Release Benni"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The release PR is opened and updated with GITHUB_TOKEN, and since June
+      # 2026 GitHub holds a pull_request run triggered by github-actions[bot]
+      # for a maintainer's approval instead of starting it. Unapproved, it
+      # expires after 30 days as a jobless failure ("This run likely failed
+      # because of a workflow file issue"), which is what happened to PR #6: the
+      # release PR never ran a check. workflow_dispatch is exempt from that
+      # hold, and a dispatched run reports its checks on the branch's head
+      # commit, which is the PR's head. The held pull_request run still shows up
+      # as awaiting approval; it can be ignored, or approved to run it twice.
+      #
+      # TODO: dispatch is the no-setup fix. Opening the PR with a GitHub App
+      # token (actions/create-github-app-token, passed as this step's
+      # GITHUB_TOKEN) would make the pull_request run start normally and drop
+      # this step, at the cost of an app the owner creates and two secrets.
+      - name: Validate the release pull request
+        if: steps.changesets.outputs.pullRequestNumber
+        run: gh workflow run ci.yml --ref changeset-release/main
+        env:
+          GH_TOKEN: ${{ github.token }}
