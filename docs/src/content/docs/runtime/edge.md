@@ -18,7 +18,32 @@ const client = upstash({
 export const redis = benni(client, { schema });
 ```
 
-There is no connection to open, so `upstash` is synchronous (no `await`). Command arrays are `POST`ed directly to the REST endpoint; `pipeline` uses `/pipeline` and `redis.multi()` uses `/multi-exec` (atomic `MULTI`/`EXEC`).
+There is no connection to open, so `upstash` is synchronous (no `await`). Command arrays are `POST`ed directly to the REST endpoint; `pipeline` uses `/pipeline` and `redis.multi()` uses `/multi-exec` (atomic `MULTI`/`EXEC`). A missing `url` or `token`, the usual symptom of an unset environment variable, throws `TypeError` right there instead of surfacing later as a 401.
+
+## Timeouts and cancellation
+
+A request that never answers hangs until the runtime gives up, unless you bound it. `timeoutMs` aborts any request, response body included, that has not finished in time, and `signal` ties every request to an `AbortSignal` of yours:
+
+```ts
+const client = upstash({
+  url: process.env.UPSTASH_REDIS_REST_URL as string,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN as string,
+  timeoutMs: 2_000,
+  signal: request.signal // e.g. stop when the incoming request is cancelled
+});
+```
+
+A timed-out request rejects with a `DOMException` named `"TimeoutError"`; an aborted one rejects with the signal's reason, and so does every later request on that client. Neither is a `RedisServerError`. There is no default timeout. A timeout does not undo a command the server already received: a write that times out may still have been applied.
+
+`close()` has no connection to tear down, but it is final like every adapter's: requests already in flight finish, and any command issued afterwards rejects with "client is closed" instead of reaching the server.
+
+## Errors: what came from Redis and what did not
+
+`RedisServerError` means Redis refused a command. Over REST that is a `400` (or, in a pipeline, a `200` element) carrying `{ "error": "WRONGTYPE ..." }`. Every other failure status is the service in front of Redis refusing or failing the *request*: `401` for a bad token, `403`, `413`, `429`, any `5xx`. Those reject as a plain `Error` whose message keeps the status and the service's text, such as `Upstash HTTP 401: Unauthorized`, so they never carry a `.code` parsed out of prose.
+
+## Binary-safe responses
+
+The adapter asks for base64-encoded responses (`Upstash-Encoding: base64`, the default of Upstash's own client too) and decodes them, so a value that is not valid UTF-8 no longer breaks the server's JSON encoding (`serverless-redis-http` answers such a `GET` with an empty body otherwise). Values still arrive as strings decoded as UTF-8, exactly as the TCP adapters decode them, so invalid bytes become `U+FFFD` on every adapter alike. Store binary data with the `bytes()` codec. The endpoint has to honour the header; Upstash and `serverless-redis-http` both do.
 
 ## What works and what doesn't
 
@@ -32,7 +57,7 @@ HTTP is stateless: one request, one response, no persistent exclusive connection
 | `redis.multi()` (atomic `/multi-exec`) | [Pub/Sub](/benni/data-structures/pubsub/) **subscribing** (there is no subscriber connection to hold) |
 | Pub/Sub **publishing** (`PUBLISH` is one stateless command) | |
 
-`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. `redis.pubsub.channel(...).subscribe(...)` throws the same way, because it omits `subscriber` for the same reason. When you need those, use a TCP adapter ([Node](/benni/runtime/node/) or [Bun](/benni/runtime/bun-and-deno/)) on a long-lived server.
+`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. `redis.pubsub.channel(...).subscribe(...)` throws the same way, because it omits `subscriber` for the same reason. When you need those, use a TCP adapter ([Node](/benni/runtime/node/), [ioredis](/benni/runtime/ioredis/), or [Bun](/benni/runtime/bun-and-deno/)) on a long-lived server.
 
 Publishing is the useful half on the edge, and it needs nothing held open. An edge handler can fan an event out to long-lived workers that subscribe over TCP:
 

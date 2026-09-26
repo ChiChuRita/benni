@@ -11,6 +11,8 @@ import {
   defineHash,
   defineKeyspace,
   defineList,
+  definePubSubChannel,
+  definePubSubPattern,
   defineSet,
   defineSortedSet,
   type RedisClient,
@@ -23,6 +25,7 @@ import {
   okReply,
   stringOrNullReply
 } from "../src/core/transaction.js";
+import { benni } from "../src/index.js";
 
 export type RedisClientFactory = () => Promise<RedisClient>;
 
@@ -82,6 +85,115 @@ export type RedisClientContractOptions = {
   readonly transactionErrorsCarryNoReply?: boolean;
 };
 
+/**
+ * The ids of every pubsub connection on the server, with its channel count.
+ * Parsed from CLIENT LIST, whose reply is one `id=… sub=N psub=M …` line per
+ * connection on every adapter.
+ */
+async function pubsubConnections(
+  client: RedisClient
+): Promise<Array<{ id: string; sub: number }>> {
+  const list = String(await client.send(["CLIENT", "LIST", "TYPE", "pubsub"]));
+  return list
+    .split("\n")
+    .filter((line) => line.startsWith("id="))
+    .map((line) => ({
+      id: line.slice(3, line.indexOf(" ")),
+      sub: Number(/ sub=(\d+)/.exec(line)?.[1] ?? -1)
+    }));
+}
+
+export type PubSubReconnectOptions = {
+  /** Also hold a pattern subscription across the drop. */
+  readonly patterns?: boolean;
+};
+
+/**
+ * Subscriptions made through the handle keep delivering after the subscriber
+ * connection is killed server-side: the adapter reconnects AND resubscribes,
+ * or core would keep a lease whose handlers never fire again.
+ *
+ * Kills only the connection this test leased. CLIENT KILL has no channel
+ * filter and a blanket `TYPE pubsub` would also kill the subscribers of every
+ * suite running in parallel against the same server, so the victim is the one
+ * pubsub connection that appeared after this test subscribed and carries this
+ * test's (deliberately unusual) channel count.
+ */
+export async function expectPubSubSurvivesReconnect(
+  createClient: RedisClientFactory,
+  options: PubSubReconnectOptions = {}
+): Promise<void> {
+  const client = await createClient();
+  const redis = benni(client);
+  const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const channelCount = 7;
+  const channels = Array.from({ length: channelCount }, (_, index) =>
+    definePubSubChannel(`benni:test:reconnect:${id}:${index}`, codecs.string())
+  );
+  const pattern = definePubSubPattern(
+    `benni:test:reconnect:${id}:p:*`,
+    codecs.string()
+  );
+  const seen = new Set<string>();
+
+  try {
+    const before = new Set(
+      (await pubsubConnections(client)).map((entry) => entry.id)
+    );
+    for (const [index, channel] of channels.entries()) {
+      await redis.pubsub.channel(channel).subscribe((message) => {
+        seen.add(`${index}:${message}`);
+      });
+    }
+    if (options.patterns) {
+      await redis.pubsub.pattern(pattern).subscribe((message, channel) => {
+        seen.add(`${channel}:${message}`);
+      });
+    }
+
+    await redis.pubsub.channel(channels[0]!).publish("before");
+    await waitUntil(() => seen.has("0:before"));
+
+    const ours = (await pubsubConnections(client)).filter(
+      (entry) => !before.has(entry.id) && entry.sub === channelCount
+    );
+    expect(ours).toHaveLength(1);
+    await expect(
+      client.send(["CLIENT", "KILL", "ID", ours[0]!.id])
+    ).resolves.toBe(1);
+
+    // Receivers drop to 0 with the connection and come back only once it has
+    // resubscribed. Without the resubscribe this stays 0 forever while the
+    // reconnected socket looks healthy.
+    const deadline = Date.now() + 10_000;
+    let receivers = 0;
+    while (Date.now() < deadline) {
+      receivers = await redis.pubsub.channel(channels[0]!).publish("probe");
+      if (receivers === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(receivers).toBe(1);
+
+    // Every channel was resubscribed, not only the one probed.
+    for (const channel of channels) {
+      await expect(
+        redis.pubsub.channel(channel).publish("after")
+      ).resolves.toBe(1);
+    }
+    await waitUntil(() =>
+      channels.every((_, index) => seen.has(`${index}:after`))
+    );
+    if (options.patterns) {
+      const matched = `benni:test:reconnect:${id}:p:one`;
+      await client.send(["PUBLISH", matched, "after"]);
+      await waitUntil(() => seen.has(`${matched}:after`));
+    }
+  } finally {
+    await redis.pubsub.close();
+    await client.close();
+  }
+}
+
 export async function expectRedisClientContract(
   createClient: RedisClientFactory,
   options: RedisClientContractOptions = {}
@@ -120,6 +232,74 @@ export async function expectRedisClientContract(
         ["GET", rawKey]
       ])
     ).resolves.toEqual(["OK", "pipeline"]);
+
+    // Reply shapes: every adapter returns RESP2 shapes whatever protocol it
+    // speaks underneath (see "Reply shapes" on RedisClient in core/types.ts),
+    // so `redis.raw.send()` and a user decoder read the same value on every
+    // adapter. Bun speaks RESP3 and used to hand back a map, a number, and
+    // nested pairs for the first three of these.
+    const shapeHash = `${rawKey}:shape:hash`;
+    const shapeZset = `${rawKey}:shape:zset`;
+    const shapeStream = `${rawKey}:shape:stream`;
+    await client.send(["DEL", shapeHash, shapeZset, shapeStream]);
+    await client.send(["HSET", shapeHash, "field", "value"]);
+    await expect(client.send(["HGETALL", shapeHash])).resolves.toEqual([
+      "field",
+      "value"
+    ]);
+    await expect(
+      client.send(["HRANDFIELD", shapeHash, "1", "WITHVALUES"])
+    ).resolves.toEqual(["field", "value"]);
+    await expect(client.send(["HLEN", shapeHash])).resolves.toBe(1);
+    await client.send(["ZADD", shapeZset, "1.5", "a", "2", "b"]);
+    await expect(client.send(["ZSCORE", shapeZset, "a"])).resolves.toBe("1.5");
+    await expect(
+      client.send(["ZMSCORE", shapeZset, "a", "missing"])
+    ).resolves.toEqual(["1.5", null]);
+    await expect(client.send(["ZINCRBY", shapeZset, "1", "a"])).resolves.toBe(
+      "2.5"
+    );
+    await expect(
+      client.send(["ZRANGE", shapeZset, "0", "-1", "WITHSCORES"])
+    ).resolves.toEqual(["b", "2", "a", "2.5"]);
+    await expect(
+      client.send(["ZRANK", shapeZset, "a", "WITHSCORE"])
+    ).resolves.toEqual([1, "2.5"]);
+    await expect(
+      client.send(["ZADD", shapeZset, "INCR", "1", "b"])
+    ).resolves.toBe("3");
+    await expect(client.send(["ZPOPMIN", shapeZset])).resolves.toEqual([
+      "a",
+      "2.5"
+    ]);
+    await expect(client.send(["ZPOPMAX", shapeZset, "1"])).resolves.toEqual([
+      "b",
+      "3"
+    ]);
+    await client.send(["XADD", shapeStream, "1-1", "field", "value"]);
+    await expect(
+      client.send(["XREAD", "STREAMS", shapeStream, "0"])
+    ).resolves.toEqual([[shapeStream, [["1-1", ["field", "value"]]]]]);
+    // The batch paths reshape each reply as the command that produced it.
+    await client.send(["ZADD", shapeZset, "4.5", "c"]);
+    await expect(
+      client.pipeline([
+        ["HGETALL", shapeHash],
+        ["ZSCORE", shapeZset, "c"]
+      ])
+    ).resolves.toEqual([["field", "value"], "4.5"]);
+    if (client.transaction) {
+      await expect(
+        client.transaction([
+          ["HGETALL", shapeHash],
+          ["ZRANGE", shapeZset, "0", "-1", "WITHSCORES"]
+        ])
+      ).resolves.toEqual([
+        ["field", "value"],
+        ["c", "4.5"]
+      ]);
+    }
+    await client.send(["DEL", shapeHash, shapeZset, shapeStream]);
 
     if (client.transaction) {
       const transactionKey = `${rawKey}:transaction`;

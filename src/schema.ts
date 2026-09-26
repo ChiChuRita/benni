@@ -1,3 +1,4 @@
+import { decodeBase64, encodeBase64 } from "./core/base64.js";
 import { defineBitmap } from "./core/bitmap.js";
 import { codecs } from "./core/codecs.js";
 import { ReplyShapeError } from "./core/errors.js";
@@ -49,33 +50,6 @@ export const json = codecs.json;
  */
 export const enumOf = codecs.enumOf;
 
-// Hand-rolled base64, NOT Uint8Array.toBase64/fromBase64. Those are
-// runtime-missing on the Node 24 baseline (present in the type lib but throw at
-// runtime — CI caught it); keep this until the minimum Node has them unflagged.
-const base64Alphabet =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-const base64Values = new Map<string, number>(
-  [...base64Alphabet].map((char, index) => [char, index])
-);
-
-function encodeBase64(input: Uint8Array): string {
-  let encoded = "";
-  for (let index = 0; index < input.length; index += 3) {
-    const first = input[index];
-    const second = index + 1 < input.length ? input[index + 1] : undefined;
-    const third = index + 2 < input.length ? input[index + 2] : undefined;
-    encoded += base64Alphabet[first >> 2];
-    encoded += base64Alphabet[((first & 0b11) << 4) | ((second ?? 0) >> 4)];
-    encoded +=
-      second === undefined
-        ? "="
-        : base64Alphabet[((second & 0b1111) << 2) | ((third ?? 0) >> 6)];
-    encoded += third === undefined ? "=" : base64Alphabet[third & 0b111111];
-  }
-  return encoded;
-}
-
 /**
  * A ReplyShapeError, not a bare TypeError: every other decoder attaches the
  * offending value, and the documented recovery is
@@ -85,36 +59,6 @@ function bytesShapeError(stored: string): ReplyShapeError {
   return new ReplyShapeError("Expected Redis value to decode to bytes", stored);
 }
 
-function decodeBase64(stored: string): Uint8Array {
-  if (stored === "") return new Uint8Array();
-  if (stored.length % 4 !== 0) {
-    throw bytesShapeError(stored);
-  }
-  const padding = stored.endsWith("==") ? 2 : stored.endsWith("=") ? 1 : 0;
-  const body = stored.slice(0, stored.length - padding);
-  if (body.includes("=")) {
-    throw bytesShapeError(stored);
-  }
-  const decoded = new Uint8Array((stored.length / 4) * 3 - padding);
-  let decodedIndex = 0;
-  let buffer = 0;
-  let bufferedBits = 0;
-  for (const char of body) {
-    const value = base64Values.get(char);
-    if (value === undefined) {
-      throw bytesShapeError(stored);
-    }
-    buffer = (buffer << 6) | value;
-    bufferedBits += 6;
-    if (bufferedBits >= 8) {
-      bufferedBits -= 8;
-      decoded[decodedIndex] = (buffer >> bufferedBits) & 0xff;
-      decodedIndex += 1;
-    }
-  }
-  return decoded;
-}
-
 /** Codec: store a `Uint8Array` as a base64 string. */
 export function bytes(): Codec<Uint8Array, Uint8Array> {
   return {
@@ -122,7 +66,9 @@ export function bytes(): Codec<Uint8Array, Uint8Array> {
       return encodeBase64(input);
     },
     decode(stored) {
-      return decodeBase64(stored);
+      const decoded = decodeBase64(stored);
+      if (decoded === undefined) throw bytesShapeError(stored);
+      return decoded;
     }
   };
 }

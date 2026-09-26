@@ -111,9 +111,9 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       // enqueue order, so no other command on this connection can interleave
       // into the transaction. Awaiting between sends would break that.
       const pending = [
-        sendCommand(client, ["MULTI"]),
-        ...commands.map((command) => sendCommand(client, command)),
-        sendCommand(client, ["EXEC"])
+        rawSend(client, ["MULTI"]),
+        ...commands.map((command) => rawSend(client, command)),
+        rawSend(client, ["EXEC"])
       ];
       const settled = await Promise.allSettled(pending);
       const execResult = settled[settled.length - 1]!;
@@ -131,8 +131,12 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
         for (const element of reply) {
           if (element instanceof Error) throw redisServerError(element);
         }
+        // Each element is reshaped as the command that produced it.
+        return reply.map((element, index) =>
+          normalizeReply(commands[index]!, element)
+        );
       }
-      return reply as RedisReply[];
+      return toResp2Structure(reply) as RedisReply[];
     },
     async session(): Promise<RedisSession> {
       if (clientClosed) throw closedError();
@@ -183,7 +187,9 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
           for (const element of reply) {
             if (element instanceof Error) throw redisServerError(element);
           }
-          return reply.map(normalizeReply);
+          return reply.map((element, index) =>
+            normalizeReply(commands[index]!, element)
+          );
         },
         get closed() {
           return closed || !duplicate.connected;
@@ -204,6 +210,37 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       if (clientClosed) throw discardOnClose(subscriberClient);
       const listeners = new Map<string, (message: string) => void>();
       let closed = false;
+      // Bun fires onclose only once the connection is gone for good: close(),
+      // or autoReconnect giving up. A drop it recovers from does not fire it
+      // (verified on 1.4.2), so this is the terminal state core must see to
+      // drop the dead lease, the equivalent of node-redis's `isOpen` going
+      // false. `connected` is not: it dips during every reconnect.
+      let gone = false;
+      subscriberClient.onclose = () => {
+        gone = true;
+      };
+      // Bun reconnects a dropped subscriber connection on its own but does not
+      // resubscribe (verified on 1.4.2): the socket comes back with no
+      // subscriptions, PUBLISH reports 0 receivers, and every handler goes
+      // silent while `closed` still says false. node-redis and ioredis both
+      // resubscribe natively, so this restores the same behaviour here, on the
+      // reconnect Bun already made, rather than asking core to re-lease.
+      //
+      // One raw SUBSCRIBE for every channel still wanted, not the public
+      // subscribe(): Bun still holds our listeners across the reconnect, and
+      // subscribe() would register each a second time (double delivery,
+      // verified). The channel list is read and the command written in one
+      // synchronous turn, so an unsubscribe() from core either ran first (its
+      // channel is not in the list) or is written after (and wins on the
+      // wire). SUBSCRIBE is idempotent server-side, so overlapping a
+      // subscribe() Bun queued during the outage is harmless.
+      subscriberClient.onconnect = () => {
+        if (closed || listeners.size === 0) return;
+        subscriberClient.send("SUBSCRIBE", [...listeners.keys()]).catch(() => {
+          // The connection dropped again mid-resubscribe; Bun's next
+          // reconnect fires onconnect and this runs again.
+        });
+      };
       const subscriber: RedisSubscriber = {
         async subscribe(channel, listener) {
           const wrapped = (message: string) => listener(message);
@@ -219,12 +256,23 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
         // psubscribe hangs, so core reports pattern subscribe as unsupported
         // rather than deadlocking on it.
         get closed() {
-          return closed;
+          return closed || gone;
         },
         async close() {
           closed = true;
           subscribers.delete(subscriber);
           listeners.clear();
+          // Drop Bun's own listeners before closing: a client closed while it
+          // still holds subscriptions pins the process forever, while one
+          // unsubscribed first exits (verified on 1.4.2). The parent close()
+          // reaches this with subscriptions live. Not awaited: on a dead or
+          // reconnecting socket the UNSUBSCRIBE would wait for a reconnect,
+          // and close() below rejects it anyway.
+          try {
+            subscriberClient.unsubscribe().catch(() => {});
+          } catch {
+            // Already closed; nothing left to unsubscribe.
+          }
           subscriberClient.close();
         }
       };
@@ -277,7 +325,7 @@ async function sendCommand(
   client: Bun.RedisClient,
   command: RedisCommand
 ): Promise<RedisReply> {
-  return normalizeReply(await rawSend(client, command));
+  return normalizeReply(command, await rawSend(client, command));
 }
 
 async function rawSend(
@@ -297,35 +345,191 @@ function toBunArgument(argument: RedisCommandArgument): string | Uint8Array {
   return String(argument);
 }
 
-// Bun's RESP3 client decodes map replies (HGETALL, XREAD, CONFIG GET, ...)
-// as null-prototype plain objects, which fall outside the RedisReply union.
-// Convert them to Maps, which the typed stores already accept.
-function normalizeReply(reply: unknown): RedisReply {
+/**
+ * Reshape a reply from Bun's RESP3 decoding into the RESP2 shape the adapter
+ * contract promises (see "Reply shapes" on `RedisClient` in core/types.ts).
+ *
+ * Bun always speaks RESP3 and has no option to speak RESP2, so without this
+ * `redis.raw.send()` and user decoders saw different shapes on Bun than on
+ * every other adapter: HGETALL as a map, ZSCORE as a number, WITHSCORES as
+ * nested pairs. Two passes:
+ *
+ * 1. Structural, for every command: a map reply (Bun decodes RESP3 maps as
+ *    null-prototype plain objects) becomes the flat `[field, value, ...]`
+ *    array RESP2 sends, except XREAD/XREADGROUP, whose RESP2 reply is an
+ *    array of `[stream, entries]` pairs. A set becomes an array.
+ * 2. Per command, because a RESP3 double and an integer both decode to a JS
+ *    number and only the command says which one it was: doubles become
+ *    strings, and the replies RESP3 nests as `[member, score]` pairs are
+ *    flattened. See {@link reshapeDoubles}.
+ */
+function normalizeReply(command: RedisCommand, reply: unknown): RedisReply {
+  const name = String(command[0]).toUpperCase();
+  const structural = toResp2Structure(
+    reply,
+    name === "XREAD" || name === "XREADGROUP"
+  );
+  return reshapeDoubles(name, command, structural);
+}
+
+function toResp2Structure(reply: unknown, mapAsPairs = false): RedisReply {
   if (reply === null || reply === undefined) return null;
   // A per-command runtime error inside a committed EXEC decodes as a plain
   // Error element in the reply array. Pass it through unchanged — the
-  // Object.entries branch below would silently mangle it into an empty Map.
+  // Object.entries branch below would silently mangle it into an empty array.
   if (reply instanceof Error) return reply as unknown as RedisReply;
-  if (Array.isArray(reply)) return reply.map(normalizeReply);
-  // Insurance against Bun version drift: a real Map/Set reply must not fall
-  // into the Object.entries branch, which would mangle it into an empty Map.
-  if (reply instanceof Map) {
-    return new Map(
-      [...reply.entries()].map(
-        ([field, value]) =>
-          [normalizeReply(field), normalizeReply(value)] as const
-      )
-    );
+  if (Array.isArray(reply)) {
+    return reply.map((element) => toResp2Structure(element));
   }
   if (reply instanceof Set) {
-    return [...reply].map(normalizeReply);
+    return [...reply].map((element) => toResp2Structure(element));
   }
-  if (typeof reply === "object" && !(reply instanceof Uint8Array)) {
-    return new Map(
-      Object.entries(reply).map(
-        ([field, value]) => [field, normalizeReply(value)] as const
-      )
+  // A real Map is insurance against Bun version drift: today maps arrive as
+  // null-prototype objects, handled below.
+  const entries =
+    reply instanceof Map
+      ? [...reply.entries()]
+      : typeof reply === "object" && !(reply instanceof Uint8Array)
+        ? Object.entries(reply)
+        : undefined;
+  if (entries === undefined) return reply as RedisReply;
+  if (mapAsPairs) {
+    return entries.map(([field, value]) => [
+      toResp2Structure(field),
+      toResp2Structure(value)
+    ]);
+  }
+  return entries.flatMap(([field, value]) => [
+    toResp2Structure(field),
+    toResp2Structure(value)
+  ]);
+}
+
+/** True when `flag` appears among the command's arguments, any case. */
+function hasFlag(command: RedisCommand, flag: string): boolean {
+  for (let index = 1; index < command.length; index += 1) {
+    const argument = command[index];
+    if (typeof argument === "string" && argument.toUpperCase() === flag) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A RESP3 double as RESP2 would have sent it: a bulk string. The digits may
+ * differ from the server's own formatting, but they parse back to the same
+ * number, and the infinities use Redis's spelling so the score decoders read
+ * them.
+ */
+function doubleToString(value: number): string {
+  if (value === Number.POSITIVE_INFINITY) return "inf";
+  if (value === Number.NEGATIVE_INFINITY) return "-inf";
+  return String(value);
+}
+
+/** Every number in the reply, at any depth, as a RESP2 double string. */
+function doublesToStrings(reply: RedisReply): RedisReply {
+  if (typeof reply === "number") return doubleToString(reply);
+  if (Array.isArray(reply)) return reply.map(doublesToStrings);
+  return reply;
+}
+
+/** `[[a, 1], [b, 2]]` -> `[a, 1, b, 2]`; already-flat elements pass through. */
+function flattenPairs(reply: RedisReply): RedisReply {
+  if (!Array.isArray(reply)) return reply;
+  return reply.flatMap((element) =>
+    Array.isArray(element) ? element : [element]
+  );
+}
+
+/** Sorted-set range-style commands that nest `[member, score]` under WITHSCORES. */
+const WITHSCORES_COMMANDS = new Set([
+  "ZRANGE",
+  "ZRANGEBYSCORE",
+  "ZREVRANGE",
+  "ZREVRANGEBYSCORE",
+  "ZUNION",
+  "ZINTER",
+  "ZDIFF",
+  "ZRANDMEMBER"
+]);
+
+/** Geo commands whose WITHCOORD coordinates are RESP3 doubles. */
+const GEO_SEARCH_COMMANDS = new Set([
+  "GEOSEARCH",
+  "GEORADIUS",
+  "GEORADIUS_RO",
+  "GEORADIUSBYMEMBER",
+  "GEORADIUSBYMEMBER_RO"
+]);
+
+/**
+ * The per-command half of {@link normalizeReply}. Every entry was checked
+ * against what Bun 1.4.2 decodes from redis 8 (RESP3) and what node-redis
+ * receives for the same command over RESP2. Replies that are strings in both
+ * protocols (GEODIST, GEOSEARCH WITHDIST, INCRBYFLOAT, HINCRBYFLOAT, ZSCAN)
+ * need nothing.
+ *
+ * A command missing here keeps its RESP3 doubles as numbers. The contract
+ * test pins the commonly used ones on every adapter, so a gap shows up there
+ * rather than in a user's decoder.
+ */
+function reshapeDoubles(
+  name: string,
+  command: RedisCommand,
+  reply: RedisReply
+): RedisReply {
+  switch (name) {
+    // Every number in these replies is a double (a score or a coordinate).
+    case "ZSCORE":
+    case "ZMSCORE":
+    case "ZINCRBY":
+    case "GEOPOS":
+    case "BZPOPMIN":
+    case "BZPOPMAX":
+    case "ZMPOP":
+    case "BZMPOP":
+      return doublesToStrings(reply);
+    // ZADD answers with a count, except under INCR, where it is the new score.
+    case "ZADD":
+      return hasFlag(command, "INCR") ? doublesToStrings(reply) : reply;
+    // RESP2 is flat `[member, score, ...]`; RESP3 nests a pair per member
+    // when a count is given and sends one flat pair when it is not.
+    case "ZPOPMIN":
+    case "ZPOPMAX":
+      return doublesToStrings(flattenPairs(reply));
+    // `[rank, score]`: the rank is an integer, only the score is a double.
+    case "ZRANK":
+    case "ZREVRANK":
+      if (hasFlag(command, "WITHSCORE") && Array.isArray(reply)) {
+        return reply.map((element, index) =>
+          index === 1 && typeof element === "number"
+            ? doubleToString(element)
+            : element
+        );
+      }
+      return reply;
+    case "HRANDFIELD":
+      return hasFlag(command, "WITHVALUES") ? flattenPairs(reply) : reply;
+  }
+  if (WITHSCORES_COMMANDS.has(name) && hasFlag(command, "WITHSCORES")) {
+    return doublesToStrings(flattenPairs(reply));
+  }
+  // `[member, dist?, hash?, [lon, lat]?]` per match: only the coordinate
+  // pair holds doubles; WITHHASH is an integer and must stay one.
+  if (
+    GEO_SEARCH_COMMANDS.has(name) &&
+    hasFlag(command, "WITHCOORD") &&
+    Array.isArray(reply)
+  ) {
+    return reply.map((match) =>
+      Array.isArray(match)
+        ? match.map((part) =>
+            Array.isArray(part) ? doublesToStrings(part) : part
+          )
+        : match
     );
   }
-  return reply as RedisReply;
+  return reply;
 }

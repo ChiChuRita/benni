@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
+import { decodeBase64, encodeBase64 } from "../core/base64.js";
 import { type ClientSource, resolveClient } from "../core/client-source.js";
 import { ratelimit as createRatelimiter } from "../primitives/ratelimit.js";
 
@@ -40,6 +41,15 @@ export type RatelimitOptions = {
    * ```
    */
   readonly key: (c: Context) => string | Promise<string>;
+  /**
+   * What happens when Redis cannot be reached or errors. Default `false`:
+   * the error propagates, so Hono answers 500 (or your `app.onError`) and no
+   * request gets past a limiter that cannot count it. Set `true` to let the
+   * request through unlimited instead, without the `X-RateLimit-*` headers,
+   * when availability matters more than the limit. Errors from `key` and
+   * from your own handler are never swallowed either way.
+   */
+  readonly failOpen?: boolean;
 };
 
 /**
@@ -48,6 +58,9 @@ export type RatelimitOptions = {
  * trip per request. Allowed requests carry `X-RateLimit-Limit`, `-Remaining`,
  * and `-Reset` (epoch seconds) headers; denied requests get a JSON 429 with
  * `Retry-After`.
+ *
+ * Fails closed by default: a Redis error propagates instead of letting the
+ * request through uncounted. See `failOpen`.
  *
  * @example
  * ```ts
@@ -74,9 +87,20 @@ export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
     ...(options.prefix !== undefined && { prefix: options.prefix })
   });
   const key = options.key;
+  const failOpen = options.failOpen ?? false;
 
   return async (c, next) => {
-    const result = await limiter.check(await key(c));
+    const subject = await key(c);
+    let result: Awaited<ReturnType<typeof limiter.check>>;
+    try {
+      result = await limiter.check(subject);
+    } catch (error) {
+      if (!failOpen) throw error;
+      // Only the Redis round trip is covered: the handler runs outside this
+      // try, so its own errors still propagate.
+      await next();
+      return;
+    }
     if (!result.success) {
       // retryAfterMs is a server-derived duration, so this never differences
       // a Redis timestamp against a possibly-skewed local clock.
@@ -110,15 +134,35 @@ export type CacheOptions = {
   readonly key?: (c: Context) => string;
   /**
    * Header names folded into the cache key, so responses that differ by
-   * these headers (e.g. `accept-language`) are cached separately.
+   * these headers (e.g. `accept-language`) are cached separately. Naming
+   * `cookie` here caches cookie-carrying requests per exact `Cookie` header,
+   * which keeps each visitor's response to that visitor.
    */
   readonly vary?: readonly string[];
+  /**
+   * Cache requests that carry a `Cookie` header in the one shared entry.
+   * Default `false`: such requests pass straight through, neither read from
+   * nor stored in the cache, because a route authenticated by a cookie (your
+   * own auth middleware, a third-party session) would otherwise store one
+   * visitor's page and replay it to everyone. Set `true` only when nothing
+   * behind this middleware varies by cookie, for example when every visitor
+   * carries analytics cookies the responses ignore. `benni/hono`'s own
+   * `session()` stays guarded either way: a response that read the session
+   * is never stored.
+   */
+  readonly ignoreCookies?: boolean;
 };
 
+/**
+ * A stored response. The body is base64 of the exact bytes, so a binary
+ * payload (an image, a protobuf, a gzip) replays byte for byte; storing
+ * `text()` decoded it as UTF-8 and corrupted anything that was not. Entries
+ * written in the old text form carry no `body64` and read as a miss.
+ */
 type CacheEntry = {
   readonly status: number;
   readonly headers: Record<string, string>;
-  readonly body: string;
+  readonly body64: string;
 };
 
 function defaultCacheKey(c: Context): string {
@@ -194,15 +238,21 @@ function sessionWasTouched(c: Context): boolean {
 
 /**
  * Read-through response caching as Hono middleware. `GET`/`HEAD` responses
- * are stored in Redis as `{ status, headers, body }` JSON (`SET PX ttlMs`)
- * and replayed on hit with an `X-Benni-Cache: hit` header. Other methods pass
- * straight through, as do ranged requests, anything but a plain `200`, and
- * responses carrying `set-cookie`, a `no-store`/`no-cache`/`private`
- * `Cache-Control`, or a `Vary` naming a header the key does not fold in.
- * Every Redis failure fails open — the request always runs.
+ * are stored in Redis as `{ status, headers, body64 }` JSON (`SET PX ttlMs`)
+ * and replayed on hit with an `X-Benni-Cache: hit` header. The body is kept
+ * as its exact bytes, so binary responses replay intact; it is buffered
+ * whole, so streaming responses are not a fit.
  *
- * The body is stored as text, so this is for text-ish responses (JSON, HTML),
- * not streaming or binary payloads.
+ * Pass straight through, never read or stored: other methods, requests
+ * carrying `Authorization`, requests carrying `Cookie` (unless `vary`
+ * includes `cookie` or `ignoreCookies` is set), and ranged requests. Never
+ * stored: anything but a plain `200`, responses carrying `set-cookie`, a
+ * `no-store`/`no-cache`/`private` `Cache-Control`, or a `Vary` naming a
+ * header the key does not fold in, and responses that read `session()`.
+ *
+ * Fails open: every Redis failure, and any stored entry it cannot read, is a
+ * miss, and the request always runs. A cache is an optimization, so an outage
+ * costs latency, never availability.
  *
  * @example
  * ```ts
@@ -220,6 +270,11 @@ export function cache(options: CacheOptions): MiddlewareHandler {
   const prefix = options.prefix ?? "hono-cache";
   const key = options.key ?? defaultCacheKey;
   const vary = options.vary ?? [];
+  // A cookie in the key already separates visitors, so it is as safe as
+  // bypassing; only a shared entry needs the explicit opt-in.
+  const cookieRequestsCacheable =
+    options.ignoreCookies === true ||
+    vary.some((name) => name.toLowerCase() === "cookie");
 
   return async (c, next) => {
     if (c.req.method !== "GET" && c.req.method !== "HEAD") {
@@ -229,6 +284,14 @@ export function cache(options: CacheOptions): MiddlewareHandler {
     // A shared cache must not store or replay a response to a request that
     // carried credentials. Pass those straight through.
     if (c.req.header("Authorization") !== undefined) {
+      await next();
+      return;
+    }
+    // Cookies are credentials too. A route authenticated by a cookie through
+    // middleware benni cannot see sends no set-cookie and touches no benni
+    // session, so neither storage guard below fires, and the first visitor's
+    // page would be replayed to everyone. Safe by default; see ignoreCookies.
+    if (!cookieRequestsCacheable && c.req.header("Cookie") !== undefined) {
       await next();
       return;
     }
@@ -251,11 +314,17 @@ export function cache(options: CacheOptions): MiddlewareHandler {
     try {
       const reply = await client.send(["GET", cacheKey]);
       if (typeof reply === "string") {
-        const entry = JSON.parse(reply) as CacheEntry;
-        return new Response(entry.body, {
-          status: entry.status,
-          headers: { ...entry.headers, "X-Benni-Cache": "hit" }
-        });
+        const entry = JSON.parse(reply) as Partial<CacheEntry>;
+        const body =
+          typeof entry.body64 === "string"
+            ? decodeBase64(entry.body64)
+            : undefined;
+        if (body !== undefined) {
+          return new Response(body, {
+            status: entry.status,
+            headers: { ...entry.headers, "X-Benni-Cache": "hit" }
+          });
+        }
       }
     } catch {
       // Fail open: a Redis read failure must never break the request.
@@ -289,7 +358,7 @@ export function cache(options: CacheOptions): MiddlewareHandler {
       const entry: CacheEntry = {
         status: res.status,
         headers,
-        body: await res.clone().text()
+        body64: encodeBase64(new Uint8Array(await res.clone().arrayBuffer()))
       };
       await client.send([
         "SET",
@@ -388,6 +457,11 @@ function readCookie(
  *
  * Values are `unknown` per key (`get<T>` is a convenience assertion) — for
  * typed data, reach for your benni schemas instead.
+ *
+ * Fails closed: a Redis error while loading or saving propagates, so Hono
+ * answers 500 (or your `app.onError`). Failing open would mean treating a
+ * signed-in visitor as anonymous and silently dropping what the handler
+ * wrote, so there is no option for it.
  *
  * @example
  * ```ts

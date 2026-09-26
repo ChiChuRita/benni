@@ -10,7 +10,10 @@ import { ioredis } from "../src/ioredis/index.js";
 import { queue } from "../src/primitives/index.js";
 import { json, kv } from "../src/schema.js";
 import { freePort } from "./free-port.js";
-import { expectRedisClientContract } from "./redis-contract.js";
+import {
+  expectPubSubSurvivesReconnect,
+  expectRedisClientContract
+} from "./redis-contract.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -30,6 +33,50 @@ describeRedis("ioredis", () => {
   it("passes the shared Redis client contract", async () => {
     expect(redisUrl).toBeDefined();
     await expectRedisClientContract(() => ioredis({ url: redisUrl }));
+  });
+
+  it("keeps Pub/Sub delivering after the subscriber connection is killed", async () => {
+    await expectPubSubSurvivesReconnect(() => ioredis({ url: redisUrl }), {
+      patterns: true
+    });
+  });
+
+  it("reports the subscriber closed once ioredis gives up reconnecting", async () => {
+    const connectionName = `benni-ioredis-sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // retryStrategy returning null makes a drop terminal: ioredis goes to
+    // "end" instead of "reconnecting", the state the getter has to surface.
+    // The subscriber duplicate inherits both options from the parent.
+    const client = await ioredis({
+      url: redisUrl,
+      connectionName,
+      retryStrategy: () => null
+    });
+    const admin = new IORedis(redisUrl as string);
+    admin.on("error", () => {});
+    try {
+      const subscriber = await client.subscriber?.();
+      if (!subscriber) throw new Error("subscriber() is required");
+      await subscriber.subscribe(`benni:test:end:${connectionName}`, () => {});
+      expect(subscriber.closed).toBe(false);
+      const list = String(await admin.call("CLIENT", "LIST", "TYPE", "pubsub"));
+      const line = list
+        .split("\n")
+        .find((entry) => entry.includes(` name=${connectionName} `));
+      if (line === undefined)
+        throw new Error("subscriber connection not found");
+      await admin.call(
+        "CLIENT",
+        "KILL",
+        "ID",
+        line.slice(3, line.indexOf(" "))
+      );
+      // The flag used to be local-only, so core kept handing the next
+      // subscribe this dead lease.
+      await expect.poll(() => subscriber.closed, { timeout: 2000 }).toBe(true);
+    } finally {
+      admin.disconnect();
+      await client.close();
+    }
   });
 
   it("accepts a bare URL string", async () => {

@@ -275,20 +275,29 @@ persistent exclusive connection:
 - dedicated-connection sessions (`redis.session()`)
 - pub/sub **subscribing**
 
-Those require `benni/node` or `benni/bun`. The HTTP/edge adapter (`benni/upstash`)
-covers the whole stateless surface, including pub/sub **publishing** (a single
-`PUBLISH`). Pattern subscriptions are Node-only for now: Bun's `psubscribe`
-hangs upstream, so the Bun adapter reports patterns as unsupported rather than
-deadlocking.
+Those require `benni/node`, `benni/ioredis`, or `benni/bun`. The HTTP/edge
+adapter (`benni/upstash`) covers the whole stateless surface, including pub/sub
+**publishing** (a single `PUBLISH`). Pattern subscriptions work on `benni/node`
+and `benni/ioredis`: Bun's `psubscribe` hangs upstream, so the Bun adapter
+reports patterns as unsupported rather than deadlocking.
 
 Subscribing needs no setup: the first subscription leases one subscriber
 connection from the client you already bound, multiplexes every channel onto it,
-and closes it when the last subscription goes away.
+and closes it when the last subscription goes away. If that connection drops,
+every adapter reconnects and resubscribes, but messages published while it was
+down are lost (Redis Pub/Sub is at-most-once); use a stream when a missed
+message matters.
+
+Raw replies have one shape on every adapter, RESP2's: `redis.raw.send(["HGETALL",
+key])` is a flat `[field, value, ...]` array and `ZSCORE` a decimal string, on
+Bun (which speaks RESP3 and is reshaped) as much as on Node, ioredis, and
+Upstash. A pipeline rejects with the first failing command's error.
 
 Errors are uniform too. A Redis error reply is a `RedisServerError` on every
 adapter, so error handling is portable across runtimes; connection and transport
-failures (a closed socket, an Upstash HTTP 5xx) stay whatever the underlying
-client threw, because nothing about them came from Redis. See rule 8.
+failures (a closed socket, an Upstash HTTP 401 or 5xx, a timeout) stay whatever
+the underlying client threw, because nothing about them came from Redis. See
+rule 8.
 
 One edge case follows from that boundary rather than breaking it. Over the REST
 adapter a service sits in front of Redis and decides what a failed

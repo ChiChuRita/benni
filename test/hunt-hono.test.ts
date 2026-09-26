@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import type { RedisCommand } from "../src/core/types.js";
@@ -5,6 +6,8 @@ import type { Session } from "../src/hono/index.js";
 import { cache, getSession, ratelimit, session } from "../src/hono/index.js";
 import { fakeClient } from "./fake-client.js";
 
+// These requests carry a sid cookie, which cache() now bypasses by default;
+// ignoreCookies opts back in so the session guard itself is what is tested.
 describe("hono cache session guard", () => {
   it("does not cache a response derived only from the session id", async () => {
     // The touched flag was set by get/set/delete/clear only, so a handler
@@ -16,8 +19,10 @@ describe("hono cache session guard", () => {
     const client = fakeClient(commands, ['{"userId":"u1"}', null]);
     const app = new Hono();
     app.use("*", session({ client }));
-    app.get("/whoami", cache({ client, ttlMs: 30_000 }), (c) =>
-      c.json({ sid: getSession(c).id })
+    app.get(
+      "/whoami",
+      cache({ client, ttlMs: 30_000, ignoreCookies: true }),
+      (c) => c.json({ sid: getSession(c).id })
     );
 
     const res = await app.request("/whoami", {
@@ -35,10 +40,14 @@ describe("hono cache session guard", () => {
     const client = fakeClient(commands, [null, null]);
     const app = new Hono<{ Variables: { session: Session } }>();
     app.use("*", session({ client }));
-    app.get("/greeting", cache({ client, ttlMs: 30_000 }), (c) => {
-      const bag = c.get("session");
-      return c.text(bag.isNew ? "welcome" : "welcome back");
-    });
+    app.get(
+      "/greeting",
+      cache({ client, ttlMs: 30_000, ignoreCookies: true }),
+      (c) => {
+        const bag = c.get("session");
+        return c.text(bag.isNew ? "welcome" : "welcome back");
+      }
+    );
 
     const res = await app.request("/greeting", {
       headers: { Cookie: "sid=abc123" }
@@ -148,7 +157,7 @@ describe("hono ratelimit headers", () => {
     const stored = JSON.stringify({
       status: 200,
       headers: { "content-type": "text/plain" },
-      body: "cached"
+      body64: Buffer.from("cached").toString("base64")
     });
     const client = fakeClient([], ["sha1", [1, 4, 1_800_000_060_000], stored]);
     const app = new Hono();

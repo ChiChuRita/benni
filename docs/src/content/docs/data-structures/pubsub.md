@@ -192,6 +192,16 @@ for await (const { message, channel: channelName } of redis.pubsub
 
 Messages that arrive while your loop body is busy are buffered in memory, so a slow consumer does not drop messages, but it also does not apply backpressure to Redis, which has none for Pub/Sub. If your consumer can fall behind indefinitely, use a [stream](/benni/data-structures/streams/) instead: Pub/Sub is fire-and-forget and has no replay.
 
+## Reconnects
+
+If the subscriber connection drops (a network blip, a Redis restart, a `CLIENT KILL`), the adapter reconnects it and resubscribes every channel and pattern you hold, so your handlers start firing again with no code on your side. That holds on `benni/node`, `benni/ioredis`, and `benni/bun`.
+
+Subscriptions survive a reconnect; the messages published while the connection was down do not. Redis Pub/Sub is at-most-once: the server delivers to whoever is subscribed at that instant and keeps no copy, so anything published during the reconnect window is gone, and nothing tells you it happened. Benni does not try to paper over that, because a notice that *something* was missed would not tell you *what*, and you would still need a durable source to recover from.
+
+So if a missed message matters, use a [stream](/benni/data-structures/streams/) instead: a consumer reads from a remembered position and picks up where it left off after any outage. A common middle ground is to publish a cheap "this changed" signal and have subscribers reread the state from Redis on each one, so a missed signal is repaired by the next.
+
+If the adapter gives up reconnecting altogether (its retry limit is exhausted: Bun's `maxRetries`, or a `retryStrategy`/`reconnectStrategy` you configured to stop), the subscriptions on that connection end silently too. The next `subscribe` leases a fresh connection.
+
 ## When a handler throws
 
 Delivery continues to the other handlers no matter what one of them does. By default a handler that throws or rejects is rethrown asynchronously, so the failure surfaces as an unhandled error instead of being swallowed. Pass `onPubSubError` when you would rather route it somewhere:
@@ -210,6 +220,7 @@ Subscribing needs a connection the adapter can hold open, which is the one thing
 | Adapter | Publish | Channel subscribe | Pattern subscribe |
 | --- | --- | --- | --- |
 | [`benni/node`](/benni/runtime/node/) | Yes | Yes | Yes |
+| [`benni/ioredis`](/benni/runtime/ioredis/) | Yes | Yes | Yes |
 | [`benni/bun`](/benni/runtime/bun-and-deno/) | Yes | Yes | No (`psubscribe` is broken upstream in Bun 1.3.14) |
 | [`benni/upstash`](/benni/runtime/edge/) | Yes | No (HTTP is stateless) | No |
 

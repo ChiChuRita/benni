@@ -1,3 +1,4 @@
+import { decodeBase64 } from "../core/base64.js";
 import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
@@ -16,7 +17,23 @@ export type UpstashOptions = {
   readonly url: string;
   readonly token: string;
   readonly fetch?: typeof fetch;
+  /**
+   * Abort any request, body included, that has not completed within this
+   * many milliseconds; it rejects with a `DOMException` named
+   * `"TimeoutError"`. Unset by default, which leaves a hung request to
+   * whatever limit the runtime imposes.
+   */
+  readonly timeoutMs?: number;
+  /**
+   * Aborting this signal rejects every in-flight request and every later one
+   * with the signal's reason, e.g. to tie the client to one request's
+   * lifetime on an edge runtime.
+   */
+  readonly signal?: AbortSignal;
 };
+
+/** Every string in a result is base64, see {@link decodeResult}. */
+const utf8 = new TextDecoder();
 
 /**
  * A {@link RedisClient} that speaks the Upstash REST protocol over HTTP, so the
@@ -31,9 +48,17 @@ export type UpstashOptions = {
  * `subscriber`: blocking commands (`BLPOP`, `XREAD BLOCK`, …), `WATCH`-based
  * optimistic transactions, and Pub/Sub *subscribing* all need a persistent
  * exclusive connection, so they are only available through the TCP adapters
- * (`benni/node`, `benni/bun`). `redis.session()` / `redis.watch()` and
- * subscribing throw a clear `TypeError` when used with this client.
- * Publishing is a plain stateless command and works here.
+ * (`benni/node`, `benni/ioredis`, `benni/bun`). `redis.session()` /
+ * `redis.watch()` and subscribing throw a clear `TypeError` when used with
+ * this client. Publishing is a plain stateless command and works here.
+ *
+ * Responses are requested base64-encoded (`Upstash-Encoding: base64`) and
+ * decoded here, the way Upstash's own client does by default: a value that is
+ * not valid UTF-8 would otherwise break the server's JSON encoding
+ * (serverless-redis-http answers such a `GET` with an empty body). Bulk
+ * strings still reach the caller as UTF-8 decoded strings, like every
+ * adapter's. The endpoint must honour that header; Upstash and
+ * serverless-redis-http both do.
  *
  * Binary (`Uint8Array`) command arguments are not supported over REST; use the
  * `bytes()` codec (which stores base64 strings) or a TCP adapter.
@@ -45,17 +70,45 @@ export function upstash(options: UpstashOptions): RedisClient {
       "upstash() requires a global fetch or an explicit fetch option"
     );
   }
+  // An unset environment variable is the usual way these arrive empty, and
+  // the request it produces fails with a 401 that no longer names the cause.
+  if (typeof options.url !== "string" || options.url === "") {
+    throw new TypeError("upstash() requires a url (the REST endpoint)");
+  }
+  if (typeof options.token !== "string" || options.token === "") {
+    throw new TypeError("upstash() requires a token (the REST bearer token)");
+  }
+  const { timeoutMs, signal } = options;
+  if (
+    timeoutMs !== undefined &&
+    !(Number.isFinite(timeoutMs) && timeoutMs > 0)
+  ) {
+    throw new TypeError(
+      `upstash() timeoutMs must be a positive number of milliseconds, got ${String(timeoutMs)}`
+    );
+  }
   const base = options.url.replace(/\/+$/, "");
   const authorization = `Bearer ${options.token}`;
+  // HTTP holds no connection, so close() has nothing to tear down. It still
+  // has to be final, per the client contract: a command after close() is a
+  // shutdown-ordering bug and must fail the same way it does on the TCP
+  // adapters rather than quietly succeed. Requests already in flight finish.
+  let closed = false;
 
-  async function post(path: string, body: unknown): Promise<unknown> {
+  async function exchange(
+    path: string,
+    body: unknown,
+    abortSignal: AbortSignal
+  ): Promise<unknown> {
     const response = await doFetch(`${base}${path}`, {
       method: "POST",
       headers: {
         Authorization: authorization,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Upstash-Encoding": "base64"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: abortSignal
     });
     let payload: unknown;
     try {
@@ -63,17 +116,17 @@ export function upstash(options: UpstashOptions): RedisClient {
     } catch {
       throw new Error(`Upstash HTTP ${response.status}: non-JSON response`);
     }
-    // A Redis-level error arrives as `{ "error": "..." }` (with 200 in a
-    // pipeline element, or 4xx for a single command); surface it as thrown.
-    //
-    // A 5xx is the service failing in front of Redis, not Redis forming an
-    // error reply, and gateways send that same `{ "error": ... }` envelope.
-    // Letting one through would hand the caller a `RedisServerError` for an
-    // upstream outage and put a bogus `.code` on it (`redisErrorCode` reads the
-    // leading token of whatever prose the gateway chose), so keep 5xx a plain
-    // transport error. That is the boundary the errors reference documents:
+    // `{ "error": ... }` is two different things on the wire. Redis refusing
+    // a command arrives as 400 (or 200, per element, in a pipeline): that is
+    // an error reply and becomes a `RedisServerError` in unwrapOne. Every
+    // other failure status is the service in front of Redis refusing or
+    // failing the *request* — 401 for a bad token, 403, 413, 429, any 5xx —
+    // with the same envelope, and none of it came from Redis. Reporting a 401
+    // `{ "error": "Unauthorized" }` as a server error reply put a bogus
+    // `.code` on it and told the caller Redis had said no. Those stay plain
+    // transport errors, the boundary the errors reference documents:
     // `RedisServerError` means Redis said no.
-    if (!response.ok && (response.status >= 500 || !isErrorPayload(payload))) {
+    if (!response.ok && !(response.status === 400 && isErrorPayload(payload))) {
       const detail =
         isErrorPayload(payload) && payload.error !== undefined
           ? `: ${String(payload.error)}`
@@ -81,6 +134,46 @@ export function upstash(options: UpstashOptions): RedisClient {
       throw new Error(`Upstash HTTP ${response.status}${detail}`);
     }
     return payload;
+  }
+
+  async function post(path: string, body: unknown): Promise<unknown> {
+    if (closed) throw new Error("benni/upstash client is closed");
+    const controller = new AbortController();
+    // Raced as well as handed to fetch, so a custom `fetch` that ignores its
+    // signal still cannot outlive the timeout, and the body read is covered.
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener(
+        "abort",
+        () => reject(controller.signal.reason),
+        { once: true }
+      );
+    });
+    aborted.catch(() => {
+      // Observed here; the race below is what reports it.
+    });
+    const forward = () => controller.abort(signal?.reason);
+    if (signal?.aborted) forward();
+    else signal?.addEventListener("abort", forward, { once: true });
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            controller.abort(
+              new DOMException(
+                `Upstash request timed out after ${timeoutMs}ms`,
+                "TimeoutError"
+              )
+            );
+          }, timeoutMs);
+    try {
+      return await Promise.race([
+        exchange(path, body, controller.signal),
+        aborted
+      ]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", forward);
+    }
   }
 
   return {
@@ -113,7 +206,9 @@ export function upstash(options: UpstashOptions): RedisClient {
       );
     },
     // session is intentionally omitted — HTTP has no persistent connection.
-    async close() {}
+    async close() {
+      closed = true;
+    }
   };
 }
 
@@ -136,16 +231,33 @@ function commandName(command: RedisCommand): string {
 }
 
 /**
- * Unwrap one `{ result }` / `{ error }` REST reply. Upstash's default JSON mode
- * mirrors RESP2 flat shapes (integers as numbers, arrays not maps, nil as
- * null) — exactly what the Node adapter forces and the typed stores decode — so
- * no reply normalization beyond the result/error unwrap is needed.
+ * A REST result with its base64 strings decoded. Every string at any depth is
+ * base64 under `Upstash-Encoding: base64`, simple strings included (`OK`
+ * arrives as `T0s=` from serverless-redis-http); integers and nil are not
+ * encoded. Text that is not well-formed base64 is kept as is, which covers a
+ * plain `OK` (Upstash's own client special-cases it) and cannot misfire,
+ * since padded base64 is never two characters long.
+ */
+function decodeResult(value: unknown): RedisReply {
+  if (typeof value === "string") {
+    const bytes = decodeBase64(value);
+    return bytes === undefined ? value : utf8.decode(bytes);
+  }
+  if (Array.isArray(value)) return value.map(decodeResult);
+  return (value ?? null) as RedisReply;
+}
+
+/**
+ * Unwrap one `{ result }` / `{ error }` REST reply. Upstash's JSON mirrors
+ * RESP2 flat shapes (integers as numbers, arrays not maps, nil as null) —
+ * exactly what the adapter contract asks for and the typed stores decode — so
+ * beyond the result/error unwrap only the base64 layer comes off.
  *
  * `{ error }` is the REST protocol's rendering of a Redis error reply, so it
  * becomes a `RedisServerError` like every other adapter's server error, with the
  * text kept verbatim (code included) and the raw payload string as `cause`.
- * Transport failures — a 5xx, a non-JSON body — stay plain `Error`s: nothing
- * about them came from Redis.
+ * Transport failures — a 401, a 5xx, a non-JSON body, a timeout — stay plain
+ * `Error`s: nothing about them came from Redis.
  */
 function unwrapOne(payload: unknown, command?: string): RedisReply {
   if (isErrorPayload(payload) && payload.error) {
@@ -158,7 +270,7 @@ function unwrapOne(payload: unknown, command?: string): RedisReply {
   ) {
     throw new TypeError("Expected an Upstash { result } response");
   }
-  return ((payload as { result: RedisReply }).result ?? null) as RedisReply;
+  return decodeResult((payload as { result: unknown }).result);
 }
 
 function unwrapMany(

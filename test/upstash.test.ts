@@ -1,12 +1,40 @@
+import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
-import { codecs, createHashStore, defineHash } from "../src/core/index.js";
+import {
+  codecs,
+  createHashStore,
+  defineHash,
+  RedisServerError
+} from "../src/core/index.js";
 import { upstash } from "../src/upstash/index.js";
 
 type FakeCall = { url: string; body: unknown; headers: Record<string, string> };
 
 /**
+ * Encode every string result the way a server honouring
+ * `Upstash-Encoding: base64` does: all strings at any depth, simple strings
+ * included; integers, nil, and error texts untouched (verified against
+ * hiett/serverless-redis-http).
+ */
+function encodeResults(body: unknown): unknown {
+  const encode = (value: unknown): unknown =>
+    typeof value === "string"
+      ? Buffer.from(value, "utf8").toString("base64")
+      : Array.isArray(value)
+        ? value.map(encode)
+        : value;
+  const element = (entry: unknown) =>
+    typeof entry === "object" && entry !== null && "result" in entry
+      ? { ...entry, result: encode((entry as { result: unknown }).result) }
+      : entry;
+  return Array.isArray(body) ? body.map(element) : element(body);
+}
+
+/**
  * A fake `fetch` that records each call and returns whatever `handler` maps the
- * (path-relative) command body to. `handler` returns `{ status?, body }`.
+ * (path-relative) command body to. `handler` returns `{ status?, body }`, with
+ * results written in plain text: they are base64-encoded on the way out when
+ * the request asked for it, like a real endpoint.
  */
 function fakeFetch(
   handler: (url: string, body: unknown) => { status?: number; body: unknown }
@@ -21,10 +49,14 @@ function fakeFetch(
       headers: (init?.headers as Record<string, string>) ?? {}
     });
     const { status = 200, body: resBody } = handler(url, body);
+    const headers = (init?.headers as Record<string, string>) ?? {};
     return {
       ok: status >= 200 && status < 300,
       status,
-      json: async () => resBody
+      json: async () =>
+        headers["Upstash-Encoding"] === "base64"
+          ? encodeResults(resBody)
+          : resBody
     } as Response;
   }) as unknown as typeof fetch;
   return { fn, calls };
@@ -154,7 +186,7 @@ describe("upstash", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("omits session (blocking/WATCH are TCP-only) and closes as a no-op", async () => {
+  it("omits session (blocking/WATCH are TCP-only)", async () => {
     const { fn } = fakeFetch(() => ({ body: { result: null } }));
     const client = upstash({
       url: "https://x.upstash.io",
@@ -162,7 +194,131 @@ describe("upstash", () => {
       fetch: fn
     });
     expect(client.session).toBeUndefined();
+    expect(client.subscriber).toBeUndefined();
+  });
+
+  it("stays closed after close(): later commands reject without a request", async () => {
+    const { fn, calls } = fakeFetch(() => ({ body: { result: "PONG" } }));
+    const client = upstash({
+      url: "https://x.upstash.io",
+      token: "tok",
+      fetch: fn
+    });
+    await expect(client.send(["PING"])).resolves.toBe("PONG");
     await expect(client.close()).resolves.toBeUndefined();
+    // close() used to be a no-op, so commands kept succeeding after shutdown
+    // where every TCP adapter rejects.
+    await expect(client.send(["PING"])).rejects.toThrow(/client is closed/);
+    await expect(client.pipeline([["PING"]])).rejects.toThrow(
+      /client is closed/
+    );
+    await expect(client.transaction?.([["PING"]])).rejects.toThrow(
+      /client is closed/
+    );
+    await expect(client.close()).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("asks for base64 responses and decodes every string, at any depth", async () => {
+    const { fn, calls } = fakeFetch(() => ({
+      body: { result: ["héllo 🎉", ["nested", 3, null], ""] }
+    }));
+    const client = upstash({
+      url: "https://x.upstash.io",
+      token: "tok",
+      fetch: fn
+    });
+    await expect(client.send(["XRANGE", "s", "-", "+"])).resolves.toEqual([
+      "héllo 🎉",
+      ["nested", 3, null],
+      ""
+    ]);
+    expect(calls[0]?.headers).toMatchObject({ "Upstash-Encoding": "base64" });
+  });
+
+  it("decodes bytes that are not UTF-8 the way the TCP adapters do", async () => {
+    // What serverless-redis-http sends for a value holding 0xff 0xfe 0x00
+    // "bin". In plain JSON mode it cannot encode that value at all and
+    // answers with an empty body.
+    const fn = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ result: "//4AYmlu" })
+      }) as Response) as unknown as typeof fetch;
+    const client = upstash({ url: "https://x", token: "tok", fetch: fn });
+    await expect(client.send(["GET", "bin"])).resolves.toBe(
+      "\uFFFD\uFFFD\u0000bin"
+    );
+  });
+
+  it("keeps a result that is not base64 as sent, like a plain OK", async () => {
+    const fn = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ result: "OK" })
+      }) as Response) as unknown as typeof fetch;
+    const client = upstash({ url: "https://x", token: "tok", fetch: fn });
+    await expect(client.send(["SET", "k", "v"])).resolves.toBe("OK");
+  });
+
+  it("rejects a missing url, token, or a bad timeoutMs at construction", () => {
+    const fetch = fakeFetch(() => ({ body: { result: null } })).fn;
+    expect(() => upstash({ url: "", token: "tok", fetch })).toThrow(
+      /requires a url/
+    );
+    expect(() =>
+      upstash({
+        url: "https://x",
+        token: undefined as unknown as string,
+        fetch
+      })
+    ).toThrow(/requires a token/);
+    for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        upstash({ url: "https://x", token: "tok", fetch, timeoutMs })
+      ).toThrow(/timeoutMs/);
+    }
+  });
+
+  it("times out a request that never answers, even if fetch ignores its signal", async () => {
+    let seen: AbortSignal | undefined;
+    const fn = ((_input: string, init?: RequestInit) => {
+      seen = init?.signal ?? undefined;
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    const client = upstash({
+      url: "https://x",
+      token: "tok",
+      fetch: fn,
+      timeoutMs: 20
+    });
+    const error = await client.send(["PING"]).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+    expect((error as Error).name).toBe("TimeoutError");
+    expect((error as Error).message).toContain("20ms");
+    expect(error).not.toBeInstanceOf(RedisServerError);
+    // The real fetch is told too, so it can release the socket.
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it("aborts in-flight and later requests when the caller's signal aborts", async () => {
+    const fn = (() =>
+      new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const controller = new AbortController();
+    const client = upstash({
+      url: "https://x",
+      token: "tok",
+      fetch: fn,
+      signal: controller.signal
+    });
+    const pending = client.send(["PING"]);
+    controller.abort(new Error("request finished"));
+    await expect(pending).rejects.toThrow("request finished");
+    await expect(client.send(["PING"])).rejects.toThrow("request finished");
   });
 
   it("drives a typed store end to end over HTTP", async () => {
