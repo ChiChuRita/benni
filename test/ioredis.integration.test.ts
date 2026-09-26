@@ -5,7 +5,7 @@ import { definePubSubChannel } from "../src/core/pubsub.js";
 import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
 import { queue } from "../src/primitives/index.js";
-import { json, kv } from "../src/schema.js";
+import { json, kv, number, script } from "../src/schema.js";
 import { freePort } from "./free-port.js";
 import {
   expectPubSubSurvivesReconnect,
@@ -255,6 +255,53 @@ describeCluster("ioredis (adopted Cluster)", () => {
     }
   });
 
+  it("runs scripts on whichever node owns the keys", async () => {
+    // SCRIPT LOAD carries no key, so a Cluster sends it to a random node,
+    // and EVALSHA then went to the node owning the key and drew NOSCRIPT. The
+    // retry reloaded through the same keyless route, so with several nodes
+    // most scripts failed. The runner now falls back to EVAL, which carries
+    // the keys. A single-node cluster (CI) cannot show the routing, but still
+    // runs the fallback against a real Cluster client after the flush below;
+    // point BENNI_REDIS_CLUSTER_URL at a multi-node cluster to see the rest.
+    const { cluster, client } = await adopt();
+    const counter = script("benni-cluster-counter", {
+      keys: ["counter"],
+      args: { by: number() },
+      returns: number(),
+      lua: 'return redis.call("INCRBY", KEYS[1], ARGV[1])'
+    });
+    const redis = benni({ client, schema: { counter } });
+    const keys = Array.from(
+      { length: 24 },
+      (_, index) => `benni-t-script:${index}`
+    );
+    const flushAll = () =>
+      Promise.all(
+        cluster.nodes("master").map((master) => master.script("FLUSH"))
+      );
+    try {
+      await Promise.all(keys.map((key) => cluster.del(key)));
+      // No node has the script: the one load lands on a single node.
+      await flushAll();
+      for (const key of keys) {
+        await expect(
+          redis.query.counter.run({ keys: { counter: key }, args: { by: 2 } })
+        ).resolves.toBe(2);
+      }
+      // Every node forgets it again, under concurrent callers this time.
+      await flushAll();
+      const again = await Promise.all(
+        keys.map((key) =>
+          redis.query.counter.run({ keys: { counter: key }, args: { by: 3 } })
+        )
+      );
+      expect(again).toEqual(keys.map(() => 5));
+    } finally {
+      await Promise.all(keys.map((key) => cluster.del(key)));
+      await client.close();
+      cluster.disconnect();
+    }
+  });
 });
 
 describeRedis("ioredis (adopted client)", () => {

@@ -287,8 +287,6 @@ describe("medium-severity sweep (review #10)", () => {
       rejecting(commands, [
         "sha-1",
         new Error("NOSCRIPT No matching script. Please use EVAL."),
-        [0], // SCRIPT EXISTS: the server really has forgotten it
-        "sha-2",
         7
       ])
     );
@@ -299,8 +297,12 @@ describe("medium-severity sweep (review #10)", () => {
     });
 
     await expect(runner.run(noop, [], [])).resolves.toBe(7);
-    // SCRIPT LOAD, EVALSHA, SCRIPT EXISTS, SCRIPT LOAD, EVALSHA.
-    expect(commands).toHaveLength(5);
+    // SCRIPT LOAD, EVALSHA, then EVAL with the source.
+    expect(commands).toEqual([
+      ["SCRIPT", "LOAD", "return 1"],
+      ["EVALSHA", "sha-1", 0],
+      ["EVAL", "return 1", 0]
+    ]);
   });
 
   it("hset with a ttl is one transaction, not a pipeline", async () => {
