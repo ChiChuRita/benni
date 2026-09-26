@@ -120,16 +120,16 @@ export interface RedisSession {
  * - Sets: an array.
  * - Error replies are never values: they reject, normalized to
  *   `RedisServerError` (see core/errors.ts). Transport failures (a dropped
- *   socket, an HTTP 5xx) reject as plain `Error`s.
+ *   socket, an HTTP 401 or 5xx, a timeout) reject as plain `Error`s.
  *
  * How each adapter meets that: node pins RESP2 on the connection; ioredis
  * speaks RESP2 and bypasses its own reply transformers by uppercasing the
- * command name; Upstash's REST JSON is RESP2-derived; Bun speaks only
- * RESP3, so the Bun adapter reshapes each reply per command. `RedisReply`
- * still admits Maps, Sets, booleans, bigints, and bytes so a hand-written
- * adapter that passes something through is not a type error, and the typed
- * stores tolerate a Map, but raw callers and user decoders can only rely on
- * the shapes above.
+ * command name; Upstash's REST JSON is RESP2-derived (the adapter asks for
+ * base64 strings and decodes them); Bun speaks only RESP3, so the Bun
+ * adapter reshapes each reply per command. `RedisReply` still admits Maps,
+ * Sets, booleans, bigints, and bytes so a hand-written adapter that passes
+ * something through is not a type error, and the typed stores tolerate a
+ * Map, but raw callers and user decoders can only rely on the shapes above.
  *
  * Batches:
  * - pipeline(): one reply per command, in command order, not atomic. If any

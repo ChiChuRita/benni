@@ -249,9 +249,30 @@ describe("upstash server errors", () => {
     expect((error as Error).message).toContain("upstream unavailable");
   });
 
-  it("still treats a 4xx { error } payload as a real server reply", async () => {
-    // Upstash returns 4xx for a genuine single-command Redis error, so the
-    // 5xx carve-out above must not swallow this case.
+  it("leaves an auth or quota failure a plain Error, not a Redis reply", async () => {
+    // Upstash answers a bad token with 401 { "error": "Unauthorized" }. That
+    // is the service refusing the request, not Redis refusing a command, so
+    // it must not become a RedisServerError with a `.code` read from prose.
+    for (const [status, text] of [
+      [401, "Unauthorized"],
+      [403, "Forbidden"],
+      [413, "Payload Too Large"],
+      [429, "Too Many Requests"]
+    ] as const) {
+      const redis = client(() => ({ status, body: { error: text } }));
+      const error = await redis.send(["GET", "k"]).then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(RedisServerError);
+      expect((error as Error).message).toBe(`Upstash HTTP ${status}: ${text}`);
+    }
+  });
+
+  it("still treats a 400 { error } payload as a real server reply", async () => {
+    // Upstash returns 400 for a genuine single-command Redis error, so the
+    // transport carve-outs above must not swallow this case.
     const redis = client(() => ({
       status: 400,
       body: { error: "NOSCRIPT No matching script" }
