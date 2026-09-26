@@ -9,7 +9,10 @@ import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
 import { queue } from "../src/primitives/index.js";
 import { json, kv } from "../src/schema.js";
-import { expectRedisClientContract } from "./redis-contract.js";
+import {
+  expectPubSubSurvivesReconnect,
+  expectRedisClientContract
+} from "./redis-contract.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -29,6 +32,12 @@ describeRedis("ioredis", () => {
   it("passes the shared Redis client contract", async () => {
     expect(redisUrl).toBeDefined();
     await expectRedisClientContract(() => ioredis({ url: redisUrl }));
+  });
+
+  it("keeps Pub/Sub delivering after the subscriber connection is killed", async () => {
+    await expectPubSubSurvivesReconnect(() => ioredis({ url: redisUrl }), {
+      patterns: true
+    });
   });
 
   it("accepts a bare URL string", async () => {

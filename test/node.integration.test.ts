@@ -6,7 +6,10 @@ import {
 } from "../src/core/index.js";
 import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
-import { expectRedisClientContract } from "./redis-contract.js";
+import {
+  expectPubSubSurvivesReconnect,
+  expectRedisClientContract
+} from "./redis-contract.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -15,6 +18,12 @@ describeRedis("node", () => {
   it("passes the shared Redis client contract", async () => {
     expect(redisUrl).toBeDefined();
     await expectRedisClientContract(() => node({ url: redisUrl }));
+  });
+
+  it("keeps Pub/Sub delivering after the subscriber connection is killed", async () => {
+    await expectPubSubSurvivesReconnect(() => node({ url: redisUrl }), {
+      patterns: true
+    });
   });
 });
 

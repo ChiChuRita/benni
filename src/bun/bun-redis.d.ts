@@ -17,6 +17,17 @@ declare namespace Bun {
   class RedisClient {
     constructor(url?: string, options?: RedisOptions);
     readonly connected: boolean;
+    /**
+     * Fires on every successful connect, including each automatic reconnect.
+     * Assigned after the first connect() resolves, it sees reconnects only.
+     */
+    onconnect: (() => void) | null;
+    /**
+     * Fires once the connection is gone for good: on close(), or when
+     * autoReconnect gives up after maxRetries. A drop that is followed by a
+     * successful reconnect does not fire it (verified on 1.4.2).
+     */
+    onclose: ((error: Error) => void) | null;
     connect(): Promise<void>;
     close(): void;
     send(command: string, args: Array<string | Uint8Array>): Promise<unknown>;
@@ -25,8 +36,8 @@ declare namespace Bun {
       listener: (message: string, channel: string) => void
     ): Promise<number>;
     unsubscribe(
-      channel: string,
-      listener: (message: string, channel: string) => void
+      channel?: string,
+      listener?: (message: string, channel: string) => void
     ): Promise<void>;
   }
 }

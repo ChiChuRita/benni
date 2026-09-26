@@ -7,7 +7,10 @@ import {
   definePubSubPattern
 } from "../src/core/index.js";
 import { benni } from "../src/index.js";
-import { expectRedisClientContract } from "./redis-contract.js";
+import {
+  expectPubSubSurvivesReconnect,
+  expectRedisClientContract
+} from "./redis-contract.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -60,6 +63,37 @@ describe("bun connect failure", () => {
   }, 20000);
 });
 
+describeRedis("bun subscriber close", () => {
+  it("lets the process exit when close() runs with subscriptions live", async () => {
+    // Closing a Bun client that still holds subscriptions pins the process
+    // forever (verified on 1.4.2), and the parent close() force-closes a
+    // subscriber with its subscriptions intact. Prove it exits in a subprocess.
+    const adapter = new URL("../src/bun/index.ts", import.meta.url).pathname;
+    const child = spawn(
+      "bun",
+      [
+        "-e",
+        `import { bun } from "${adapter}";
+           const client = await bun({ url: "${redisUrl}" });
+           const subscriber = await client.subscriber();
+           await subscriber.subscribe("benni:test:exit:${Date.now()}", () => {});
+           await client.close();`
+      ],
+      { stdio: "ignore" }
+    );
+    const outcome = await Promise.race([
+      new Promise<number | null>((resolve) =>
+        child.once("exit", (code) => resolve(code))
+      ),
+      new Promise<"never exited">((resolve) =>
+        setTimeout(() => resolve("never exited"), 8000)
+      )
+    ]);
+    child.kill();
+    expect(outcome).toBe(0);
+  }, 20000);
+});
+
 describeRedis("bun pubsub", () => {
   it("publishes and subscribes typed messages over a leased subscriber", async () => {
     expect(redisUrl).toBeDefined();
@@ -89,6 +123,13 @@ describeRedis("bun pubsub", () => {
       await client.close();
     }
   });
+
+  it("keeps delivering after the subscriber connection is killed", async () => {
+    // Bun reconnects the subscriber on its own but used to come back with no
+    // subscriptions: PUBLISH reported 0 receivers and every handler went
+    // silent while the lease still claimed to be open.
+    await expectPubSubSurvivesReconnect(() => bun({ url: redisUrl }));
+  }, 20000);
 
   it("reports pattern subscribe as unsupported instead of hanging", async () => {
     expect(redisUrl).toBeDefined();

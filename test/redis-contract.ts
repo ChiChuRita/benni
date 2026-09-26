@@ -11,6 +11,8 @@ import {
   defineHash,
   defineKeyspace,
   defineList,
+  definePubSubChannel,
+  definePubSubPattern,
   defineSet,
   defineSortedSet,
   type RedisClient,
@@ -23,6 +25,7 @@ import {
   okReply,
   stringOrNullReply
 } from "../src/core/transaction.js";
+import { benni } from "../src/index.js";
 
 export type RedisClientFactory = () => Promise<RedisClient>;
 
@@ -81,6 +84,115 @@ export type RedisClientContractOptions = {
    */
   readonly transactionErrorsCarryNoReply?: boolean;
 };
+
+/**
+ * The ids of every pubsub connection on the server, with its channel count.
+ * Parsed from CLIENT LIST, whose reply is one `id=… sub=N psub=M …` line per
+ * connection on every adapter.
+ */
+async function pubsubConnections(
+  client: RedisClient
+): Promise<Array<{ id: string; sub: number }>> {
+  const list = String(await client.send(["CLIENT", "LIST", "TYPE", "pubsub"]));
+  return list
+    .split("\n")
+    .filter((line) => line.startsWith("id="))
+    .map((line) => ({
+      id: line.slice(3, line.indexOf(" ")),
+      sub: Number(/ sub=(\d+)/.exec(line)?.[1] ?? -1)
+    }));
+}
+
+export type PubSubReconnectOptions = {
+  /** Also hold a pattern subscription across the drop. */
+  readonly patterns?: boolean;
+};
+
+/**
+ * Subscriptions made through the handle keep delivering after the subscriber
+ * connection is killed server-side: the adapter reconnects AND resubscribes,
+ * or core would keep a lease whose handlers never fire again.
+ *
+ * Kills only the connection this test leased. CLIENT KILL has no channel
+ * filter and a blanket `TYPE pubsub` would also kill the subscribers of every
+ * suite running in parallel against the same server, so the victim is the one
+ * pubsub connection that appeared after this test subscribed and carries this
+ * test's (deliberately unusual) channel count.
+ */
+export async function expectPubSubSurvivesReconnect(
+  createClient: RedisClientFactory,
+  options: PubSubReconnectOptions = {}
+): Promise<void> {
+  const client = await createClient();
+  const redis = benni(client);
+  const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const channelCount = 7;
+  const channels = Array.from({ length: channelCount }, (_, index) =>
+    definePubSubChannel(`benni:test:reconnect:${id}:${index}`, codecs.string())
+  );
+  const pattern = definePubSubPattern(
+    `benni:test:reconnect:${id}:p:*`,
+    codecs.string()
+  );
+  const seen = new Set<string>();
+
+  try {
+    const before = new Set(
+      (await pubsubConnections(client)).map((entry) => entry.id)
+    );
+    for (const [index, channel] of channels.entries()) {
+      await redis.pubsub.channel(channel).subscribe((message) => {
+        seen.add(`${index}:${message}`);
+      });
+    }
+    if (options.patterns) {
+      await redis.pubsub.pattern(pattern).subscribe((message, channel) => {
+        seen.add(`${channel}:${message}`);
+      });
+    }
+
+    await redis.pubsub.channel(channels[0]!).publish("before");
+    await waitUntil(() => seen.has("0:before"));
+
+    const ours = (await pubsubConnections(client)).filter(
+      (entry) => !before.has(entry.id) && entry.sub === channelCount
+    );
+    expect(ours).toHaveLength(1);
+    await expect(
+      client.send(["CLIENT", "KILL", "ID", ours[0]!.id])
+    ).resolves.toBe(1);
+
+    // Receivers drop to 0 with the connection and come back only once it has
+    // resubscribed. Without the resubscribe this stays 0 forever while the
+    // reconnected socket looks healthy.
+    const deadline = Date.now() + 10_000;
+    let receivers = 0;
+    while (Date.now() < deadline) {
+      receivers = await redis.pubsub.channel(channels[0]!).publish("probe");
+      if (receivers === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(receivers).toBe(1);
+
+    // Every channel was resubscribed, not only the one probed.
+    for (const channel of channels) {
+      await expect(
+        redis.pubsub.channel(channel).publish("after")
+      ).resolves.toBe(1);
+    }
+    await waitUntil(() =>
+      channels.every((_, index) => seen.has(`${index}:after`))
+    );
+    if (options.patterns) {
+      const matched = `benni:test:reconnect:${id}:p:one`;
+      await client.send(["PUBLISH", matched, "after"]);
+      await waitUntil(() => seen.has(`${matched}:after`));
+    }
+  } finally {
+    await redis.pubsub.close();
+    await client.close();
+  }
+}
 
 export async function expectRedisClientContract(
   createClient: RedisClientFactory,

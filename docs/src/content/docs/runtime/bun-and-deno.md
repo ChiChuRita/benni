@@ -31,6 +31,8 @@ await subscription.unsubscribe();
 
 Channel subscriptions only, though. The Bun subscriber deliberately omits `psubscribe` because it is broken in Bun 1.3.14 (it hangs rather than resolving), so `redis.pubsub.pattern(...).subscribe(...)` throws `TypeError` on Bun instead of deadlocking. Subscribe to the individual channels until Bun ships a fix, or run pattern subscriptions on the [Node adapter](/benni/runtime/node/). Publishing is unaffected: it is one stateless `PUBLISH` on the bound client.
 
+If the subscriber connection drops, the adapter resubscribes every channel on the reconnect. Bun's own client reconnects a subscriber but comes back with no subscriptions, so without this the handlers would go silent while the connection looked healthy. Messages published during the outage are still lost, as on every adapter: see [Reconnects](/benni/data-structures/pubsub/#reconnects). If Bun gives up reconnecting (after `maxRetries`), the lease reports itself closed and the next subscribe opens a fresh connection.
+
 The Bun adapter supports [sessions](/benni/advanced/sessions/), so `redis.session()` and `redis.watch()` work: each session is a fresh Bun Redis client with reconnection and offline queueing disabled, and closing it rejects an in-flight blocking read promptly.
 
 The Bun adapter runs the same Redis contract suite as the Node adapter against a real server:

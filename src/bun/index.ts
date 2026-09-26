@@ -188,6 +188,37 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       if (clientClosed) throw discardOnClose(subscriberClient);
       const listeners = new Map<string, (message: string) => void>();
       let closed = false;
+      // Bun fires onclose only once the connection is gone for good: close(),
+      // or autoReconnect giving up. A drop it recovers from does not fire it
+      // (verified on 1.4.2), so this is the terminal state core must see to
+      // drop the dead lease, the equivalent of node-redis's `isOpen` going
+      // false. `connected` is not: it dips during every reconnect.
+      let gone = false;
+      subscriberClient.onclose = () => {
+        gone = true;
+      };
+      // Bun reconnects a dropped subscriber connection on its own but does not
+      // resubscribe (verified on 1.4.2): the socket comes back with no
+      // subscriptions, PUBLISH reports 0 receivers, and every handler goes
+      // silent while `closed` still says false. node-redis and ioredis both
+      // resubscribe natively, so this restores the same behaviour here, on the
+      // reconnect Bun already made, rather than asking core to re-lease.
+      //
+      // One raw SUBSCRIBE for every channel still wanted, not the public
+      // subscribe(): Bun still holds our listeners across the reconnect, and
+      // subscribe() would register each a second time (double delivery,
+      // verified). The channel list is read and the command written in one
+      // synchronous turn, so an unsubscribe() from core either ran first (its
+      // channel is not in the list) or is written after (and wins on the
+      // wire). SUBSCRIBE is idempotent server-side, so overlapping a
+      // subscribe() Bun queued during the outage is harmless.
+      subscriberClient.onconnect = () => {
+        if (closed || listeners.size === 0) return;
+        subscriberClient.send("SUBSCRIBE", [...listeners.keys()]).catch(() => {
+          // The connection dropped again mid-resubscribe; Bun's next
+          // reconnect fires onconnect and this runs again.
+        });
+      };
       const subscriber: RedisSubscriber = {
         async subscribe(channel, listener) {
           const wrapped = (message: string) => listener(message);
@@ -203,12 +234,23 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
         // psubscribe hangs, so core reports pattern subscribe as unsupported
         // rather than deadlocking on it.
         get closed() {
-          return closed;
+          return closed || gone;
         },
         async close() {
           closed = true;
           subscribers.delete(subscriber);
           listeners.clear();
+          // Drop Bun's own listeners before closing: a client closed while it
+          // still holds subscriptions pins the process forever, while one
+          // unsubscribed first exits (verified on 1.4.2). The parent close()
+          // reaches this with subscriptions live. Not awaited: on a dead or
+          // reconnecting socket the UNSUBSCRIBE would wait for a reconnect,
+          // and close() below rejects it anyway.
+          try {
+            subscriberClient.unsubscribe().catch(() => {});
+          } catch {
+            // Already closed; nothing left to unsubscribe.
+          }
           subscriberClient.close();
         }
       };
