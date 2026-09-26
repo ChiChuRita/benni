@@ -11,6 +11,7 @@ import {
   type ExpiryOptions,
   expectNumber,
   expectNumberLike,
+  expectSafeNumber,
   expiryArgs,
   positiveSafeInteger,
   ttlSeconds
@@ -791,7 +792,11 @@ export function createHashStore<
       const reply = await client.send(["HEXISTS", schema.key(id), field]);
       return expectNumber(reply, "HEXISTS") === 1;
     },
-    /** HINCRBY — increment a numeric field by an integer amount. */
+    /**
+     * HINCRBY — increment a numeric field by an integer amount. Throws a
+     * `ReplyShapeError` once the value passes `Number.MAX_SAFE_INTEGER`, like
+     * `incr`, rather than resolving a rounded number.
+     */
     async hincrby<TField extends NumberHashField<TFields>>(
       id: TId,
       field: TField,
@@ -807,7 +812,7 @@ export function createHashStore<
         field,
         amount
       ]);
-      return expectNumber(reply, "HINCRBY");
+      return expectSafeNumber(reply, "HINCRBY");
     },
     /** DEL — delete the whole hash. */
     async del(id: TId): Promise<number> {

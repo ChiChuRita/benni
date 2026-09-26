@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
+import { ReplyShapeError } from "../src/core/errors.js";
 import { createHashStore, defineHash } from "../src/core/hash.js";
 import type {
   RedisClient,
@@ -568,6 +569,14 @@ describe("createHashStore setFieldsEx", () => {
       "hsetex requires at least one field"
     );
     expect(commands).toEqual([]);
+  });
+});
+
+describe("hincrby past the safe-integer range", () => {
+  it("throws instead of resolving a rounded number, like incr", async () => {
+    await expect(
+      userStore([], [Number.MAX_SAFE_INTEGER + 2]).hincrby("42", "score", 1)
+    ).rejects.toThrow(ReplyShapeError);
   });
 });
 
