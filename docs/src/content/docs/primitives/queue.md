@@ -3,7 +3,7 @@ title: "AI Job Queue"
 description: "Run model calls as background jobs that survive refreshes, deploys, and crashes, with a resumable output stream and a Stop button that actually stops the bill."
 ---
 
-`queue` runs expensive model calls as background jobs, so a generation survives the user refreshing the page, your server deploying, and the request timing out.
+`queue` runs expensive model calls as background jobs, so a generation survives the user refreshing the page, your server deploying, and the request timing out. A job interrupted by a crash or a deploy isn't lost: it runs again on another worker.
 
 ```ts
 // schema.ts
@@ -82,7 +82,7 @@ for await (const event of jobs.watch(id, { after: lastSeenEventId })) {
 }
 ```
 
-That's the whole thing. All five bugs are gone: the work outlives the request, `after` resumes it, a dead worker's job is reclaimed, `job.signal` propagates Stop, and `idempotencyKey` collapses the duplicate.
+That's the whole thing. The work outlives the request, `after` resumes it, a dead worker's job is reclaimed and re-run instead of vanishing, `job.signal` propagates Stop, and `idempotencyKey` collapses the duplicate. Reclaiming means re-running: the queue is [at-least-once](#what-is-and-isnt-guaranteed), so a job interrupted by a crash or a deploy is paid for again, not lost.
 
 The `watch` loop needs no break condition; the iterator ends itself after the job's terminal event.
 
@@ -92,12 +92,12 @@ The `watch` loop needs no break condition; the iterator ends itself after the jo
 |---|---|---|
 | Request times out | A job queue + a worker | `enqueue` / `worker` |
 | Refresh loses the stream | A separate stream buffer keyed by generation id | Every job *has* an output stream |
-| Deploy eats in-flight work | Visibility timeouts, stalled-job sweepers | Heartbeat leases, reclaimed automatically |
+| Deploy eats in-flight work | Visibility timeouts, stalled-job sweepers | Heartbeat leases, reclaimed and re-run automatically |
 | Stop doesn't stop | A cancellation channel the worker polls | `cancel()` → `job.signal` aborts |
 | Double-billed clicks | An idempotency table with its own TTL rules | `idempotencyKey` |
 | A 429 you retried too fast | Backoff logic per provider | `RetryJobError(msg, retryAfterMs)` |
 
-## Three ideas worth knowing
+## Ideas worth knowing
 
 Everything above rests on these, and they're what make it feel different in use.
 
@@ -115,7 +115,9 @@ If your handler doesn't stream, an automatic heartbeat covers it; you don't have
 await jobs.cancel(id); // true if the job will not produce a result
 ```
 
-A job that hasn't started is removed outright. A running job is flagged, and its worker aborts `job.signal` on the next `emit()`, so a `fetch` or AI SDK call wired to that signal tears down mid-stream and you stop paying for a cancelled answer. Either way the job settles `cancelled`, and watchers get a `cancelled` event instead of hanging forever.
+A job that hasn't started is removed outright. A running job is flagged, and its worker aborts `job.signal` (with a `JobCancelledError` as the reason) on the next `emit()`, so a `fetch` or AI SDK call wired to that signal tears down mid-stream and you stop paying for a cancelled answer. Either way the job settles `cancelled`, and watchers get a `cancelled` event instead of hanging forever.
+
+A handler that streams hears about the cancel within one token. One that doesn't hears on the next automatic heartbeat, so the delay is at most `heartbeatMs` (a quarter of `leaseMs` by default, 15 seconds at the default lease). Lower `heartbeatMs` if a non-streaming handler needs to stop faster.
 
 Cancelling can't race the worker into a double-settle: only the worker holding the current lease may write a result. Nor can it lose to one. If the handler finishes, or throws a retryable error, after `cancel()` returned `true`, the job still settles `cancelled`: the result is discarded and no further attempt is scheduled, rather than the queue paying for a generation the caller already stopped.
 
@@ -123,7 +125,21 @@ Cancelling can't race the worker into a double-settle: only the worker holding t
 
 If attempt 1 dies halfway through `"The capital of"`, attempt 2 starts over. The partial tokens are dropped and a `restarted` event is written first, so a client resuming from a cursor clears its buffer instead of rendering `"The capital ofThe capital of France is Paris"`. The marker is always written above every entry id the previous attempt used, so a resuming cursor can't skip past it.
 
-That's the one event type worth handling deliberately.
+That's the one event type worth handling deliberately. The other one to know is `truncated`, covered next.
+
+### A long stream keeps its tail, and says so
+
+Each job's stream keeps its newest `eventsMaxLen` events (default `10000`), trimmed in batches of a tenth of the cap. Emitting one event per token, a long generation can outgrow that, and the earliest tokens are dropped. A watcher replaying from `"0"`, or resuming from a cursor that has since been trimmed, can't be served those events. Instead of skipping ahead silently, `watch()` yields a `truncated` event where the missing events were, then carries on:
+
+```ts
+for await (const event of jobs.watch(id, { after: lastSeenEventId })) {
+  if (event.type === "truncated") showNotice("Earlier output was trimmed");
+  if (event.type === "chunk") send(event.data, event.id);
+  if (event.type === "completed") return event.result; // always the full result
+}
+```
+
+The `completed` event and `get(id).result` always carry the whole result, so the answer itself is never lost, only the token-by-token replay of its beginning. A `truncated` event's `id` is the position before the gap, so storing it as your cursor is safe. To avoid truncation, batch several tokens per `emit()` (flush every 50ms, say) or raise `eventsMaxLen`.
 
 ## Paying once for duplicate work
 
@@ -174,26 +190,64 @@ When you just want the answer and don't care about tokens:
 const text = await jobs.wait(id);
 ```
 
-It checks the record first, so a job that already finished returns immediately instead of waiting for an event that has passed. Unknown ids (and jobs whose `resultTtlMs` has elapsed) reject with `JobNotFoundError`.
+It checks the record first, so a job that already finished returns immediately instead of waiting for an event that has passed. A failed job rejects with `JobFailedError` (its `message` is the recorded failure) and a cancelled one with `JobCancelledError`; both carry `jobId`. Unknown ids (and jobs whose `resultTtlMs` has elapsed) reject with `JobNotFoundError`.
 
 ## When a worker dies
 
 Nothing to configure. The dead worker's lease expires, the next `reserve` reclaims the job, and it goes back to the ready set, or straight to the dead letter set if it's out of attempts. Because attempts are counted when a job is *reserved*, a handler that reliably crashes the process dead-letters instead of looping forever.
 
-A zombie worker that wakes up later can't clobber the job that replaced it: `emit()`, `progress()`, and the heartbeat all throw `JobLeaseLostError` once the lease token is stale, and settling is refused.
+A worker cut off from Redis (a network partition, a stalled event loop) doesn't keep generating into the void. It tracks the lease locally on a monotonic clock, from the last renewal Redis confirmed. Once the lease can no longer have been renewed in time, the worker aborts `job.signal` with a `JobLeaseLostError`, at or before the moment another worker could reclaim the job, and reports the loss to `onError`. A handler that finishes anyway still offers its result, and the token fence decides: it's recorded only if nobody reclaimed the job in the meantime.
+
+A zombie worker that wakes up later can't clobber the job that replaced it: `emit()`, `progress()`, and the heartbeat all throw `JobLeaseLostError` once the lease token is stale, and settling is refused. A refused settle is reported to `onError` as a `JobLeaseLostError`, so discarded paid work shows up in your telemetry.
 
 ```ts
 const worker = jobs.worker(handler, {
   concurrency: 8,
-  leaseMs: 120_000, // longer than your slowest generation
-  heartbeatMs: 15_000 // comfortably inside the lease
+  leaseMs: 120_000, // how long a silent worker keeps the job
+  heartbeatMs: 30_000 // at most half the lease; default is a quarter
 });
-
-// Graceful shutdown: stop taking new work, let in-flight jobs finish.
-process.on("SIGTERM", () => void worker.stop());
 ```
 
-`stop()` never kills a running job: in-flight work keeps its lease and finishes, so nothing is double-run.
+`heartbeatMs` must be at most half of `leaseMs`, so a renewal and a retry both fit before the lease could lapse; a larger value throws a `ValidationError` when the worker starts. Leave it out and it defaults to a quarter of the lease.
+
+All lease and delay arithmetic runs on Redis server time (`TIME` inside the scripts). A worker whose clock runs fast can't reclaim a lease another worker still holds, and a producer whose clock is off can't make a delayed job fire early or late. The timestamps on the job record are server time too.
+
+## Deploys and shutdown
+
+`worker.stop()` stops reserving new jobs and waits for in-flight ones to finish. By default it waits as long as they take. That's the right call when a platform gives you all the time you need, and the wrong one when it sends SIGTERM and then SIGKILL a few seconds later: the killed job sits in `leases` until its lease expires (up to `leaseMs`), is reclaimed, and re-runs at full price, using up an attempt.
+
+Pass `timeoutMs` to bound the wait:
+
+```ts
+process.on("SIGTERM", () => {
+  // Inside the platform's grace period: finish what can finish in 20s,
+  // hand the rest back.
+  void worker.stop({ timeoutMs: 20_000 });
+});
+```
+
+When the timeout elapses, every job still running has its signal aborted with a `WorkerStoppedError` and is handed back to the queue straight away: at the front of its priority band, with its attempt refunded, since a deploy isn't the job's fault. Another worker starts it immediately instead of after the lease expires. `timeoutMs: 0` hands everything back at once. A job whose `cancel()` landed during the run is settled `cancelled` instead of requeued.
+
+Be clear about what that buys. A requeued job **re-runs from the top at full price**: whatever the interrupted run generated is paid for again, and its output stream restarts with a `restarted` marker. Only a job that finishes inside the timeout survives the deploy without a second bill. Size the timeout to let typical generations finish, and don't expect a mid-generation deploy to be free.
+
+`stop()` resolves once every in-flight job has finished or been handed back. A handler that ignores its aborted signal may keep running in the background, but it can no longer write anything to the job.
+
+## What is and isn't guaranteed
+
+The queue is **at-least-once**. Be precise about which part is exactly-once and which isn't.
+
+Guaranteed:
+
+- **One recorded outcome per run.** Only the worker holding the job's current lease token can append output, report progress, settle a result, or schedule a retry. A stale worker's writes are refused, never merged, so a `completed` result comes from exactly one run and is written exactly once.
+- **Every state change is atomic.** Each transition is one Lua script, so a job is never in two lifecycle sets or none.
+- **Cancellation wins.** Once `cancel()` returns `true`, the job settles `cancelled`, whatever the handler returns, and no further attempt is scheduled.
+- **No silent gaps in a watched stream.** Output trimmed before a watcher read it is reported with a `truncated` event.
+
+Not guaranteed:
+
+- **The handler can run more than once for one job.** A crash, a partition, an event-loop stall longer than the lease, or `stop({ timeoutMs })` requeueing it all start another run. Two runs can briefly overlap: the old one's abort takes effect only as fast as your provider call tears down. Anything the handler does outside the queue (a model call, a charge, an email, a database write) can happen twice. Make those effects idempotent, for example by passing `job.id` as the provider's idempotency key where it has one.
+- **Cancellation is not instant.** A streaming handler stops within one token; a non-streaming one within `heartbeatMs`.
+- **Retention is finite.** A finished job's record and stream live for `resultTtlMs`, and a stream keeps its newest `eventsMaxLen` events.
 
 ## Inspecting a job
 
@@ -260,6 +314,10 @@ A stream consumer group would hand you recovery via `XAUTOCLAIM`, but it reclaim
 
 Every key shares one hash tag, so a queue occupies a single Redis Cluster slot. Every state change is a single Lua script, so there is no window where a job is in two places or none.
 
+The scripts declare every key they can name in `KEYS`. Three can't: `reserve` discovers the job ids it promotes, reclaims, and pops inside the script, and `enqueue` and `cancel` release an idempotency key whose name they read from the job record. Those derive per-job key names from the hash tag, which Redis and Redis Cluster allow because the derived keys live in the same slot. The hot path (`emit`, heartbeats, settling, retries) declares everything.
+
+On **Dragonfly**, which refuses undeclared keys by default, those three scripts carry Dragonfly's own opt-in (`--!df flags=allow-undeclared-keys`) as their first line, so no server flag is needed. This was verified against `dragonflydb/dragonfly` v2.0 with default settings: the queue's live test suite passes, and fails with "script tried accessing undeclared key" without the opt-in. On an older Dragonfly that ignores the per-script flag, start the server with `--default_lua_flags=allow-undeclared-keys`.
+
 ## Options
 
 | Option | Default | Notes |
@@ -270,9 +328,20 @@ Every key shares one hash tag, so a queue occupies a single Redis Cluster slot. 
 | `maxAttempts` | `3` | Attempts before dead-lettering |
 | `backoffMs` / `maxBackoffMs` | `1000` / `60000` | Exponential curve with full jitter |
 | `resultTtlMs` | `3600000` | How long a finished record and its stream survive |
-| `eventsMaxLen` | `10000` | Retained events per job, so token streams stay bounded |
+| `eventsMaxLen` | `10000` | Retained events per job, trimmed in batches of a tenth; a watcher that falls behind the window gets `truncated` |
 
-Worker options: `concurrency`, `leaseMs`, `heartbeatMs`, `pollMs`, `isRetryable`, `onError`.
+Worker options:
+
+| Option | Default | Notes |
+|---|---|---|
+| `concurrency` | `1` | Jobs run at once |
+| `leaseMs` | the queue's | Override the lease for this worker |
+| `heartbeatMs` | `leaseMs / 4` | At most `leaseMs / 2`, or `ValidationError`; also bounds cancel latency for a handler that doesn't emit |
+| `pollMs` | `1000` | Poll interval when the adapter has no dedicated connection |
+| `isRetryable` | all but `TerminalJobError` | Replace the retry classification |
+| `onError` | `console.error` | Every worker-loop error, lease losses and refused settles included |
+
+`worker.stop({ timeoutMs })`: how long to let in-flight jobs finish before requeueing them. Default: no limit.
 
 ## Runtime support
 

@@ -220,7 +220,10 @@ A lost lock means two callers collided on one key; a lost slot means the semapho
 | Error | Properties | Thrown when |
 |---|---|---|
 | `JobNotFoundError` | `jobId` | A job id is not in Redis: it never existed, or it finished and its `resultTtlMs` elapsed |
-| `JobLeaseLostError` | `jobId` | Thrown *inside a handler* when this worker no longer owns the job. Its lease expired and another worker reclaimed it, so `emit()`, `progress()`, and the automatic heartbeat all abort the job's signal and throw this rather than let you burn tokens on a run whose result will be discarded |
+| `JobLeaseLostError` | `jobId` | Thrown *inside a handler* when this worker no longer owns the job: Redis reported another token on it, or the lease could not be renewed before it would lapse (a partition, a stalled event loop). `emit()`, `progress()`, and the automatic heartbeat all abort the job's signal with this rather than let you burn tokens on a run whose result will likely be discarded. The worker also passes it to `onError`, as it does for a settle the lease fence refused |
+| `JobFailedError` | `jobId` | `wait()` found the job failed for good (dead-lettered, or a `TerminalJobError`). `message` is the recorded failure, verbatim |
+| `JobCancelledError` | `jobId` | `wait()` found the job cancelled. Also the reason on a handler's `job.signal` when `cancel()` reaches it |
+| `WorkerStoppedError` | `jobId` | The reason on a handler's `job.signal` when `worker.stop({ timeoutMs })` ran out of time and requeued the job for another worker |
 
 Two more are errors **you throw**, from inside a handler, to steer the retry machinery:
 
@@ -265,7 +268,8 @@ Error
 ├── WatchRetriesExceededError
 ├── LockNotAcquiredError / LockLeaseLostError
 ├── SemaphoreNotAcquiredError / SemaphoreLeaseLostError
-├── JobNotFoundError / JobLeaseLostError / TerminalJobError / RetryJobError
+├── JobNotFoundError / JobLeaseLostError / JobFailedError / JobCancelledError
+├── WorkerStoppedError / TerminalJobError / RetryJobError
 ├── IdempotencyConflictError / IdempotencyTimeoutError / IdempotencyNotRecordedError
 └── BudgetWindowRolledError
 ```

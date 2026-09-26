@@ -238,7 +238,12 @@ const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
 
 The lock never frees a lock that expired and was re-acquired. The rate limiter is
 a sliding window in one atomic round trip. The cache is read-through with
-stampede protection: one loader call per miss.
+stampede protection: one loader call per miss. The queue is at-least-once: a
+handler can run twice for one job (crash, partition, `worker.stop({ timeoutMs })`
+requeueing it), so keep its side effects idempotent; only the current lease
+holder can record a result. Handle `truncated` in `watch()` loops: it means the
+per-job stream (newest `eventsMaxLen` events) trimmed output the client had not
+read, and the `completed` event still carries the full result.
 
 ## Runtime capabilities
 
