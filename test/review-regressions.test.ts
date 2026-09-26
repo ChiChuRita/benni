@@ -1,32 +1,31 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
   createHashStore,
   createSortedSetStore,
   createStreamStore,
   createStringStore,
-  defineHash,
-  defineKeyspace,
-  defineSortedSet,
-  defineStream,
   ValidationError
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
 import { keyBuilder } from "../src/core/keys.js";
 import { createScriptRunner, defineScript } from "../src/core/script.js";
 import { assertSameSlot, CrossSlotError, slotOf } from "../src/core/slot.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 import type { StreamEntry } from "../src/core/stream.js";
 import type {
   PendingStreamEntry,
   StreamGroupConsumer,
   StreamPendingReadOptions
 } from "../src/core/stream-group.js";
+import { defineStream } from "../src/core/stream-resource.js";
 import type {
   Codec,
   RedisClient,
   RedisCommand,
   RedisReply
 } from "../src/core/types.js";
-
 import { node } from "../src/node/index.js";
 import { cache, lock } from "../src/primitives/index.js";
 import { upstash } from "../src/upstash/index.js";
@@ -473,7 +472,7 @@ const describeRedis = redisUrl ? describe : describe.skip;
 describeRedis("infinite scores against real Redis", () => {
   let client: import("../src/core/index.js").RedisClient;
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

@@ -28,7 +28,7 @@ describeCluster("redis cluster", () => {
   let client: RedisClient;
 
   beforeAll(async () => {
-    client = await node({ url: clusterUrl });
+    client = node({ url: clusterUrl });
     // Idempotent: against an already-configured container this just errors.
     await client
       .send(["CLUSTER", "ADDSLOTSRANGE", 0, 16383])
@@ -150,14 +150,14 @@ describeCluster("redis cluster", () => {
     run
   }) => {
     // Guard OFF, so the command reaches the server and Redis is the judge.
-    const redis = benni(client, {});
+    const redis = benni({ client: client });
     await expect(run(redis, untagged)).rejects.toThrow(/CROSSSLOT/);
   });
 
   it.each(cases)('$command succeeds under hashTag: "prefix"', async ({
     run
   }) => {
-    const redis = benni(client, { cluster: assertSameSlot });
+    const redis = benni({ client: client, cluster: assertSameSlot });
     await expect(run(redis, tagged)).resolves.toBeUndefined();
   });
 });

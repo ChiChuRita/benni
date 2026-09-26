@@ -78,7 +78,7 @@ describe("zodJson", () => {
 
     const wire = '{"name":"ada","created":"2020-01-01T00:00:00.000Z"}';
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, ["OK", wire]));
+    const redis = benni({ client: fakeClient(commands, ["OK", wire]) });
 
     await redis.kv(users).set("u1", {
       name: "ada",
@@ -93,7 +93,7 @@ describe("zodJson", () => {
 
   it("rejects an invalid write before anything is sent", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, []));
+    const redis = benni({ client: fakeClient(commands, []) });
     await expect(
       redis.kv(users).set("u1", { name: 42, created: new Date() } as never)
     ).rejects.toThrow(ValidationError);

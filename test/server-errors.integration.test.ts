@@ -28,10 +28,9 @@ const leaderboard = defineSortedSet(`${runPrefix}:collide`, codecs.string());
 
 const openClients: RedisClient[] = [];
 
-async function track(client: Promise<RedisClient>): Promise<RedisClient> {
-  const opened = await client;
-  openClients.push(opened);
-  return opened;
+function track(client: RedisClient): RedisClient {
+  openClients.push(client);
+  return client;
 }
 
 afterAll(async () => {
@@ -45,7 +44,7 @@ afterAll(async () => {
   }
 });
 
-const adapters: Array<[string, () => Promise<RedisClient>]> = [
+const adapters: Array<[string, () => RedisClient]> = [
   ["node", () => track(node({ url: redisUrl }))],
   ["ioredis", () => track(ioredis({ url: redisUrl as string }))]
 ];
@@ -53,8 +52,8 @@ const adapters: Array<[string, () => Promise<RedisClient>]> = [
 describeRedis("normalized server errors", () => {
   for (const [label, createClient] of adapters) {
     it(`surfaces WRONGTYPE from the typed API as RedisServerError on ${label}`, async () => {
-      const client = await createClient();
-      const redis = benni(client);
+      const client = createClient();
+      const redis = benni({ client: client });
 
       await redis.hash(users).hset("1", { name: "Ada", score: 10 });
 
@@ -82,7 +81,7 @@ describeRedis("normalized server errors", () => {
     });
 
     it(`keeps the committed-MULTI and WATCH-abort paths intact on ${label}`, async () => {
-      const client = await createClient();
+      const client = createClient();
       const key = `${runPrefix}:${label}:multi`;
       const watched = `${runPrefix}:${label}:watched`;
 

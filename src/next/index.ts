@@ -58,10 +58,9 @@ end
 return 1`;
 
 /**
- * A connected {@link RedisClient}, a promise of one, a lazy factory, or the
- * handle `benni()` returned. A factory is called (and awaited) once on first
- * use and the client is cached — handy in `cache-handler.mjs`, which Next.js
- * loads at build time when no Redis connection should be opened yet.
+ * A {@link RedisClient} from a benni adapter, or the handle `benni()`
+ * returned. Adapters connect on first use, so `cache-handler.mjs`, which
+ * Next.js loads at build time, opens no connection just by being imported.
  */
 export type RedisClientSource = ClientSource;
 
@@ -124,7 +123,7 @@ export interface NextCacheHandler {
 
 /** Options for {@link cacheHandler}. */
 export type CacheHandlerOptions = {
-  /** A connected {@link RedisClient}, or a lazy factory (awaited once, cached). */
+  /** A {@link RedisClient} from a benni adapter, or a benni handle. */
   readonly client: RedisClientSource;
   /** Key namespace. Default `"next-cache"`. */
   readonly prefix?: string;
@@ -172,7 +171,7 @@ export type CacheHandlerOptions = {
  * import { upstash } from "benni/upstash";
  *
  * export default cacheHandler({
- *   client: () => upstash({
+ *   client: upstash({
  *     url: process.env.UPSTASH_URL,
  *     token: process.env.UPSTASH_TOKEN
  *   })
@@ -494,9 +493,9 @@ function unpackFields(
   );
 }
 
-/** Options for {@link rateLimit}. */
+/** Options for {@link rateLimitMiddleware}. */
 export type NextRateLimitOptions = {
-  /** A connected {@link RedisClient}, or a lazy factory (awaited once, cached). */
+  /** A {@link RedisClient} from a benni adapter, or a benni handle. */
   readonly client: RedisClientSource;
   /** Maximum requests allowed within the window. */
   readonly limit: number;
@@ -526,7 +525,7 @@ export type NextRateLimitOptions = {
 };
 
 /**
- * The function {@link rateLimit} returns: call it with a `Request` to gate
+ * The function {@link rateLimitMiddleware} returns: call it with a `Request` to gate
  * middleware and route handlers, or call `.check(identity)` directly where
  * there is no `Request` (Server Actions).
  */
@@ -552,11 +551,11 @@ export type NextRateLimitHandler = ((
  * @example
  * ```ts
  * // middleware.ts
- * import { rateLimit } from "benni/next";
+ * import { rateLimitMiddleware } from "benni/next";
  * import { upstash } from "benni/upstash";
  *
- * const limiter = rateLimit({
- *   client: () => upstash({
+ * const limiter = rateLimitMiddleware({
+ *   client: upstash({
  *     url: process.env.UPSTASH_URL,
  *     token: process.env.UPSTASH_TOKEN
  *   }),
@@ -586,7 +585,9 @@ export type NextRateLimitHandler = ((
  * }
  * ```
  */
-export function rateLimit(options: NextRateLimitOptions): NextRateLimitHandler {
+export function rateLimitMiddleware(
+  options: NextRateLimitOptions
+): NextRateLimitHandler {
   const prefix = options.prefix ?? DEFAULT_RATELIMIT_PREFIX;
   const identify = options.identify;
   const getClient = createClientResolver(options.client);
@@ -634,9 +635,8 @@ export function rateLimit(options: NextRateLimitOptions): NextRateLimitHandler {
 }
 
 /**
- * The source narrowed to a client. A promise or factory becomes the shared
- * lazy facade, which resolves on first command and retries after a failed
- * connect, so the call sites here can stay `await getClient()`.
+ * The source narrowed to a client, behind a promise so the call sites here
+ * can stay `await getClient()`.
  */
 function createClientResolver(
   source: RedisClientSource

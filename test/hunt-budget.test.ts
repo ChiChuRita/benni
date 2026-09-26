@@ -16,7 +16,7 @@ describeRedis("budget (hunt regressions)", () => {
     pause(windowMs - (Date.now() % windowMs) + 15);
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

@@ -107,9 +107,8 @@ function buildTransaction<TResults extends readonly unknown[]>(
       }
       assertSameSlot?.("EXEC", declared);
       if (client.transaction === undefined) {
-        // The same class the lazy facade throws, so `catch
-        // (UnsupportedCapabilityError)` works whether the client was handed
-        // over connected or behind a promise or factory.
+        // The one class every capability guard throws, so `catch
+        // (UnsupportedCapabilityError)` covers them all.
         throw new UnsupportedCapabilityError(
           TRANSACTION_UNSUPPORTED,
           "transaction"

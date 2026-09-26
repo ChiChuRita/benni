@@ -32,13 +32,19 @@ export type StoreContext = {
   readonly client: RedisClient;
   readonly onPubSubError?: (error: unknown) => void;
   /**
-   * The cross-slot guard, present only under `benni(client, { cluster: assertSameSlot })`.
+   * The cross-slot guard, present only under `benni({ client, cluster: assertSameSlot })`.
    *
    * Every multi-key call site invokes it as `assertSameSlot?.(…)`, so when it
    * is undefined the optional call short-circuits argument evaluation and the
    * key array is never even built. That is what makes the default path free.
    */
   readonly assertSameSlot?: SlotGuard;
+  /**
+   * Register something this handle started that `redis.close()` must stop
+   * (a queue worker); returns the unregister function. Absent outside a
+   * handle, e.g. for a primitive built straight from a client.
+   */
+  readonly track?: (running: { stop(): Promise<void> }) => () => void;
   /** Get or create the memoized singleton stored under `key`. */
   shared<T>(key: string, create: () => T): T;
   /** The memoized singleton if it was ever created; never creates one. */
@@ -128,13 +134,15 @@ export function resolveSessionStore(
 export function createStoreContext(
   client: RedisClient,
   onPubSubError?: (error: unknown) => void,
-  assertSameSlot?: SlotGuard
+  assertSameSlot?: SlotGuard,
+  track?: StoreContext["track"]
 ): StoreContext {
   const singletons = new Map<string, unknown>();
   return {
     client,
     onPubSubError,
     assertSameSlot,
+    track,
     shared<T>(key: string, create: () => T): T {
       if (!singletons.has(key)) singletons.set(key, create());
       return singletons.get(key) as T;

@@ -20,14 +20,11 @@ export type RedisClientCapability = "transaction" | "session" | "subscriber";
  * capability the call needed: `transaction` (MULTI/EXEC), `session` (a borrowed
  * connection, for WATCH and blocking reads), or `subscriber` (Pub/Sub).
  *
- * A *connected* client advertises those by having the method defined, so a
- * caller can feature-detect and pick a fallback before calling. A client passed
- * as a promise or a factory cannot: the facade over it has to define all three
- * up front, because at bind time there is nothing yet to interrogate, and so it
- * reports the gap from inside the call with this error instead. Catching it is
- * what lets a caller with a legitimate fallback take that fallback on the lazy
- * path too, while a caller that needs the real capability still fails loudly.
- * {@link capability} says which one was missing without parsing the message.
+ * A client advertises those by having the method defined, and an adapter's
+ * type says which it has, so a handle over a client without sessions has no
+ * `session()` to call at all. This error is the runtime backstop for code that
+ * is not type-checked or that forces a call through a cast. {@link capability}
+ * says which one was missing without parsing the message.
  *
  * Extends `TypeError`, and keeps the message the connected-client guards use
  * verbatim, so existing `catch` / `instanceof TypeError` / message-matching

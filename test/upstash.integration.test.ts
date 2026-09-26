@@ -23,12 +23,10 @@ describeUpstash("upstash", () => {
     // block is skipped; transaction (/multi-exec) and every store run.
     await expectRedisClientContract(
       () =>
-        Promise.resolve(
-          upstash({
-            url: upstashUrl as string,
-            token: upstashToken
-          })
-        ),
+        upstash({
+          url: upstashUrl as string,
+          token: upstashToken
+        }),
       {
         // SRH answers a failed /multi-exec with an empty-bodied HTTP 500, so the
         // rejection carries no Redis error to normalize. Verified against
@@ -66,7 +64,7 @@ describeUpstash("upstash", () => {
     async () => {
       const key = `benni:test:upstash:binary:${Date.now()}`;
       const writer = await createClient({ url: redisUrl }).connect();
-      const tcp = await node({ url: redisUrl });
+      const tcp = node({ url: redisUrl });
       const client = upstash({
         url: upstashUrl as string,
         token: upstashToken

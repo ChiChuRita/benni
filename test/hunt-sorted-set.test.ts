@@ -122,7 +122,7 @@ describeRedis("infinite scores survive the full round trip", () => {
   });
 
   it("reads back a score it wrote and ranges over it", async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
     const store = createSortedSetStore(client, live);
 
     await store.zadd("ranked", [

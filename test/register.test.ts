@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RedisCommand } from "../src/core/types.js";
+import type { FullRedisClient, RedisCommand } from "../src/core/types.js";
 import { type Benni, benni } from "../src/index.js";
 import { hash, number, string } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
@@ -31,7 +31,9 @@ type Expect<T extends true> = T;
 describe("Register", () => {
   it("types the bare Benni handle from the registered schema", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, [1]), { schema });
+    // A full client, the one the bare `Benni` assumes.
+    const client = fakeClient(commands, [1]) as FullRedisClient;
+    const redis = benni({ client, schema });
 
     // No generic argument: the registration supplies it.
     async function bump(handle: Benni, id: string) {

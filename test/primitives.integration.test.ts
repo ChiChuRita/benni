@@ -24,7 +24,7 @@ describeRedis("primitives (live)", () => {
   const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();
@@ -618,7 +618,7 @@ describeRedis("primitives (live)", () => {
         windowMs: 60_000
       })
     };
-    const redis = benni(client, { schema });
+    const redis = benni({ client: client, schema });
     const id = uid();
 
     let loads = 0;

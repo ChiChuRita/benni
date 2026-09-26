@@ -1,3 +1,8 @@
+import {
+  type ConnectionEvents,
+  lazyConnection,
+  reporter
+} from "../core/connection.js";
 import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
@@ -44,17 +49,28 @@ function normalizeError(error: unknown, command?: string): unknown {
   return redisServerError(error, command);
 }
 
+/** Bun's Redis client options, plus `url` and the {@link ConnectionEvents} hooks. */
 export type BunOptions = {
   readonly url?: string;
-} & Bun.RedisOptions;
+} & Bun.RedisOptions &
+  ConnectionEvents;
+
+/**
+ * What {@link bun} returns: transactions, sessions, and channel subscriptions,
+ * but no pattern subscriptions (Bun's `psubscribe` is broken upstream), so a
+ * handle over it has no `redis.pubsub.pattern()`. Name it when typing a
+ * handle by hand: `Benni<typeof schema, BunClient>`.
+ */
+export interface BunClient extends RedisClient {
+  transaction(commands: readonly RedisCommand[]): Promise<RedisReply[]>;
+  session(): Promise<RedisSession>;
+  subscriber(): Promise<RedisSubscriber>;
+}
 
 async function connectBunClient(
-  options?: BunOptions
+  url: string | undefined,
+  clientOptions: Bun.RedisOptions
 ): Promise<Bun.RedisClient> {
-  if (typeof Bun === "undefined") {
-    throw new TypeError("bun requires the Bun runtime");
-  }
-  const { url, ...clientOptions } = options ?? {};
   // Dial once fail-fast before building the real client. A Bun client with
   // autoReconnect on cannot be cancelled: if its first connect() rejects, the
   // background reconnect timer keeps running, close() does not stop it, and
@@ -73,11 +89,16 @@ async function connectBunClient(
   return client;
 }
 
-async function bunClient(options?: BunOptions): Promise<RedisClient> {
-  const client = await connectBunClient(options);
+function bunClient(options?: BunOptions): BunClient {
+  if (typeof Bun === "undefined") {
+    throw new TypeError("bun requires the Bun runtime");
+  }
   // Bun's duplicate() takes no option overrides (verified on 1.3.14), so
   // sessions are constructed fresh from the closed-over url/options instead.
-  const { url, ...clientOptions } = options ?? {};
+  const { url, onError, onReconnect, ...clientOptions } = options ?? {};
+  const report = reporter(onError);
+  // Created on first use, and again after Bun gives up reconnecting.
+  let client: Bun.RedisClient | undefined;
   // Leak backstop: live sessions leased from this client. The parent close()
   // force-closes survivors so a leaked session cannot pin a connection past
   // the client's lifetime.
@@ -88,13 +109,48 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
   // Sets, would open a live socket nobody will ever iterate again.
   let clientClosed = false;
 
+  const connection = lazyConnection("benni/bun", async () => {
+    let fresh: Bun.RedisClient;
+    try {
+      fresh = await connectBunClient(url, clientOptions);
+    } catch (error) {
+      // Bun has no 'error' event to report this through.
+      report(error);
+      throw error;
+    }
+    if (clientClosed) throw discardOnClose(fresh);
+    // Assigned after the first connect, so it sees reconnects only.
+    fresh.onconnect = () => onReconnect?.("client");
+    // Bun fires onclose once the connection is gone for good: our close(),
+    // or autoReconnect giving up. In the second case the next command
+    // connects afresh instead of failing forever.
+    fresh.onclose = (error) => {
+      if (client === fresh) client = undefined;
+      if (!clientClosed) report(error);
+    };
+    client = fresh;
+  });
+
+  /** The connected client, connecting first if there is none. */
+  async function connected(): Promise<Bun.RedisClient> {
+    if (clientClosed) throw closedError();
+    if (client === undefined) await connection.ready();
+    if (clientClosed) throw closedError();
+    // Gone again between the connect and here: Bun gave up already.
+    if (client === undefined) {
+      throw new Error("benni/bun lost the connection to Redis");
+    }
+    return client;
+  }
+
   return {
     async send(command: RedisCommand) {
-      return sendCommand(client, command);
+      return sendCommand(await connected(), command);
     },
     async pipeline(commands: readonly RedisCommand[]) {
       // Bun auto-pipelines: enqueueing every send synchronously batches the
       // commands into one write, preserving enqueue order on the wire.
+      const client = await connected();
       const settled = await Promise.allSettled(
         commands.map((command) => sendCommand(client, command))
       );
@@ -110,6 +166,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       // synchronously: Bun's auto-pipelining writes them contiguously in
       // enqueue order, so no other command on this connection can interleave
       // into the transaction. Awaiting between sends would break that.
+      const client = await connected();
       const pending = [
         rawSend(client, ["MULTI"]),
         ...commands.map((command) => rawSend(client, command)),
@@ -206,7 +263,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
     async subscriber(): Promise<RedisSubscriber> {
       if (clientClosed) throw closedError();
       // Subscribing takes over a connection, so open a dedicated one.
-      const subscriberClient = await connectBunClient(options);
+      const subscriberClient = await connectBunClient(url, clientOptions);
       if (clientClosed) throw discardOnClose(subscriberClient);
       const listeners = new Map<string, (message: string) => void>();
       let closed = false;
@@ -216,8 +273,9 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       // drop the dead lease, the equivalent of node-redis's `isOpen` going
       // false. `connected` is not: it dips during every reconnect.
       let gone = false;
-      subscriberClient.onclose = () => {
+      subscriberClient.onclose = (error) => {
         gone = true;
+        if (!closed) report(error);
       };
       // Bun reconnects a dropped subscriber connection on its own but does not
       // resubscribe (verified on 1.4.2): the socket comes back with no
@@ -235,7 +293,9 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       // wire). SUBSCRIBE is idempotent server-side, so overlapping a
       // subscribe() Bun queued during the outage is harmless.
       subscriberClient.onconnect = () => {
-        if (closed || listeners.size === 0) return;
+        if (closed) return;
+        onReconnect?.("subscriber");
+        if (listeners.size === 0) return;
         subscriberClient.send("SUBSCRIBE", [...listeners.keys()]).catch(() => {
           // The connection dropped again mid-resubscribe; Bun's next
           // reconnect fires onconnect and this runs again.
@@ -287,7 +347,7 @@ async function bunClient(options?: BunOptions): Promise<RedisClient> {
       for (const subscriber of [...subscribers]) {
         await subscriber.close();
       }
-      client.close();
+      client?.close();
     }
   };
 }
@@ -317,7 +377,14 @@ function discardOnClose(duplicate: Bun.RedisClient): Error {
  * The Bun adapter, backed by Bun's built-in Redis client. `bun(options)`
  * returns a `RedisClient` that leases sessions and a subscriber connection.
  * Channel subscriptions only — Bun 1.3.14's `psubscribe` is broken upstream, so
- * the subscriber omits pattern support and core surfaces a clear error.
+ * the subscriber omits pattern support and the handle's type has no pattern
+ * subscribe (core still throws a clear error if one is forced through).
+ *
+ * Returns synchronously and connects on the first command, so nothing touches
+ * the network at import time. A connect that fails rejects the commands
+ * waiting on it and the next command tries again, with backoff. Once
+ * connected, Bun's `autoReconnect` handles drops; if it gives up, the next
+ * command connects afresh.
  */
 export const bun = bunClient;
 

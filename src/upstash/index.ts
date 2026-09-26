@@ -1,4 +1,5 @@
 import { decodeBase64 } from "../core/base64.js";
+import { type ConnectionEvents, reporter } from "../core/connection.js";
 import { redisServerError } from "../core/errors.js";
 import type {
   RedisClient,
@@ -30,7 +31,25 @@ export type UpstashOptions = {
    * lifetime on an edge runtime.
    */
   readonly signal?: AbortSignal;
+  /**
+   * Called with every request that failed in transit: a network error, an
+   * HTTP failure status, a non-JSON body, a timeout. The command still
+   * rejects with it. Error replies from Redis, and aborts through your own
+   * `signal`, are not reported. See {@link ConnectionEvents}; `onReconnect`
+   * does not apply, since HTTP holds no connection.
+   */
+  readonly onError?: ConnectionEvents["onError"];
 };
+
+/**
+ * What {@link upstash} returns: commands, pipelines, and `/multi-exec`
+ * transactions, but no sessions and no subscriber connection, so a handle
+ * over it has no `session()`, `watch()`, or `subscribe()`. Name it when typing
+ * a handle by hand: `Benni<typeof schema, UpstashClient>`.
+ */
+export interface UpstashClient extends RedisClient {
+  transaction(commands: readonly RedisCommand[]): Promise<RedisReply[]>;
+}
 
 /** Every string in a result is base64, see {@link decodeResult}. */
 const utf8 = new TextDecoder();
@@ -48,9 +67,10 @@ const utf8 = new TextDecoder();
  * `subscriber`: blocking commands (`BLPOP`, `XREAD BLOCK`, …), `WATCH`-based
  * optimistic transactions, and Pub/Sub *subscribing* all need a persistent
  * exclusive connection, so they are only available through the TCP adapters
- * (`benni/node`, `benni/ioredis`, `benni/bun`). `redis.session()` /
- * `redis.watch()` and subscribing throw a clear `TypeError` when used with
- * this client. Publishing is a plain stateless command and works here.
+ * (`benni/node`, `benni/ioredis`, `benni/bun`). A handle over this client has
+ * no `redis.session()`, `redis.watch()`, or `subscribe()` in its type, and
+ * they throw `UnsupportedCapabilityError` if forced through. Publishing is a
+ * plain stateless command and works here.
  *
  * Responses are requested base64-encoded (`Upstash-Encoding: base64`) and
  * decoded here, the way Upstash's own client does by default: a value that is
@@ -63,7 +83,7 @@ const utf8 = new TextDecoder();
  * Binary (`Uint8Array`) command arguments are not supported over REST; use the
  * `bytes()` codec (which stores base64 strings) or a TCP adapter.
  */
-export function upstash(options: UpstashOptions): RedisClient {
+export function upstash(options: UpstashOptions): UpstashClient {
   const doFetch = options.fetch ?? globalThis.fetch;
   if (typeof doFetch !== "function") {
     throw new TypeError(
@@ -87,6 +107,7 @@ export function upstash(options: UpstashOptions): RedisClient {
       `upstash() timeoutMs must be a positive number of milliseconds, got ${String(timeoutMs)}`
     );
   }
+  const report = reporter(options.onError);
   const base = options.url.replace(/\/+$/, "");
   const authorization = `Bearer ${options.token}`;
   // HTTP holds no connection, so close() has nothing to tear down. It still
@@ -170,6 +191,11 @@ export function upstash(options: UpstashOptions): RedisClient {
         exchange(path, body, controller.signal),
         aborted
       ]);
+    } catch (error) {
+      // An abort through the caller's own signal is their decision, not a
+      // transport failure.
+      if (!signal?.aborted) report(error);
+      throw error;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", forward);

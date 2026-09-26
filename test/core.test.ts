@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import type {
   RedisClient,
   RedisCommand,
@@ -14,17 +15,18 @@ import {
   createSetStore,
   createSortedSetStore,
   createStringStore,
-  defineHash,
-  defineKeyspace,
-  defineList,
-  definePubSubChannel,
-  definePubSubPattern,
-  defineSet,
-  defineSortedSet,
   describeReply,
   ReplyShapeError,
   ValidationError
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
+import { defineList } from "../src/core/list.js";
+import {
+  definePubSubChannel,
+  definePubSubPattern
+} from "../src/core/pubsub.js";
+import { defineSet } from "../src/core/set.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 
 describe("codec soundness and typed errors", () => {
   it("number() decode surfaces a ReplyShapeError carrying the value", () => {

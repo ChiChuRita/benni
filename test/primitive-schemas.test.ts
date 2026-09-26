@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RedisCommand } from "../src/core/types.js";
+import type { FullRedisClient, RedisCommand } from "../src/core/types.js";
 import { type Benni, benni } from "../src/index.js";
 import {
   budget,
@@ -44,8 +44,10 @@ const schema = {
   tokens
 };
 
+// Typed as a full client, the one a bare `Benni<typeof schema>` assumes.
 function bind(commands: RedisCommand[], replies: unknown[]) {
-  return benni(fakeClient(commands, replies as never), { schema });
+  const client = fakeClient(commands, replies as never) as FullRedisClient;
+  return benni({ client, schema });
 }
 
 describe("primitives in the query registry", () => {
@@ -106,7 +108,10 @@ describe("primitives in the query registry", () => {
 
   it("refuses a copied primitive schema at bind time, naming the export", () => {
     expect(() =>
-      benni(fakeClient([], []), { schema: { apiLimit: { ...apiLimit } } })
+      benni({
+        client: fakeClient([], []),
+        schema: { apiLimit: { ...apiLimit } }
+      })
     ).toThrow(/schema\.apiLimit/);
   });
 });

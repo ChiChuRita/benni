@@ -175,7 +175,7 @@ describeRedis("stream fixes against real Redis", () => {
   let client: RedisClient;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
 
   afterAll(async () => {

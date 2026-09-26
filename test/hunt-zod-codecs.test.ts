@@ -25,7 +25,7 @@ describe("zodJson non-finite numbers", () => {
   it("sends nothing when a write carries a non-finite number", async () => {
     const scores = kv("score", zodJson(z.record(z.string(), z.unknown())));
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, ["OK"]));
+    const redis = benni({ client: fakeClient(commands, ["OK"]) });
 
     await expect(
       redis.kv(scores).set("s1", { rate: Number.POSITIVE_INFINITY })
@@ -82,7 +82,7 @@ describe("zodCodec encoded side", () => {
 
     const blobs = kv("blob", zodCodec(z.any()));
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, ["OK"]));
+    const redis = benni({ client: fakeClient(commands, ["OK"]) });
     await expect(redis.kv(blobs).set("b1", { a: 1 })).rejects.toThrow(
       ValidationError
     );

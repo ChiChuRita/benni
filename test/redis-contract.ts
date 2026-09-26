@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
   createCounterStore,
@@ -8,16 +9,18 @@ import {
   createSetStore,
   createSortedSetStore,
   createStringStore,
-  defineHash,
-  defineKeyspace,
-  defineList,
-  definePubSubChannel,
-  definePubSubPattern,
-  defineSet,
-  defineSortedSet,
+  type FullRedisClient,
   type RedisClient,
   RedisServerError
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
+import { defineList } from "../src/core/list.js";
+import {
+  definePubSubChannel,
+  definePubSubPattern
+} from "../src/core/pubsub.js";
+import { defineSet } from "../src/core/set.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 import {
   booleanNumberReply,
   createTransaction,
@@ -27,7 +30,7 @@ import {
 } from "../src/core/transaction.js";
 import { benni } from "../src/index.js";
 
-export type RedisClientFactory = () => Promise<RedisClient>;
+export type RedisClientFactory = () => RedisClient;
 
 /**
  * Resolve to whatever a promise rejected with. `expect(...).rejects` cannot
@@ -123,8 +126,10 @@ export async function expectPubSubSurvivesReconnect(
   createClient: RedisClientFactory,
   options: PubSubReconnectOptions = {}
 ): Promise<void> {
-  const client = await createClient();
-  const redis = benni(client);
+  const client = createClient();
+  // Typed as a full client: pattern subscriptions are only exercised when
+  // `options.patterns` says the adapter has them.
+  const redis = benni({ client: client as FullRedisClient });
   const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const channelCount = 7;
   const channels = Array.from({ length: channelCount }, (_, index) =>
@@ -198,7 +203,7 @@ export async function expectRedisClientContract(
   createClient: RedisClientFactory,
   options: RedisClientContractOptions = {}
 ): Promise<void> {
-  const client = await createClient();
+  const client = createClient();
   const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const rawKey = `benni:test:${id}`;
   const profiles = defineKeyspace(
@@ -448,7 +453,7 @@ export async function expectRedisClientContract(
 
       // Leak backstop: closing the parent client force-closes a surviving
       // session leased from it.
-      const parent = await createClient();
+      const parent = createClient();
       expect(parent.session).toBeDefined();
       const survivor = await parent.session!();
       expect(survivor.closed).toBe(false);
@@ -504,7 +509,7 @@ export async function expectRedisClientContract(
       await expect(subscriber.close()).resolves.toBeUndefined();
 
       // Leak backstop: the parent client force-closes a surviving subscriber.
-      const parentWithSub = await createClient();
+      const parentWithSub = createClient();
       const survivingSubscriber = await parentWithSub.subscriber!();
       expect(survivingSubscriber.closed).toBe(false);
       await parentWithSub.close();

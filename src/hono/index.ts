@@ -4,15 +4,14 @@ import { type ClientSource, resolveClient } from "../core/client-source.js";
 import { ratelimit as createRatelimiter } from "../primitives/ratelimit.js";
 
 /**
- * A Redis client, however you have it: the client itself, a promise of one
- * (e.g. a top-level `connect()` call), a factory that produces one, or the
- * handle `benni()` returned. The source is resolved once on first use and
- * cached for every later request.
+ * A Redis client from a benni adapter, or the handle `benni()` returned.
+ * Adapters connect on first use, so building the middleware at module scope
+ * opens nothing.
  */
 export type { ClientSource };
 
-export type RatelimitOptions = {
-  /** The Redis client (or a promise/factory of one; awaited once, cached). */
+export type RateLimitMiddlewareOptions = {
+  /** A Redis client from a benni adapter, or a benni handle. */
   readonly client: ClientSource;
   /** Maximum requests allowed within the window. */
   readonly limit: number;
@@ -65,12 +64,12 @@ export type RatelimitOptions = {
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { ratelimit } from "benni/hono";
+ * import { rateLimitMiddleware } from "benni/hono";
  *
  * const app = new Hono();
  * app.use(
  *   "*",
- *   ratelimit({
+ *   rateLimitMiddleware({
  *     client,
  *     limit: 100,
  *     windowMs: 60_000,
@@ -80,7 +79,9 @@ export type RatelimitOptions = {
  * app.get("/", (c) => c.text("hello"));
  * ```
  */
-export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
+export function rateLimitMiddleware(
+  options: RateLimitMiddlewareOptions
+): MiddlewareHandler {
   const limiter = createRatelimiter(resolveClient(options.client), {
     limit: options.limit,
     windowMs: options.windowMs,
@@ -111,17 +112,17 @@ export function ratelimit(options: RatelimitOptions): MiddlewareHandler {
     await next();
     // After next(), not before: headers set before the handler runs land in
     // Hono's prepared-header bag, which is dropped whenever a downstream
-    // handler assigns a fresh Response to c.res (benni's own cache() does that
-    // on every hit). Setting them on the finalized response instead makes the
-    // documented headers survive whatever the handler returned.
+    // handler assigns a fresh Response to c.res (benni's own cacheMiddleware()
+    // does that on every hit). Setting them on the finalized response instead
+    // makes the documented headers survive whatever the handler returned.
     c.header("X-RateLimit-Limit", String(result.limit));
     c.header("X-RateLimit-Remaining", String(result.remaining));
     c.header("X-RateLimit-Reset", String(Math.ceil(result.resetMs / 1000)));
   };
 }
 
-export type CacheOptions = {
-  /** The Redis client (or a promise/factory of one; awaited once, cached). */
+export type CacheMiddlewareOptions = {
+  /** A Redis client from a benni adapter, or a benni handle. */
   readonly client: ClientSource;
   /** Entry lifetime in milliseconds. */
   readonly ttlMs: number;
@@ -147,8 +148,8 @@ export type CacheOptions = {
    * visitor's page and replay it to everyone. Set `true` only when nothing
    * behind this middleware varies by cookie, for example when every visitor
    * carries analytics cookies the responses ignore. `benni/hono`'s own
-   * `session()` stays guarded either way: a response that read the session
-   * is never stored.
+   * `sessionMiddleware()` stays guarded either way: a response that read the
+   * session is never stored.
    */
   readonly ignoreCookies?: boolean;
 };
@@ -216,10 +217,10 @@ function variesBeyondKey(res: Response, vary: readonly string[]): boolean {
 }
 
 /**
- * Set by `session()` on its bag so `cache()` can tell whether the response it
- * is about to store was derived from session state, and so `getSession()` can
- * mark the bag touched from the outside. Module-local symbols, not part of the
- * public `Session` shape.
+ * Set by `sessionMiddleware()` on its bag so `cacheMiddleware()` can tell
+ * whether the response it is about to store was derived from session state,
+ * and so `getSession()` can mark the bag touched from the outside.
+ * Module-local symbols, not part of the public `Session` shape.
  */
 const SESSION_TOUCHED = Symbol("benni.hono.sessionTouched");
 const SESSION_TOUCH = Symbol("benni.hono.sessionTouch");
@@ -248,7 +249,8 @@ function sessionWasTouched(c: Context): boolean {
  * includes `cookie` or `ignoreCookies` is set), and ranged requests. Never
  * stored: anything but a plain `200`, responses carrying `set-cookie`, a
  * `no-store`/`no-cache`/`private` `Cache-Control`, or a `Vary` naming a
- * header the key does not fold in, and responses that read `session()`.
+ * header the key does not fold in, and responses that read
+ * `sessionMiddleware()`.
  *
  * Fails open: every Redis failure, and any stored entry it cannot read, is a
  * miss, and the request always runs. A cache is an optimization, so an outage
@@ -257,15 +259,17 @@ function sessionWasTouched(c: Context): boolean {
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { cache } from "benni/hono";
+ * import { cacheMiddleware } from "benni/hono";
  *
  * const app = new Hono();
- * app.get("/report", cache({ client, ttlMs: 30_000 }), (c) =>
+ * app.get("/report", cacheMiddleware({ client, ttlMs: 30_000 }), (c) =>
  *   c.json({ generatedAt: Date.now() })
  * );
  * ```
  */
-export function cache(options: CacheOptions): MiddlewareHandler {
+export function cacheMiddleware(
+  options: CacheMiddlewareOptions
+): MiddlewareHandler {
   const client = resolveClient(options.client);
   const prefix = options.prefix ?? "hono-cache";
   const key = options.key ?? defaultCacheKey;
@@ -338,12 +342,13 @@ export function cache(options: CacheOptions): MiddlewareHandler {
     // key and replayed, Content-Range stripped, to clients that sent none.
     if (res.status !== 200 || res.headers.get("set-cookie") !== null) return;
     // The set-cookie check alone is not enough to catch a per-user response.
-    // A returning visitor already has their sid cookie, so session() sets no
-    // Set-Cookie at all, and when session() is the outer middleware (the
-    // documented `app.use("*", session())` shape) it appends its header after
-    // this runs anyway. Either way the guard never fires and one user's
-    // authenticated body gets stored under a key that does not vary by
-    // session, then served to everyone else. Ask the session itself instead.
+    // A returning visitor already has their sid cookie, so sessionMiddleware()
+    // sets no Set-Cookie at all, and when sessionMiddleware() is the outer
+    // middleware (the documented `app.use("*", sessionMiddleware())` shape) it
+    // appends its header after this runs anyway. Either way the guard never
+    // fires and one user's authenticated body gets stored under a key that
+    // does not vary by session, then served to everyone else. Ask the session
+    // itself instead.
     if (sessionWasTouched(c)) return;
     // The handler's own directives win over anything inferred here: no-store,
     // no-cache, or private all say "not yours to share", and a Vary naming a
@@ -402,8 +407,8 @@ export type Session = {
   readonly isNew: boolean;
 };
 
-export type SessionOptions = {
-  /** The Redis client (or a promise/factory of one; awaited once, cached). */
+export type SessionMiddlewareOptions = {
+  /** A Redis client from a benni adapter, or a benni handle. */
   readonly client: ClientSource;
   /** Session lifetime in seconds; refreshed on every write. Default `86400`. */
   readonly ttlSeconds?: number;
@@ -466,10 +471,10 @@ function readCookie(
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { getSession, session } from "benni/hono";
+ * import { getSession, sessionMiddleware } from "benni/hono";
  *
  * const app = new Hono();
- * app.use("*", session({ client }));
+ * app.use("*", sessionMiddleware({ client }));
  * app.post("/login", (c) => {
  *   const bag = getSession(c);
  *   bag.regenerate();
@@ -478,7 +483,9 @@ function readCookie(
  * });
  * ```
  */
-export function session(options: SessionOptions): MiddlewareHandler {
+export function sessionMiddleware(
+  options: SessionMiddlewareOptions
+): MiddlewareHandler {
   const client = resolveClient(options.client);
   const ttlSeconds = options.ttlSeconds ?? 86_400;
   const prefix = options.prefix ?? "hono-session";
@@ -520,9 +527,10 @@ export function session(options: SessionOptions): MiddlewareHandler {
 
     let dirty = false;
     // Reads count too, not just writes: a handler that only *reads* the
-    // session still produces a per-user response, which is what cache() has
-    // to know before it stores anything. The id and isNew are accessors for
-    // the same reason - reading the identity is reading the session.
+    // session still produces a per-user response, which is what
+    // cacheMiddleware() has to know before it stores anything. The id and
+    // isNew are accessors for the same reason - reading the identity is
+    // reading the session.
     let touched = false;
     const bag: Session = {
       get: <T = unknown>(key: string) => {
@@ -628,10 +636,10 @@ export function getSession(c: Context): Session {
   const bag = c.get("session") as (Session & TouchTracked) | undefined;
   if (!bag) {
     throw new TypeError(
-      "getSession(c) requires the session() middleware to run first"
+      "getSession(c) requires sessionMiddleware() to run first"
     );
   }
-  // Reaching for the bag at all counts as a touch, so cache() stays safe
+  // Reaching for the bag at all counts as a touch, so cacheMiddleware() stays safe
   // however the handler uses it. Marking only on the members that exist today
   // leaves the guard one new property away from being defeated again.
   bag[SESSION_TOUCH]?.();

@@ -12,7 +12,7 @@ import { fakeClient } from "./fake-client.js";
 function expectTypeErrorsOnly() {
   const views = kv("views", number());
   const texts = kv("text", string());
-  const redis = benni(fakeClient([], []), { schema: { views, texts } });
+  const redis = benni({ client: fakeClient([], []), schema: { views, texts } });
 
   // @ts-expect-error INCR is a counter command: use redis.counter(schema).incr(id)
   void redis.query.views.incr("post-1");
@@ -39,7 +39,7 @@ void expectTypeErrorsOnly;
 describe("kv view hints", () => {
   it("adds nothing at runtime", () => {
     const views = kv("views", number());
-    const redis = benni(fakeClient([], []), { schema: { views } });
+    const redis = benni({ client: fakeClient([], []), schema: { views } });
     const store = redis.query.views as unknown as Record<string, unknown>;
 
     for (const command of [
@@ -61,7 +61,8 @@ describe("kv view hints", () => {
   it("still serves the commands a kv keyspace does have", async () => {
     const commands: Parameters<typeof fakeClient>[0] = [];
     const views = kv("views", number());
-    const redis = benni(fakeClient(commands, ["OK", "7"]), {
+    const redis = benni({
+      client: fakeClient(commands, ["OK", "7"]),
       schema: { views }
     });
 

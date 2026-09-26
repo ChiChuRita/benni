@@ -1,4 +1,3 @@
-import { UnsupportedCapabilityError } from "./errors.js";
 import type { RedisClient, RedisCommand, RedisReply } from "./types.js";
 
 /**
@@ -7,69 +6,39 @@ import type { RedisClient, RedisCommand, RedisReply } from "./types.js";
  * instead of forcing `cache(redis.raw, …)` on callers who already hold a handle
  * and would otherwise have to thread two objects through their app.
  */
-export type ClientProvider = { readonly raw: RedisClient };
+export type ClientProvider<TClient extends RedisClient = RedisClient> = {
+  readonly raw: TClient;
+};
 
 /**
- * A client, however you have it: connected, still connecting, or not yet
- * created. Every entry point that needs a client takes this, so an adapter's
- * promise never has to be awaited at module scope:
+ * What every entry point that needs a client takes: an adapter's client, or a
+ * benni handle whose client to share.
  *
  * ```ts
  * export const redis = benni({ client: node({ url }), schema });
  * ```
  *
- * The two lazy forms are not the same kind of lazy, and the difference is what
- * `close()` and error reporting hang on:
- *
- * - A **promise** is already in flight by the time it is passed here, so it is
- *   adopted at bind time. Its rejection is observed immediately (an unobserved
- *   one is a process-killing `unhandledRejection`, not an error the first
- *   command could report), and a client it opens is tracked so `close()` can
- *   close it even if no command was ever sent. A settled rejection cannot be
- *   retried, so every command reports that same connect failure.
- * - A **factory** is not called until the first command. Nothing is opened, so
- *   `close()` on an unused client opens nothing, and a failed connect is
- *   genuinely retried on the next command.
- *
- * Either way a connection failure surfaces at the first command rather than at
- * construction, the same trade `benni/hono` and `benni/next` already make.
+ * Adapters return their client synchronously and connect on first use, so
+ * there is nothing to await at module scope and no promise or factory form to
+ * accept. A handle built over another handle shares its client and does not
+ * own it: closing the second handle leaves the first one's client open.
  */
-export type ClientSource =
-  | RedisClient
-  | ClientProvider
-  | Promise<RedisClient | ClientProvider>
-  | (() =>
-      | RedisClient
-      | ClientProvider
-      | Promise<RedisClient | ClientProvider>);
+export type ClientSource<TClient extends RedisClient = RedisClient> =
+  | TClient
+  | ClientProvider<TClient>;
 
 /**
- * The capability messages a lazily resolved client has to raise itself.
- *
- * A resolved client advertises the optional parts of the contract by having
- * `transaction`/`session`/`subscriber` defined, and every caller guards on that
- * before calling. A facade over an unresolved source cannot know yet, so it
- * defines all three and raises the guard's own message from inside the call
- * instead. The strings therefore have to be the ones the guards use, which is
- * why they live here — the one module both sides can import without pulling
- * anything else in (`core/pubsub.ts` imports the subscriber message from here
- * rather than the reverse, which would pin the whole Pub/Sub hub into every
- * bundle that binds a client).
+ * The capability messages, shared by every guard that raises one. They live
+ * here, the one module both `benni()` and the stores can import without
+ * pulling anything else in (`core/pubsub.ts` imports the subscriber message
+ * from here rather than the reverse, which would pin the whole Pub/Sub hub
+ * into every bundle that binds a client).
  */
 export const SESSION_UNSUPPORTED = "Redis client does not support sessions";
 export const TRANSACTION_UNSUPPORTED =
   "Redis client does not support transactions";
 export const SUBSCRIBER_UNSUPPORTED =
   "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node, benni/ioredis, or benni/bun.";
-
-/**
- * Refused because `close()` already ran. Matches the shape the adapters use for
- * the same situation (`benni/node client is closed`, node-redis's own
- * `ClientClosedError`): once a client is closed it stays closed, and a command
- * that lands afterwards is a bug in the caller's shutdown ordering, not a
- * reason to open a fresh connection.
- */
-export const CLIENT_CLOSED = "Redis client is closed";
 
 /**
  * Both required halves of the client contract, not just `send`.
@@ -96,199 +65,76 @@ function isProvider(value: object): value is ClientProvider {
   return typeof raw === "object" && raw !== null && isClient(raw);
 }
 
-function unwrap(resolved: RedisClient | ClientProvider): RedisClient {
-  if (isClient(resolved)) return resolved;
-  if (isProvider(resolved)) return resolved.raw;
-  throw new TypeError(
-    "Redis client source resolved to something that is neither a client (no send()) nor a benni handle (no raw client)."
-  );
-}
-
-type Resolver = {
-  /** Resolve on first call, then hand back the same client. */
-  get(): Promise<RedisClient>;
-  /** The in-flight or settled resolution, or undefined if none was started. */
-  peek(): Promise<RedisClient> | undefined;
-};
-
-function resolveOnce(
-  source: Exclude<ClientSource, RedisClient | ClientProvider>
-): Resolver {
-  let cached: Promise<RedisClient> | undefined;
-  return {
-    get() {
-      if (!cached) {
-        cached = Promise.resolve(
-          typeof source === "function" ? source() : source
-        ).then(unwrap);
-        // Two jobs, and the catch is load-bearing for both. It keeps the
-        // rejection observed, so a connect that fails before any command is
-        // reported through a command rather than crashing the process with an
-        // unhandledRejection. And it drops the failed resolution, so a factory
-        // is called again on the next command instead of being poisoned by one
-        // bad connect. (A promise re-derives from the same settled rejection
-        // and so reports that same failure every time, which is the most a
-        // caller who handed over an already-failed promise can be given.)
-        cached.catch(() => {
-          cached = undefined;
-        });
-      }
-      return cached;
-    },
-    peek() {
-      return cached;
-    }
-  };
+/**
+ * Why `source` is not a client, in terms of what to write instead. The common
+ * mistakes each get their own answer: handing over the driver's client
+ * unwrapped, and the promise and factory forms 0.1 accepted.
+ */
+function refusal(source: unknown): string {
+  const fn = (name: string) =>
+    typeof (source as Record<string, unknown> | null)?.[name] === "function";
+  if (typeof source === "function") {
+    return "benni no longer takes a client factory. Adapters return their client synchronously and connect on the first command, so pass the client itself: `client: node({ url })`.";
+  }
+  if (fn("then")) {
+    return "benni no longer takes a promise of a client. Adapters return their client synchronously and connect on the first command, so pass `node({ url })` itself, without awaiting it; if the promise is your own, await it first.";
+  }
+  // ioredis first: it has sendCommand too, but only it has call().
+  if (fn("call") && fn("duplicate")) {
+    return 'benni was handed an ioredis client directly. Wrap it: `client: ioredis(instance)` from "benni/ioredis" adopts it, and benni never closes a client it adopted.';
+  }
+  if (fn("sendCommand") && fn("duplicate")) {
+    return 'benni was handed a node-redis client directly. benni/node cannot adopt an existing node-redis client; let it create one: `client: node({ url })` from "benni/node" takes every node-redis option.';
+  }
+  return "Expected a Redis client from a benni adapter (with send() and pipeline()) or a benni handle.";
 }
 
 /**
- * A `RedisClient` over a source that is not a client yet. Every method resolves
- * first, so the handle can be built (and its options validated) synchronously
- * while the connection opens on first use.
+ * Narrow a {@link ClientSource} to the `RedisClient` the internals speak,
+ * keeping the adapter's own client type.
+ *
+ * A client is returned as-is and a handle yields the client it carries, so
+ * the common path adds no wrapper and no indirection.
+ *
+ * @throws TypeError for anything else, saying what to pass instead.
  */
-function lazyClient(resolver: Resolver): RedisClient {
-  // The in-flight or finished teardown, and by being set at all the record that
-  // close() has happened. That record is what makes close() terminal, which for
-  // a factory is the whole point: the resolver has started nothing, so without
-  // it a command landing after shutdown calls the factory and opens a socket
-  // past the point anything will close it — and in Node a live socket pins the
-  // event loop, so a request racing shutdown turns a "graceful" exit into a
-  // hang. The adapters' own close() is final (see `benni/node`'s clientClosed);
-  // a facade over them has to be too.
-  let closing: Promise<void> | undefined;
-
-  /** The resolved client, or a refusal if this facade is already closed. */
-  const live = async (): Promise<RedisClient> => {
-    if (closing !== undefined) throw new Error(CLIENT_CLOSED);
-    return resolver.get();
-  };
-
-  return {
-    async send(command) {
-      return (await live()).send(command);
-    },
-    async pipeline(commands) {
-      return (await live()).pipeline(commands);
-    },
-    async transaction(commands) {
-      const client = await live();
-      if (client.transaction === undefined) {
-        throw new UnsupportedCapabilityError(
-          TRANSACTION_UNSUPPORTED,
-          "transaction"
-        );
-      }
-      return client.transaction(commands);
-    },
-    async session() {
-      const client = await live();
-      if (client.session === undefined) {
-        throw new UnsupportedCapabilityError(SESSION_UNSUPPORTED, "session");
-      }
-      return client.session();
-    },
-    async subscriber() {
-      const client = await live();
-      if (client.subscriber === undefined) {
-        throw new UnsupportedCapabilityError(
-          SUBSCRIBER_UNSUPPORTED,
-          "subscriber"
-        );
-      }
-      return client.subscriber();
-    },
-    close() {
-      // Memoized rather than merely flagged, which buys two things over an
-      // `if (closed) return`: the underlying client is closed exactly once (the
-      // adapters tolerate a repeat, a hand-written client need not), and a
-      // second close() awaits the first one's teardown instead of resolving
-      // while the socket is still going down. Assigned before the first await,
-      // so a command issued in the same tick as close() is already barred.
-      closing ??= (async () => {
-        // Closing a client that was never used must not open one, which is why
-        // this peeks rather than resolves: an unused factory stays uncalled. A
-        // promise was adopted at bind time, so it is peekable here and the
-        // client it opened gets closed even though no command was ever sent.
-        // A resolution that failed left nothing to close, so its rejection is
-        // not an error here either.
-        const pending = resolver.peek();
-        if (pending === undefined) return;
-        const client = await pending.catch(() => undefined);
-        await client?.close();
-      })();
-      return closing;
-    }
-  };
+export function resolveClient<TClient extends RedisClient>(
+  source: ClientSource<TClient>
+): TClient {
+  if (typeof source === "object" && source !== null) {
+    if (isClient(source)) return source as TClient;
+    if (isProvider(source)) return source.raw as TClient;
+  }
+  throw new TypeError(refusal(source));
 }
 
 /**
  * MULTI/EXEC when the client has it, one pipeline when it does not.
  *
  * For a caller that only wants the atomicity as an upgrade, and is correct
- * (just weaker) without it. `client.transaction?.(…) ?? client.pipeline(…)`
- * looks like it does this, but only for a *connected* client: over a promise or
- * factory the facade defines `transaction` unconditionally, so the optional call
- * finds a method, the `??` branch never runs, and the same custom client behaves
- * differently depending on how it was handed to `benni()`. Catching the
- * capability error is what closes that gap.
- *
- * Deliberately narrow: only {@link UnsupportedCapabilityError} falls back. A
- * MULTI that reached Redis and failed still throws, and callers whose whole
- * point is atomicity (`redis.multi()`, via `core/transaction.ts`) must not use
- * this — degrading those to a pipeline would drop the atomicity silently, which
- * is worse than refusing.
+ * (just weaker) without it. Callers whose whole point is atomicity
+ * (`redis.multi()`, via `core/transaction.ts`) must not use this — degrading
+ * those to a pipeline would drop the atomicity silently, which is worse than
+ * refusing.
  */
 export async function transactionOrPipeline(
   client: RedisClient,
   commands: readonly RedisCommand[]
 ): Promise<RedisReply[]> {
   if (client.transaction === undefined) return client.pipeline(commands);
-  try {
-    return await client.transaction(commands);
-  } catch (error) {
-    if (error instanceof UnsupportedCapabilityError) {
-      return client.pipeline(commands);
-    }
-    throw error;
-  }
-}
-
-/**
- * Narrow a {@link ClientSource} to the `RedisClient` the internals speak.
- *
- * A client (or a handle carrying one) is returned as-is, so the common path
- * adds no wrapper and no indirection, and `redis.raw === client` still holds.
- * Only a promise or factory gets the lazy facade.
- */
-export function resolveClient(source: ClientSource): RedisClient {
-  if (typeof source === "function") return lazyClient(resolveOnce(source));
-  if (typeof source !== "object" || source === null) {
-    throw new TypeError(
-      "Expected a Redis client, a promise of one, a factory, or a benni handle."
-    );
-  }
-  if (typeof (source as PromiseLike<unknown>).then === "function") {
-    const resolver = resolveOnce(source as Promise<RedisClient>);
-    // Adopt it now. The caller's `node({ url })` is already connecting, so
-    // there is nothing lazy left to preserve, and waiting for the first
-    // command to look at it costs two things: an `unhandledRejection` kills
-    // the process before any command can report the failure, and a client
-    // that connected fine is invisible to `close()` until someone sends. A
-    // factory, which has started nothing, is deliberately not touched here.
-    void resolver.get();
-    return lazyClient(resolver);
-  }
-  return unwrap(source as RedisClient | ClientProvider);
+  return client.transaction(commands);
 }
 
 /**
  * Accept either call shape — `f({ client, …options })` or the older
- * `f(client, options)` — and hand back what the implementation needs.
+ * `f(client, options)` — and hand back what the implementation needs. Used by
+ * the client-taking primitive forms in `benni/primitives`; `benni()` itself
+ * takes only the config object.
  *
  * The config form is recognized by having a `client` property and no `send`,
- * which no client, promise, factory, or benni handle has. The config object is
- * passed straight through as the options bag: every option is read by name, so
- * the extra `client` key is inert.
+ * which neither a client nor a benni handle has. The config object is passed
+ * straight through as the options bag: every option is read by name, so the
+ * extra `client` key is inert.
  */
 export function clientArgs<TOptions extends object>(
   source: ClientSource | (TOptions & { readonly client: ClientSource }),

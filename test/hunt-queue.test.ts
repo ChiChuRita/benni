@@ -60,7 +60,7 @@ describeRedis("queue: hunt regressions (live)", () => {
   const nextPrefix = () => `${run}:h${namespace++}`;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

@@ -58,14 +58,17 @@ describe("benni() binds a module that co-exports a foreign validator", () => {
     // schema module co-exporting one is the ordinary layout. It used to throw
     // at bind time, blaming a copy the user never made.
     const validator = { kind: "schema", type: "object", entries: {} };
-    const db = benni(fakeClient([], []), { schema: { users, validator } });
+    const db = benni({
+      client: fakeClient([], []),
+      schema: { users, validator }
+    });
 
     expect(Object.keys(db.query)).toEqual(["users"]);
   });
 
   it("still rejects a copied benni schema, naming the export", () => {
     expect(() =>
-      benni(fakeClient([], []), { schema: { users: { ...users } } })
+      benni({ client: fakeClient([], []), schema: { users: { ...users } } })
     ).toThrow(/schema\.users .*no store binding/s);
   });
 });
@@ -365,7 +368,7 @@ describeRedis("GETRANGE and SETRANGE index bytes (live)", () => {
   });
 
   it("counts and slices in bytes, as the JSDoc now says", async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
     const store = createStringStore(client, texts);
     const value = "café ☕ résumé";
 

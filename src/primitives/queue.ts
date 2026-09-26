@@ -2,7 +2,11 @@ import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
-import { type StoreBinding, withStore } from "../core/store.js";
+import {
+  type StoreBinding,
+  type StoreContext,
+  withStore
+} from "../core/store.js";
 import { xreadStreamPairs } from "../core/stream.js";
 import type {
   Codec,
@@ -1188,7 +1192,8 @@ return {watermark or "", redis.call("XRANGE", KEYS[2], ARGV[1], "+")}
  */
 function createQueue<TPayload, TResult = unknown>(
   client: RedisClient,
-  options?: QueueOptions<TPayload, TResult>
+  options?: QueueOptions<TPayload, TResult>,
+  track?: StoreContext["track"]
 ) {
   const prefix = options?.prefix ?? DEFAULT_PREFIX;
   const codec = options?.codec ?? codecs.json<TPayload>();
@@ -2023,7 +2028,7 @@ function createQueue<TPayload, TResult = unknown>(
 
     const loop = dispatch().catch(onError);
 
-    return {
+    const handle: Worker = {
       get active() {
         return inFlight.size;
       },
@@ -2063,6 +2068,13 @@ function createQueue<TPayload, TResult = unknown>(
         );
       }
     };
+    // Registered with the handle it was started through, so `redis.close()`
+    // stops it; unregistered once a stop() completes.
+    const untrack = track?.(handle);
+    if (untrack === undefined) return handle;
+    const stop = handle.stop;
+    handle.stop = (stopOptions) => stop(stopOptions).finally(untrack);
+    return handle;
   }
 
   return {
@@ -2340,7 +2352,7 @@ export type QueueSchema<TPayload, TResult> = InferAnchors<TPayload, TResult> &
 
 const queueBinding: StoreBinding = {
   resource: (ctx, schema: QueueSchema<unknown, unknown>) =>
-    createQueue(ctx.client, schema)
+    createQueue(ctx.client, schema, ctx.track)
 };
 
 /** Build a {@link QueueSchema}. Exported as `queue` from `benni/schema`. */

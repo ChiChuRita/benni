@@ -305,8 +305,8 @@ const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis("pub/sub overlap against a live server", () => {
   it("survives an unsubscribe overlapping a subscribe to another channel", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const suffix = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
     const first = definePubSubChannel(
       `benni:test:overlap:a:${suffix}`,

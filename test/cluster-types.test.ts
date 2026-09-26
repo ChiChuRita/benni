@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
 import type { HashTag, ProvableTag } from "../src/core/keys.js";
 import { numberReply } from "../src/core/transaction.js";
+import type { FullRedisClient } from "../src/core/types.js";
 import { benni } from "../src/database.js";
 import { kv, number as schemaNumber, script, zset } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
@@ -50,7 +51,8 @@ const move = script("move", {
   lua: "return 1"
 });
 
-const redis = benni(fakeClient([], []));
+// Cast to a full client so the handle has watch() to type-check against.
+const redis = benni({ client: fakeClient([], []) as FullRedisClient });
 declare const body: (session: never) => Promise<null>;
 
 /**

@@ -235,9 +235,9 @@ describeRedis("session-bound hset with a ttl against a live server", () => {
     `hunt:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   it("aborts the caller's watched transaction instead of losing the update", async () => {
-    const client = await node({ url: redisUrl });
-    const other = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const other = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const counter = unique("ctr");
     const profiles = defineHash(unique("profile"), {
       name: codecs.string(),

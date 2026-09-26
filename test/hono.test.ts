@@ -2,7 +2,12 @@ import { Buffer } from "node:buffer";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import type { RedisCommand, RedisReply } from "../src/core/types.js";
-import { cache, getSession, ratelimit, session } from "../src/hono/index.js";
+import {
+  cacheMiddleware,
+  getSession,
+  rateLimitMiddleware,
+  sessionMiddleware
+} from "../src/hono/index.js";
 import { fakeClient } from "./fake-client.js";
 
 describe("hono ratelimit", () => {
@@ -13,7 +18,12 @@ describe("hono ratelimit", () => {
     const app = new Hono();
     app.use(
       "*",
-      ratelimit({ client, limit: 5, windowMs: 60_000, key: () => "tester" })
+      rateLimitMiddleware({
+        client,
+        limit: 5,
+        windowMs: 60_000,
+        key: () => "tester"
+      })
     );
     app.get("/", (c) => c.text("hello"));
 
@@ -33,7 +43,12 @@ describe("hono ratelimit", () => {
     const app = new Hono();
     app.use(
       "*",
-      ratelimit({ client, limit: 5, windowMs: 60_000, key: () => "tester" })
+      rateLimitMiddleware({
+        client,
+        limit: 5,
+        windowMs: 60_000,
+        key: () => "tester"
+      })
     );
     app.get("/", (c) => c.text("hello"));
 
@@ -53,7 +68,7 @@ describe("hono ratelimit", () => {
     const app = new Hono();
     app.use(
       "*",
-      ratelimit({
+      rateLimitMiddleware({
         client,
         limit: 1,
         windowMs: 1_000,
@@ -79,7 +94,7 @@ describe("hono cache", () => {
     const client = fakeClient(commands, replies);
     const app = new Hono();
     let handlerCalls = 0;
-    app.get("/data", cache({ client, ttlMs: 30_000 }), (c) => {
+    app.get("/data", cacheMiddleware({ client, ttlMs: 30_000 }), (c) => {
       handlerCalls++;
       return c.json({ n: 1 });
     });
@@ -115,7 +130,7 @@ describe("hono cache", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
     const app = new Hono();
-    app.post("/data", cache({ client, ttlMs: 30_000 }), (c) =>
+    app.post("/data", cacheMiddleware({ client, ttlMs: 30_000 }), (c) =>
       c.text("created", 201)
     );
 
@@ -128,7 +143,7 @@ describe("hono cache", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [null]); // GET miss only
     const app = new Hono();
-    app.get("/login", cache({ client, ttlMs: 30_000 }), (c) => {
+    app.get("/login", cacheMiddleware({ client, ttlMs: 30_000 }), (c) => {
       c.header("Set-Cookie", "sid=abc");
       return c.text("ok");
     });
@@ -142,7 +157,9 @@ describe("hono cache", () => {
     // An empty reply queue makes every send() throw.
     const client = fakeClient([], []);
     const app = new Hono();
-    app.get("/data", cache({ client, ttlMs: 30_000 }), (c) => c.text("ok"));
+    app.get("/data", cacheMiddleware({ client, ttlMs: 30_000 }), (c) =>
+      c.text("ok")
+    );
 
     const res = await app.request("/data");
     expect(res.status).toBe(200);
@@ -155,7 +172,7 @@ describe("hono cache", () => {
     const app = new Hono();
     app.get(
       "/greet",
-      cache({ client, ttlMs: 1_000, vary: ["Accept-Language"] }),
+      cacheMiddleware({ client, ttlMs: 1_000, vary: ["Accept-Language"] }),
       (c) => c.text("hi")
     );
 
@@ -176,8 +193,10 @@ describe("hono cache", () => {
       const commands: RedisCommand[] = [];
       const client = fakeClient(commands, [null, "OK"]);
       const app = new Hono();
-      app.get("/g", cache({ client, ttlMs: 1_000, vary: ["A"] }), (c) =>
-        c.text("hi")
+      app.get(
+        "/g",
+        cacheMiddleware({ client, ttlMs: 1_000, vary: ["A"] }),
+        (c) => c.text("hi")
       );
       await app.request(path, { headers: { A: a } });
       return commands[0]?.[1];
@@ -190,9 +209,9 @@ describe("hono cache", () => {
 
   it("does not cache a response the handler derived from the session", async () => {
     // The set-cookie guard misses the common case entirely: a returning
-    // visitor already has their sid, so session() emits no Set-Cookie, and
-    // with session() as the outer middleware its header would land after
-    // cache() has already stored the body. Either way one user's
+    // visitor already has their sid, so sessionMiddleware() emits no Set-Cookie, and
+    // with sessionMiddleware() as the outer middleware its header would land after
+    // cacheMiddleware() has already stored the body. Either way one user's
     // authenticated response was cached under a session-independent key and
     // served to everyone else.
     const commands: RedisCommand[] = [];
@@ -202,11 +221,13 @@ describe("hono cache", () => {
       null
     ]);
     const app = new Hono();
-    app.use("*", session({ client }));
+    app.use("*", sessionMiddleware({ client }));
     // ignoreCookies: the sid cookie alone would bypass the cache now, and
     // this pins the session guard that still holds when a caller opts in.
-    app.get("/me", cache({ client, ttlMs: 30_000, ignoreCookies: true }), (c) =>
-      c.text(getSession(c).get<string>("userId") ?? "anonymous")
+    app.get(
+      "/me",
+      cacheMiddleware({ client, ttlMs: 30_000, ignoreCookies: true }),
+      (c) => c.text(getSession(c).get<string>("userId") ?? "anonymous")
     );
 
     const res = await app.request("/me", { headers: { Cookie: "sid=abc" } });
@@ -218,10 +239,10 @@ describe("hono cache", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [null, null, "OK"]);
     const app = new Hono();
-    app.use("*", session({ client }));
+    app.use("*", sessionMiddleware({ client }));
     app.get(
       "/public",
-      cache({ client, ttlMs: 30_000, ignoreCookies: true }),
+      cacheMiddleware({ client, ttlMs: 30_000, ignoreCookies: true }),
       (c) => c.text("hi")
     );
 
@@ -233,7 +254,9 @@ describe("hono cache", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
     const app = new Hono();
-    app.get("/private", cache({ client, ttlMs: 30_000 }), (c) => c.text("ok"));
+    app.get("/private", cacheMiddleware({ client, ttlMs: 30_000 }), (c) =>
+      c.text("ok")
+    );
 
     const res = await app.request("/private", {
       headers: { Authorization: "Bearer t" }
@@ -256,7 +279,7 @@ describe("hono cache bodies and credentials", () => {
     const app = new Hono();
     app.get(
       "/logo.png",
-      cache({ client, ttlMs: 30_000 }),
+      cacheMiddleware({ client, ttlMs: 30_000 }),
       () => new Response(png, { headers: { "content-type": "image/png" } })
     );
 
@@ -273,7 +296,9 @@ describe("hono cache bodies and credentials", () => {
     const legacy = JSON.stringify({ status: 200, headers: {}, body: "old" });
     const client = fakeClient([], [legacy, "OK"]);
     const app = new Hono();
-    app.get("/data", cache({ client, ttlMs: 30_000 }), (c) => c.text("fresh"));
+    app.get("/data", cacheMiddleware({ client, ttlMs: 30_000 }), (c) =>
+      c.text("fresh")
+    );
 
     const res = await app.request("/data");
     expect(await res.text()).toBe("fresh");
@@ -287,7 +312,7 @@ describe("hono cache bodies and credentials", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
     const app = new Hono();
-    app.get("/account", cache({ client, ttlMs: 30_000 }), (c) =>
+    app.get("/account", cacheMiddleware({ client, ttlMs: 30_000 }), (c) =>
       c.text(`hello ${c.req.header("Cookie")}`)
     );
 
@@ -304,7 +329,7 @@ describe("hono cache bodies and credentials", () => {
     const app = new Hono();
     app.get(
       "/account",
-      cache({ client, ttlMs: 30_000, vary: ["Cookie"] }),
+      cacheMiddleware({ client, ttlMs: 30_000, vary: ["Cookie"] }),
       (c) => c.text("hi")
     );
 
@@ -321,7 +346,7 @@ describe("hono cache bodies and credentials", () => {
     const app = new Hono();
     app.get(
       "/pricing",
-      cache({ client, ttlMs: 30_000, ignoreCookies: true }),
+      cacheMiddleware({ client, ttlMs: 30_000, ignoreCookies: true }),
       (c) => c.text("public")
     );
 
@@ -337,7 +362,7 @@ describe("hono Redis failure policy", () => {
     const app = new Hono();
     app.use(
       "*",
-      ratelimit({
+      rateLimitMiddleware({
         client: fakeClient([], []),
         limit: 5,
         windowMs: 60_000,
@@ -358,7 +383,7 @@ describe("hono Redis failure policy", () => {
     const app = new Hono();
     app.use(
       "*",
-      ratelimit({
+      rateLimitMiddleware({
         client: fakeClient([], []),
         limit: 5,
         windowMs: 60_000,
@@ -378,7 +403,7 @@ describe("hono Redis failure policy", () => {
     const app = new Hono();
     app.use(
       "*",
-      ratelimit({
+      rateLimitMiddleware({
         client: fakeClient([], []),
         limit: 5,
         windowMs: 60_000,
@@ -398,7 +423,7 @@ describe("hono Redis failure policy", () => {
 
   it("session fails closed: a Redis error loading the record is a 500", async () => {
     const app = new Hono();
-    app.use("*", session({ client: fakeClient([], []) }));
+    app.use("*", sessionMiddleware({ client: fakeClient([], []) }));
     app.get("/", (c) => c.text("ok"));
 
     const res = await app.request("/", { headers: { Cookie: "sid=abc" } });
@@ -411,7 +436,7 @@ describe("hono session", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["OK"]); // SET
     const app = new Hono();
-    app.use("*", session({ client }));
+    app.use("*", sessionMiddleware({ client }));
     app.post("/login", (c) => {
       const bag = getSession(c);
       expect(bag.isNew).toBe(true);
@@ -437,7 +462,7 @@ describe("hono session", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ['{"userId":"u1"}']); // GET
     const app = new Hono();
-    app.use("*", session({ client }));
+    app.use("*", sessionMiddleware({ client }));
     app.get("/me", (c) => {
       const bag = getSession(c);
       return c.text(`${bag.get<string>("userId")}:${bag.isNew}:${bag.id}`);
@@ -455,7 +480,7 @@ describe("hono session", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
     const app = new Hono();
-    app.use("*", session({ client }));
+    app.use("*", sessionMiddleware({ client }));
     app.get("/", (c) => c.text("ok"));
 
     const res = await app.request("/");
@@ -468,7 +493,7 @@ describe("hono session", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ['{"userId":"u1"}', 1]); // GET, DEL
     const app = new Hono();
-    app.use("*", session({ client }));
+    app.use("*", sessionMiddleware({ client }));
     app.post("/logout", (c) => {
       getSession(c).clear();
       return c.text("bye");
