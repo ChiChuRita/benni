@@ -3,7 +3,8 @@ import { codecs } from "../src/core/codecs.js";
 import {
   createKeyValueStore,
   defineKeyspace,
-  type KeyValueGetExOptions
+  type KeyValueGetExOptions,
+  type KeyValueSetOptions
 } from "../src/core/key-value.js";
 import type { LcsIdxResult } from "../src/core/string.js";
 import type {
@@ -51,6 +52,26 @@ describe("createKeyValueStore conditional writes", () => {
     expect(commands).toEqual([
       ["SET", "user:42", "benni", "XX"],
       ["SET", "user:42", "benni", "XX", "EX", 30]
+    ]);
+  });
+
+  it("resolves a boolean for a computed flag, whatever its value", async () => {
+    const commands: RedisCommand[] = [];
+    const store = createKeyValueStore(
+      fakeClient(commands, ["OK", null, "OK"]),
+      users
+    );
+    const flags = [false, true];
+
+    // A false flag writes unconditionally, so the write happened: true.
+    await expect(store.set("42", "a", { nx: flags[0] })).resolves.toBe(true);
+    await expect(store.set("42", "b", { nx: flags[1] })).resolves.toBe(false);
+    await expect(store.set("42", "c", { xx: flags[0] })).resolves.toBe(true);
+
+    expect(commands).toEqual([
+      ["SET", "user:42", "a"],
+      ["SET", "user:42", "b", "NX"],
+      ["SET", "user:42", "c"]
     ]);
   });
 
@@ -425,6 +446,10 @@ async function conditionalSetTypeProbes() {
   // plain set resolves to void.
   const plain = await profileStore.set("42", { name: "benni" });
   type _Plain = Expect<Equal<typeof plain, void>>;
+  // A computed flag still resolves a boolean, and is typed as one.
+  const flag = Math.random() > 0.5;
+  const computed = await profileStore.set("42", { name: "b" }, { nx: flag });
+  type _Computed = Expect<Equal<typeof computed, boolean>>;
   const ttlOnly = await profileStore.set(
     "42",
     { name: "b" },
@@ -450,6 +475,10 @@ void lcsTypeProbes;
 function expectTypeErrorsOnly() {
   // @ts-expect-error lcs LEN and IDX options are mutually exclusive.
   void stringStore.lcs("a", "b", { len: true, idx: true });
+
+  // @ts-expect-error an options value whose flags are merely optional hides
+  // the reply shape, so it matches neither overload.
+  void profileStore.set("42", { name: "b" }, {} as KeyValueSetOptions);
 
   // @ts-expect-error keepTtl must be a boolean.
   void profileStore.set("42", { name: "benni" }, { keepTtl: "yes" });

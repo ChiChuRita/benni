@@ -31,7 +31,7 @@ import type {
  * `nx` and `xx` are mutually exclusive (write only if absent / only if
  * present), as are `ttlSeconds` and `keepTtl` — both pairs are modeled so
  * the invalid combination is a compile-time error, not a runtime throw.
- * When `nx` or `xx` is set, `set` resolves to whether the write happened.
+ * When `nx` or `xx` is given, `set` resolves to whether the write happened.
  */
 type SetTtlMode =
   | { readonly ttlSeconds?: number; readonly keepTtl?: never }
@@ -43,11 +43,28 @@ type SetConditionMode =
 
 export type KeyValueSetOptions = SetTtlMode & SetConditionMode;
 
+/**
+ * A `set` that spells out `nx` or `xx`, literal or computed: it resolves to
+ * whether the write happened. Keyed on the flag being present rather than
+ * `true`, because a `boolean` flag used to fall through to the `void`
+ * overload while the call resolved a boolean whenever the flag was on.
+ */
 type ConditionalSetOptions = SetTtlMode &
   (
-    | { readonly nx: true; readonly xx?: never }
-    | { readonly xx: true; readonly nx?: never }
+    | { readonly nx: boolean; readonly xx?: never }
+    | { readonly xx: boolean; readonly nx?: never }
   );
+
+/**
+ * A `set` that provably spells out neither flag. An options value typed
+ * {@link KeyValueSetOptions}, whose flags are merely optional, matches neither
+ * overload: the reply shape depends on them, so they have to be visible at
+ * the call site.
+ */
+type UnconditionalSetOptions = SetTtlMode & {
+  readonly nx?: undefined;
+  readonly xx?: undefined;
+};
 
 /** GETEX expiry modes; shared with HGETEX (see `ExpiryOptions`). */
 export type KeyValueGetExOptions = ExpiryOptions;
@@ -75,7 +92,7 @@ export function createKeyValueStore<
   function set(
     id: TId,
     value: TInput,
-    options?: KeyValueSetOptions
+    options?: UnconditionalSetOptions
   ): Promise<void>;
   async function set(
     id: TId,
@@ -102,7 +119,10 @@ export function createKeyValueStore<
       command.push("KEEPTTL");
     }
     const reply = await client.send(command);
-    if (options.nx || options.xx) {
+    // On the flag's presence, not its value, exactly as the overloads read
+    // it: `{ nx: false }` is typed Promise<boolean>, so it resolves `true`
+    // (a SET without NX always writes) rather than undefined.
+    if (options.nx !== undefined || options.xx !== undefined) {
       return decodeConditionalSetReply(reply);
     }
     if (reply !== "OK") {
@@ -115,7 +135,8 @@ export function createKeyValueStore<
     /**
      * `SET key value`. Without `nx`/`xx` resolves once the write is
      * acknowledged. With `nx` (write only if absent) or `xx` (write only if
-     * present) resolves to whether the write happened.
+     * present) resolves to whether the write happened; a computed
+     * `nx: someBoolean` is typed and resolved the same way.
      *
      * @example redis.query.profiles.set("greeting", "hi", { ttlSeconds: 60 })
      * @example const written = await redis.query.profiles.set("k", "v", { nx: true })
