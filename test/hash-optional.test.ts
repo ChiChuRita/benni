@@ -339,8 +339,8 @@ describeRedis("schema evolution against a live server", () => {
   });
 
   it("reads old records through a schema that gained an optional field", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client });
     try {
       await redis.hash(v1).hset("old", { name: "Ada", score: 10 });
       await expect(redis.hash(v2).hget("old")).resolves.toStrictEqual({

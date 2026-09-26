@@ -333,8 +333,9 @@ export function createPubSubHub(
     if (leased && !leased.closed) return leased;
     if (leasing) return leasing;
     if (!client.subscriber) {
-      // Same class the lazy facade throws, so the capability error is one type
-      // whether the client arrived connected or behind a promise or factory.
+      // The one class every capability guard throws. A handle over a client
+      // without a subscriber has no subscribe() in its type; this is the
+      // backstop for code that is not type-checked.
       throw new UnsupportedCapabilityError(
         SUBSCRIBER_UNSUPPORTED,
         "subscriber"

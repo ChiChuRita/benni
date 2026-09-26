@@ -65,7 +65,7 @@ identical across adapters:
 ```ts
 // development: real Redis over TCP
 import { node } from "benni/node";
-const client = await node({ url: process.env.REDIS_URL });
+const client = node({ url: process.env.REDIS_URL });
 
 // production: Upstash over HTTP
 import { upstash } from "benni/upstash";

@@ -14,23 +14,26 @@ import { benni } from "benni";
 import { ioredis } from "benni/ioredis";
 import * as schema from "./schema";
 
-const client = await ioredis(process.env.REDIS_URL);
-
-export const redis = benni(client, { schema });
+export const redis = benni({
+  client: ioredis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379"),
+  schema
+});
 ```
+
+All three forms below return their client synchronously. A client Benni creates connects on the first command: a connect that fails rejects the commands waiting on it with `benni/ioredis could not connect to Redis: <cause>`, and a later command dials again, backing off from 100 ms to 5 s. Once connected, ioredis's own `retryStrategy` handles drops. An adopted client is used as it is, connected (or not) however you configured it.
 
 ## Three ways in
 
 A URL:
 
 ```ts
-const client = await ioredis("redis://127.0.0.1:6379");
+const client = ioredis("redis://127.0.0.1:6379");
 ```
 
 Any ioredis options (`host`, `port`, `password`, `tls`, `sentinels`, …):
 
 ```ts
-const client = await ioredis({
+const client = ioredis({
   host: process.env.REDIS_HOST,
   port: 6379,
   password: process.env.REDIS_PASSWORD
@@ -45,23 +48,34 @@ import Redis from "ioredis";
 const existing = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", {
   protocol: 2 // needed on ioredis 6, which defaults to RESP3
 }); // yours, already configured
-const client = await ioredis(existing);
+const client = ioredis(existing);
 ```
 
 Adopting means Benni shares the connection you already tuned, monitor, and pool. There is no second client, no second connection budget, and no migration: you can start typing one keyspace and leave the rest of your app calling `existing` directly.
 
 ## Who owns the connection
 
-An adopted client is **borrowed**. `client.close()` shuts down the sessions and subscriber connections Benni leased, and leaves your client open, because you still own its lifetime:
+An adopted client is **borrowed**. `redis.close()` shuts down the Pub/Sub, workers, sessions, and subscriber connections Benni opened, and leaves your client open, because you still own its lifetime:
 
 ```ts
-await client.close();  // Benni's leases are gone
+const redis = benni({ client: ioredis(existing), schema });
+
+await redis.close();   // Benni's connections are gone
 await existing.quit(); // you close yours, when you're ready
 ```
 
-A client Benni created from a URL or options is **owned**, and `close()` quits it for you.
+A client Benni created from a URL or options is **owned**, and `redis.close()` quits it for you.
 
-One consequence worth knowing: Benni attaches an `"error"` listener only to clients it created. An adopted client keeps whatever error handling you gave it, and Benni will not silently swallow errors on a client it does not own. Make sure yours has a listener, or an idle network blip will crash the process (that is ioredis behaviour, not Benni's).
+One consequence worth knowing: Benni attaches an `"error"` listener to an adopted client only if you ask for one. An adopted client keeps whatever error handling you gave it, and Benni will not silently swallow errors on a client it does not own. Make sure yours has a listener, or an idle network blip will crash the process (that is ioredis behaviour, not Benni's).
+
+### Connection events
+
+`onError` and `onReconnect` work as on [`benni/node`](/benni/runtime/node/#connection-events). With a URL or options they go in the options; for an adopted client, as the second argument, where they also cover the subscriber connection Benni duplicates from it:
+
+```ts
+ioredis({ url, onError: (error) => logger.warn({ error }) });
+ioredis(existing, { onReconnect: (connection) => refetch(connection) });
+```
 
 ### RESP2 only
 
@@ -121,10 +135,12 @@ You can switch adapters later by changing one import; the schemas, stores, and p
 Sentinel configuration works, since it is just ioredis options:
 
 ```ts
-const client = await ioredis({
+const client = ioredis({
   sentinels: [{ host: "localhost", port: 26379 }],
   name: "mymaster"
 });
 ```
 
-Cluster splits the responsibility. Adopt an `ioredis.Cluster` instance and ioredis does the routing (topology, `MOVED`/`ASK`, failover); Benni never had a transport of its own and does not try to. What Benni adds on top is slot **co-location**: schemas declare where their hash tag goes, the compiler rejects multi-key calls whose tags provably disagree, and `benni(client, { cluster: true })` catches the rest before they are sent. See [Redis Cluster](/benni/advanced/cluster/) for the layouts and the guard.
+Cluster splits the responsibility. Adopt an `ioredis.Cluster` instance and ioredis does the routing (topology, `MOVED`/`ASK`, failover); Benni never had a transport of its own and does not try to. What Benni adds on top is slot **co-location**: schemas declare where their hash tag goes, the compiler rejects multi-key calls whose tags provably disagree, and `benni({ client, cluster: assertSameSlot })` catches the rest before they are sent. See [Redis Cluster](/benni/advanced/cluster/) for the layouts and the guard.
+
+Scripts need no setup on a cluster. `SCRIPT LOAD` carries no key, so ioredis sends it to whichever node it likes; when the node that owns a script's keys answers `NOSCRIPT`, Benni runs the script once with `EVAL`, which carries the keys, routes to that node, and caches the script there for the next `EVALSHA`.

@@ -23,7 +23,7 @@ describeRedis("semaphore lease (live)", () => {
     new Promise((resolve) => setTimeout(resolve, ms));
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

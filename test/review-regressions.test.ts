@@ -1,32 +1,31 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
   createHashStore,
   createSortedSetStore,
   createStreamStore,
   createStringStore,
-  defineHash,
-  defineKeyspace,
-  defineSortedSet,
-  defineStream,
   ValidationError
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
 import { keyBuilder } from "../src/core/keys.js";
 import { createScriptRunner, defineScript } from "../src/core/script.js";
 import { assertSameSlot, CrossSlotError, slotOf } from "../src/core/slot.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 import type { StreamEntry } from "../src/core/stream.js";
 import type {
   PendingStreamEntry,
   StreamGroupConsumer,
   StreamPendingReadOptions
 } from "../src/core/stream-group.js";
+import { defineStream } from "../src/core/stream-resource.js";
 import type {
   Codec,
   RedisClient,
   RedisCommand,
   RedisReply
 } from "../src/core/types.js";
-
 import { node } from "../src/node/index.js";
 import { upstash } from "../src/upstash/index.js";
 import { fakeClient } from "./fake-client.js";
@@ -278,8 +277,6 @@ describe("medium-severity sweep (review #10)", () => {
       rejecting(commands, [
         "sha-1",
         new Error("NOSCRIPT No matching script. Please use EVAL."),
-        [0], // SCRIPT EXISTS: the server really has forgotten it
-        "sha-2",
         7
       ])
     );
@@ -290,8 +287,12 @@ describe("medium-severity sweep (review #10)", () => {
     });
 
     await expect(runner.run(noop, [], [])).resolves.toBe(7);
-    // SCRIPT LOAD, EVALSHA, SCRIPT EXISTS, SCRIPT LOAD, EVALSHA.
-    expect(commands).toHaveLength(5);
+    // SCRIPT LOAD, EVALSHA, then EVAL with the source.
+    expect(commands).toEqual([
+      ["SCRIPT", "LOAD", "return 1"],
+      ["EVALSHA", "sha-1", 0],
+      ["EVAL", "return 1", 0]
+    ]);
   });
 
   it("hset with a ttl is one transaction, not a pipeline", async () => {
@@ -463,7 +464,7 @@ const describeRedis = redisUrl ? describe : describe.skip;
 describeRedis("infinite scores against real Redis", () => {
   let client: import("../src/core/index.js").RedisClient;
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

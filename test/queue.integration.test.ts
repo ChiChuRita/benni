@@ -51,7 +51,7 @@ describeRedis("queue (live)", () => {
   const nextPrefix = () => `${run}:q${namespace++}`;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();
@@ -873,7 +873,7 @@ describeCluster("queue (live, cluster-enabled node)", () => {
   let client: RedisClient;
 
   beforeAll(async () => {
-    client = await node({ url: clusterUrl });
+    client = node({ url: clusterUrl });
     await client
       .send(["CLUSTER", "ADDSLOTSRANGE", 0, 16383])
       .catch(() => undefined);

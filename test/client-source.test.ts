@@ -1,152 +1,94 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveClient,
-  SESSION_UNSUPPORTED,
-  SUBSCRIBER_UNSUPPORTED,
   TRANSACTION_UNSUPPORTED
 } from "../src/core/client-source.js";
+import { numberReply } from "../src/core/transaction.js";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
 import { benni } from "../src/index.js";
-import { cache, lock, ratelimit } from "../src/primitives/index.js";
+import { lock, ratelimit } from "../src/primitives/index.js";
 import { hash, json, kv, number, string } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
-// The 2026-08-02 DX pass: one client source everywhere (connected, connecting,
-// or not created yet), one options-object call shape, and a benni handle
-// accepted wherever a client is.
+// 0.2: a client source is an adapter's client or a benni handle, nothing
+// else. Adapters return their client synchronously and connect on first use,
+// so the promise and factory forms 0.1 accepted are refused with a message
+// that says what to write instead.
 
 const users = hash("user", { name: string(), score: number() });
 
+/**
+ * The whole required contract and nothing else: `send`, `pipeline`, `close`.
+ * What a hand-written client over some in-house transport looks like.
+ */
+function minimalClient(commands: RedisCommand[]): RedisClient {
+  return {
+    async send(command) {
+      commands.push(command);
+      return 1;
+    },
+    async pipeline(batch) {
+      commands.push(...batch);
+      return batch.map(() => 1);
+    },
+    async close() {}
+  };
+}
+
 describe("resolveClient", () => {
-  it("returns a connected client as-is, so nothing wraps the hot path", () => {
+  it("returns a client as-is, so nothing wraps the hot path", () => {
     const client = fakeClient([], []);
     expect(resolveClient(client)).toBe(client);
   });
 
   it("unwraps the client a benni handle carries", () => {
-    const client = fakeClient([], []);
-    expect(resolveClient(benni(client))).toBe(client);
+    const redis = benni({ client: fakeClient([], []) });
+    expect(resolveClient(redis)).toBe(redis.raw);
   });
 
-  it("sends nothing until a command, over a promise source", async () => {
-    const commands: RedisCommand[] = [];
-    const pending = Promise.resolve(fakeClient(commands, ["PONG"]));
-
-    const client = resolveClient(pending);
-    await Promise.resolve();
-    expect(commands).toEqual([]);
-
-    await expect(client.send(["PING"])).resolves.toBe("PONG");
-    expect(commands).toEqual([["PING"]]);
-  });
-
-  it("observes a rejecting promise source rather than letting it go unhandled", async () => {
-    // A promise handed here is already in flight, so nothing is waiting to
-    // attach a rejection handler. Left unobserved until the first command,
-    // `benni({ client: node({ url: bad }) })` killed the process with an
-    // unhandledRejection before any command could report the failure.
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => unhandled.push(reason);
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const client = resolveClient(Promise.reject(new Error("ECONNREFUSED")));
-      // Long enough for the rejection to be reported if nothing observed it.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(unhandled).toEqual([]);
-
-      // The failure is still delivered, through the command, every time.
-      await expect(client.send(["PING"])).rejects.toThrow("ECONNREFUSED");
-      await expect(client.send(["PING"])).rejects.toThrow("ECONNREFUSED");
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  it("calls a factory once and reuses the client", async () => {
-    const commands: RedisCommand[] = [];
-    let calls = 0;
-    const client = resolveClient(() => {
-      calls += 1;
-      return fakeClient(commands, ["a", "b"]);
-    });
-
-    await client.send(["GET", "one"]);
-    await client.send(["GET", "two"]);
-    expect(calls).toBe(1);
-    expect(commands).toHaveLength(2);
-  });
-
-  it("retries the factory after a failed connect", async () => {
-    let calls = 0;
-    const client = resolveClient(() => {
-      calls += 1;
-      if (calls === 1) return Promise.reject(new Error("ECONNREFUSED"));
-      return fakeClient([], ["PONG"]);
-    });
-
-    await expect(client.send(["PING"])).rejects.toThrow("ECONNREFUSED");
-    await expect(client.send(["PING"])).resolves.toBe("PONG");
-    expect(calls).toBe(2);
-  });
-
-  it("closing a factory client that was never used opens no connection", async () => {
-    let calls = 0;
-    const client = resolveClient(() => {
-      calls += 1;
-      return fakeClient([], []);
-    });
-
-    await client.close();
-    expect(calls).toBe(0);
-  });
-
-  it("closes a promise-backed client that was never used", async () => {
-    // The factory rule does not transfer: this connection is already open, so
-    // skipping the close leaks it and the process never exits.
-    let closed = false;
-    const client = resolveClient(
-      Promise.resolve({
-        async send() {
-          return null;
-        },
-        async pipeline() {
-          return [];
-        },
-        async close() {
-          closed = true;
-        }
-      })
+  it("refuses a promise, pointing at the synchronous adapters", () => {
+    const pending = Promise.resolve(fakeClient([], []));
+    expect(() => resolveClient(pending as never)).toThrow(
+      /no longer takes a promise of a client/
     );
-
-    await client.close();
-    expect(closed).toBe(true);
   });
 
-  it("raises the capability guard's own message once resolved", async () => {
-    // A stateless adapter (HTTP): no transaction, session, or subscriber.
-    const client = resolveClient(() => fakeClientWithout());
-
-    await expect(client.transaction?.([["PING"]])).rejects.toThrow(
-      TRANSACTION_UNSUPPORTED
+  it("refuses a factory the same way", () => {
+    expect(() => resolveClient((() => fakeClient([], [])) as never)).toThrow(
+      /no longer takes a client factory/
     );
-    await expect(client.session?.()).rejects.toThrow(SESSION_UNSUPPORTED);
-    await expect(client.subscriber?.()).rejects.toThrow(SUBSCRIBER_UNSUPPORTED);
+  });
+
+  it("tells an ioredis user to wrap the instance", () => {
+    // What an ioredis Redis or Cluster looks like from here: call() and
+    // duplicate(), and no send().
+    const instance = {
+      call() {},
+      duplicate() {},
+      sendCommand() {},
+      pipeline() {}
+    };
+    expect(() => resolveClient(instance as never)).toThrow(
+      /ioredis\(instance\)/
+    );
+  });
+
+  it("tells a node-redis user that adoption does not exist", () => {
+    const instance = { sendCommand() {}, duplicate() {}, multi() {} };
+    expect(() => resolveClient(instance as never)).toThrow(
+      /cannot adopt an existing node-redis client/
+    );
   });
 
   it("refuses a source that is not a client", () => {
-    expect(() => resolveClient(null as unknown as RedisClient)).toThrow(
-      TypeError
-    );
-    expect(() => resolveClient({} as unknown as RedisClient)).toThrow(
-      /neither a client/
-    );
+    expect(() => resolveClient(null as never)).toThrow(/benni adapter/);
+    expect(() => resolveClient({} as never)).toThrow(/benni adapter/);
   });
 
   it("refuses a session, which has send() but cannot pipeline", () => {
-    // A RedisSession is not a RedisClient (no pipeline), and TypeScript says
-    // so. A send-only guard let one through anyway and produced a client that
-    // failed commands later with "pipeline is not a function"; the refusal
-    // belongs here, where it can name what was expected.
+    // A session (and a handle's `session.raw`) has send(), so a send-only
+    // check took it for a client; the failure then surfaced commands later as
+    // "pipeline is not a function".
     const session = {
       async send() {
         return null;
@@ -157,44 +99,72 @@ describe("resolveClient", () => {
       closed: false,
       async close() {}
     };
-
-    expect(() => resolveClient(session as unknown as RedisClient)).toThrow(
-      /neither a client/
+    expect(() => resolveClient(session as never)).toThrow(/benni adapter/);
+    expect(() => resolveClient({ raw: session } as never)).toThrow(
+      /benni adapter/
     );
-    expect(() =>
-      resolveClient({ raw: session } as unknown as RedisClient)
-    ).toThrow(/neither a client/);
   });
 });
 
-describe("benni() call shapes", () => {
-  it("takes the config object and the positional client alike", async () => {
-    const positional: RedisCommand[] = [];
-    const config: RedisCommand[] = [];
-    const schema = { users };
-
-    const a = benni(fakeClient(positional, [["Ada", "10"]]), { schema });
-    const b = benni({ client: fakeClient(config, [["Ada", "10"]]), schema });
-
-    await a.query.users.hget("42");
-    await b.query.users.hget("42");
-    expect(config).toEqual(positional);
-  });
-
-  it("binds a promise without a top-level await", async () => {
+describe("benni() takes one config object", () => {
+  it("binds the client and the schema", async () => {
     const commands: RedisCommand[] = [];
+    const profiles = kv("profile", json<{ name: string }>());
     const redis = benni({
-      client: Promise.resolve(fakeClient(commands, [1])),
-      schema: { users }
+      client: fakeClient(commands, ['{"name":"Ada"}']),
+      schema: { profiles }
     });
 
-    await redis.query.users.hset("42", { name: "Ada", score: 10 });
-    expect(commands[0]?.[0]).toBe("HSET");
+    await expect(redis.query.profiles.get("42")).resolves.toEqual({
+      name: "Ada"
+    });
+    expect(commands).toEqual([["GET", "profile:42"]]);
   });
 
-  it("keeps redis.raw identical to a client passed connected", () => {
+  it("refuses the removed positional form at runtime too", () => {
     const client = fakeClient([], []);
-    expect(benni(client).raw).toBe(client);
+    expect(() => (benni as (...args: unknown[]) => unknown)(client)).toThrow(
+      /one config object/
+    );
+    expect(() =>
+      (benni as (...args: unknown[]) => unknown)(client, { schema: { users } })
+    ).toThrow(/one config object/);
+  });
+
+  it("passes a wrong client through resolveClient's message", () => {
+    const ioredisInstance = { call() {}, duplicate() {} };
+    expect(() => benni({ client: ioredisInstance as never })).toThrow(
+      /ioredis\(instance\)/
+    );
+  });
+});
+
+describe("capabilities are checked where a call needs them", () => {
+  it("falls back to a pipeline for hset with ttlSeconds without MULTI", async () => {
+    // hset(id, value, { ttlSeconds }) wants HSET+EXPIRE atomic and asks for a
+    // transaction, but is correct (just weaker) over a pipeline.
+    const commands: RedisCommand[] = [];
+    const redis = benni({ client: minimalClient(commands), schema: { users } });
+    await redis.query.users.hset(
+      "42",
+      { name: "Ada", score: 10 },
+      { ttlSeconds: 60 }
+    );
+    expect(commands.map((command) => command[0])).toEqual(["HSET", "EXPIRE"]);
+  });
+
+  it("does not silently turn redis.multi() into a pipeline", async () => {
+    // multi() exists for MULTI/EXEC atomicity; degrading it to a pipeline
+    // would drop that without telling anyone, which is strictly worse than
+    // refusing. It must throw, and must send nothing.
+    const commands: RedisCommand[] = [];
+    await expect(
+      benni({ client: minimalClient(commands) })
+        .multi()
+        .add(["INCR", "visits"], numberReply)
+        .exec()
+    ).rejects.toThrow(TRANSACTION_UNSUPPORTED);
+    expect(commands).toEqual([]);
   });
 });
 
@@ -202,7 +172,7 @@ describe("primitives take a handle, a client, or a config object", () => {
   it("accepts the benni handle in the config form", async () => {
     const commands: RedisCommand[] = [];
     // The acquire script's SCRIPT LOAD, then its EVALSHA returning the fence.
-    const redis = benni(fakeClient(commands, ["sha", 1]));
+    const redis = benni({ client: fakeClient(commands, ["sha", 1]) });
 
     const locks = lock({ client: redis, ttlMs: 10_000 });
     const handle = await locks.acquire("order:42");
@@ -227,37 +197,16 @@ describe("primitives take a handle, a client, or a config object", () => {
     expect(result.success).toBe(true);
     expect(result.remaining).toBe(9);
   });
-
-  it("reads through a lazily resolved client", async () => {
-    const commands: RedisCommand[] = [];
-    const profiles = cache<{ name: string }>({
-      client: () => fakeClient(commands, [JSON.stringify({ name: "Ada" })]),
-      ttlMs: 60_000
-    });
-
-    await expect(profiles.peek("42")).resolves.toEqual({ name: "Ada" });
-    expect(commands).toEqual([["GET", "cache:{42}"]]);
-  });
 });
 
 describe("the registry still refuses what it always refused", () => {
   it("rejects a copied schema at bind time, naming the export", () => {
     const profiles = kv("profile", json<{ name: string }>());
     expect(() =>
-      benni(fakeClient([], []), { schema: { profiles: { ...profiles } } })
+      benni({
+        client: fakeClient([], []),
+        schema: { profiles: { ...profiles } }
+      })
     ).toThrow(/schema\.profiles/);
   });
 });
-
-/** A client with none of the optional capabilities, like the HTTP adapter. */
-function fakeClientWithout(): RedisClient {
-  return {
-    async send() {
-      return null;
-    },
-    async pipeline() {
-      return [];
-    },
-    async close() {}
-  };
-}

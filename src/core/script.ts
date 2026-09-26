@@ -49,9 +49,10 @@ export type DefineScriptOptions<TResult> = {
 
 /**
  * Runs {@link RedisScript}s against one client, loading each script once and
- * then executing cached `EVALSHA`. If the server has forgotten the script
- * (`NOSCRIPT`, e.g. after a restart or `SCRIPT FLUSH`), it reloads and retries
- * transparently. Built by {@link createScriptRunner}; `redis.script(schema)`
+ * then executing cached `EVALSHA`. If the node the keys live on does not have
+ * the script (`NOSCRIPT`: after a restart, a `SCRIPT FLUSH`, or on a cluster
+ * node the load never reached), it runs it once with `EVAL`, which caches it
+ * there. Built by {@link createScriptRunner}; `redis.script(schema)`
  * uses one internally, shared per client.
  */
 export type ScriptRunner = {
@@ -119,22 +120,6 @@ export function createScriptRunner(
     return reply;
   }
 
-  /**
-   * Whether the server still holds `sha`. A reply we cannot read counts as
-   * "still there", because not retrying is the safe side of the guess: the
-   * caller gets the script's error instead of its side effects twice.
-   */
-  async function serverHasScript(sha: string): Promise<boolean> {
-    let reply: RedisReply;
-    try {
-      reply = await client.send(["SCRIPT", "EXISTS", sha]);
-    } catch {
-      return true;
-    }
-    const found = Array.isArray(reply) ? reply[0] : undefined;
-    return found !== 0 && found !== false;
-  }
-
   return {
     async run<TArgs extends readonly RedisCommandArgument[], TResult>(
       script: RedisScript<TArgs, TResult>,
@@ -163,22 +148,14 @@ export function createScriptRunner(
         ]);
       } catch (error) {
         if (!isNoScriptError(error)) throw error;
-        // The message alone cannot prove the server forgot the script: a
-        // script's own `redis.error_reply("NOSCRIPT …")` reaches the client
-        // byte for byte, indistinguishable from the server's. So ask, always.
-        // Reloading and re-running a script that already applied its side
-        // effects applies them twice, and the caller sees only the error.
-        // The freshly-loaded sha needs the probe too, since a SCRIPT FLUSH or
-        // a failover between the load and the call is exactly the case where
-        // a retry is the right answer, and a script erroring on its first run
-        // is exactly the case where it is not.
-        if (await serverHasScript(sha)) {
-          throw error;
-        }
-        const reloaded = await load(script);
+        // Not reload-and-EVALSHA: SCRIPT LOAD carries no key, so a cluster
+        // client sends it to whichever node it likes, and the retried EVALSHA
+        // goes back to the node that never saw it. EVAL carries the keys, so
+        // it runs where they live, and leaves the script cached there for the
+        // next EVALSHA. On a single node it is just as good.
         reply = await client.send([
-          "EVALSHA",
-          reloaded,
+          "EVAL",
+          script.lua,
           script.keyCount,
           ...keys,
           ...args
@@ -190,19 +167,30 @@ export function createScriptRunner(
 }
 
 /**
- * Anchored, not a substring search. Redis prefixes the reply with the error
- * code, so a real NOSCRIPT always *starts* with it. A substring test also
- * matched a script's own failure whose text merely mentions NOSCRIPT — Redis
- * wraps those as "ERR Error running script ...: @user_script:N: <message>" —
- * and the retry then re-ran a script that had already applied its side
- * effects.
+ * The server's own NOSCRIPT, which it sends before running anything, so
+ * falling back to EVAL cannot apply the script's side effects twice.
  *
- * Anchoring is necessary but not sufficient: a script that returns
- * `redis.error_reply("NOSCRIPT …")` produces the same bytes the server does,
- * so a match only means "may be a cache miss". `serverHasScript` decides.
+ * Matched on the server's wording, not just the code. Redis prefixes a script
+ * failure with "ERR Error running script ...", so an anchored match already
+ * rules out a script's error that merely mentions NOSCRIPT. But a script can
+ * return `redis.error_reply("NOSCRIPT …")`, which reaches the client byte for
+ * byte; that one ran, and re-running it would apply its side effects twice.
+ * Redis and Valkey word theirs "NOSCRIPT No matching script. Please use
+ * EVAL." (Upstash's REST API drops the second sentence), so anything else
+ * after the code is the script talking and is rethrown.
+ *
+ * TODO: a script that returns the server's exact wording is indistinguishable
+ * and gets re-run. It used to be caught by asking SCRIPT EXISTS, but that
+ * probe carries no key either, so on a cluster it asked a random node and
+ * turned every cross-node cache miss into an error. If that edge case ever
+ * matters, the upgrade is a keyed probe (an EVAL that runs nothing) on
+ * cluster clients only.
  */
 function isNoScriptError(error: unknown): boolean {
-  return error instanceof Error && /^\s*NOSCRIPT\b/.test(error.message);
+  return (
+    error instanceof Error &&
+    /^\s*NOSCRIPT No matching script\b/.test(error.message)
+  );
 }
 
 export type ScriptSchema<

@@ -54,18 +54,19 @@ describe("schema store bindings", () => {
     const client = fakeClient([], []);
     // Object spread drops the symbol — the one thing that used to work and
     // now does not, so it has to fail with an actionable message.
-    expect(() => benni(client, { schema: { users: { ...users } } })).toThrow(
-      /schema\.users .*no store binding/s
-    );
+    expect(() =>
+      benni({ client: client, schema: { users: { ...users } } })
+    ).toThrow(/schema\.users .*no store binding/s);
   });
 
   it("rejects a copied schema passed to an accessor", () => {
-    const redis = benni(fakeClient([], []));
+    const redis = benni({ client: fakeClient([], []) });
     expect(() => redis.hash({ ...users })).toThrow(/hash schema/);
   });
 
   it("still ignores non-schema exports on the schema module", () => {
-    const redis = benni(fakeClient([], []), {
+    const redis = benni({
+      client: fakeClient([], []),
       schema: { users, notASchema: { hello: "world" }, alsoNot: 42 }
     });
     expect(Object.keys(redis.query)).toEqual(["users"]);

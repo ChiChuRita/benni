@@ -1,17 +1,18 @@
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { bun } from "../src/bun/index.js";
+import { codecs, type FullRedisClient } from "../src/core/index.js";
 import {
-  codecs,
   definePubSubChannel,
   definePubSubPattern
-} from "../src/core/index.js";
+} from "../src/core/pubsub.js";
 import { benni } from "../src/index.js";
 import { freePort } from "./free-port.js";
 import {
   expectPubSubSurvivesReconnect,
   expectRedisClientContract
 } from "./redis-contract.js";
+import { tcpProxy } from "./tcp-proxy.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -24,7 +25,7 @@ describeRedis("bun", () => {
 
   it("refuses to lease past close() instead of leaking the connection", async () => {
     expect(redisUrl).toBeDefined();
-    const client = await bun({ url: redisUrl });
+    const client = bun({ url: redisUrl });
     // A lease still connecting when close() drains the backstop used to land
     // in a Set nobody iterates again, leaving a live socket behind.
     const pending = client.session?.();
@@ -48,7 +49,7 @@ describe("bun connect failure", () => {
       [
         "-e",
         `import { bun } from "${adapter}";
-           await bun({ url: "redis://127.0.0.1:${port}" }).catch(() => {});`
+           bun({ url: "redis://127.0.0.1:${port}" }).send(["PING"]).catch(() => {});`
       ],
       { stdio: "ignore" }
     );
@@ -65,6 +66,62 @@ describe("bun connect failure", () => {
   }, 20000);
 });
 
+describeRedis("bun connects on first use", () => {
+  it("fails the commands of a failed first connect, and a later command connects", async () => {
+    // A pod booting while Redis restarts: the first commands fail, and the
+    // client is not poisoned by it.
+    const proxy = await tcpProxy(redisUrl as string);
+    const errors: unknown[] = [];
+    const client = bun({
+      url: `redis://127.0.0.1:${proxy.port}`,
+      onError: (error) => errors.push(error)
+    });
+    try {
+      const results = await Promise.allSettled([
+        client.send(["PING"]),
+        client.send(["PING"])
+      ]);
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        expect(String((result as PromiseRejectedResult).reason)).toMatch(
+          /benni\/bun could not connect to Redis/
+        );
+      }
+      expect(errors.length).toBeGreaterThan(0);
+
+      await proxy.start();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await expect(client.send(["PING"])).resolves.toBe("PONG");
+    } finally {
+      await client.close();
+      await proxy.stop();
+    }
+  });
+
+  it("reports a reconnect after a drop", async () => {
+    const proxy = await tcpProxy(redisUrl as string);
+    await proxy.start();
+    const reconnects: string[] = [];
+    const client = bun({
+      url: `redis://127.0.0.1:${proxy.port}`,
+      onReconnect: (connection) => reconnects.push(connection)
+    });
+    try {
+      await client.send(["PING"]);
+      proxy.dropConnections();
+      const deadline = Date.now() + 5000;
+      while (!reconnects.includes("client") && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(reconnects).toContain("client");
+      await expect(client.send(["PING"])).resolves.toBe("PONG");
+    } finally {
+      await client.close();
+      await proxy.stop();
+    }
+  });
+});
+
 describeRedis("bun subscriber close", () => {
   it("lets the process exit when close() runs with subscriptions live", async () => {
     // Closing a Bun client that still holds subscriptions pins the process
@@ -76,7 +133,7 @@ describeRedis("bun subscriber close", () => {
       [
         "-e",
         `import { bun } from "${adapter}";
-           const client = await bun({ url: "${redisUrl}" });
+           const client = bun({ url: "${redisUrl}" });
            const subscriber = await client.subscriber();
            await subscriber.subscribe("benni:test:exit:${Date.now()}", () => {});
            await client.close();`
@@ -99,8 +156,8 @@ describeRedis("bun subscriber close", () => {
 describeRedis("bun pubsub", () => {
   it("publishes and subscribes typed messages over a leased subscriber", async () => {
     expect(redisUrl).toBeDefined();
-    const client = await bun({ url: redisUrl });
-    const redis = benni(client);
+    const client = bun({ url: redisUrl });
+    const redis = benni({ client: client });
     const channel = definePubSubChannel(
       `benni:test:events:${Date.now()}:${Math.random().toString(36).slice(2)}`,
       codecs.json<{ id: string; action: "created" }>()
@@ -135,8 +192,10 @@ describeRedis("bun pubsub", () => {
 
   it("reports pattern subscribe as unsupported instead of hanging", async () => {
     expect(redisUrl).toBeDefined();
-    const client = await bun({ url: redisUrl });
-    const redis = benni(client);
+    const client = bun({ url: redisUrl });
+    // The handle's type has no pattern() over a Bun client; the cast forces
+    // the call through to pin the runtime backstop behind that.
+    const redis = benni({ client: client as unknown as FullRedisClient });
     // Must be a real builder-made schema: a bare object literal carries no
     // store binding, so pattern() would throw synchronously before the
     // adapter's missing psubscribe is ever reached.

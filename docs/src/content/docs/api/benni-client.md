@@ -3,43 +3,62 @@ title: "Benni Client"
 description: "Create a Benni client by passing a Redis adapter to benni(), then reach every schema through typed data-structure accessors."
 ---
 
-Create a Benni client by passing a Redis adapter to `benni`. It takes either shape, and they are the same call:
+Create a Benni client by passing a Redis adapter to `benni`. It takes one config object:
 
 ```ts
 import { benni } from "benni";
 import { node } from "benni/node";
+import * as schema from "./schema";
 
-// One object, no top-level await: the promise resolves on the first command.
-const redis = benni({ client: node({ url }), schema });
-
-// Or a client you already have.
-const redis = benni(client, { schema });
+export const redis = benni({ client: node({ url }), schema });
 ```
 
-The `client` accepts a connected `RedisClient`, a promise of one, a factory returning either, or another Benni handle. The cost of either lazy form is that a bad `REDIS_URL` surfaces at the first command instead of at startup.
+Adapters return their client synchronously and connect on the first command, so this needs no top-level `await` and importing the module opens no connection. A connect that fails rejects the commands that were waiting on it, and a later command tries again, with a backoff that grows from 100 ms to 5 s, so a process that started while Redis was down recovers once Redis is back. To find a bad `REDIS_URL` at startup rather than at the first request, send one command: `await redis.raw.send(["PING"])`.
 
-The two lazy forms differ in one way worth knowing:
+`client` is an adapter's client (`node(…)`, `ioredis(…)`, `bun(…)`, `upstash(…)`) or another Benni handle, whose client the new handle shares. A raw node-redis or ioredis instance is refused with a message saying how to wrap it: `ioredis(instance)` adopts an ioredis client, and node-redis clients cannot be adopted, so create one with `node({ url })`, which takes every node-redis option.
 
-| Source | When it connects | `close()` before the first command | After a failed connect |
-| --- | --- | --- | --- |
-| A promise (`node({ url })`) | Already connecting when you pass it | Closes the client it opened | Every command reports that same failure: a settled promise cannot be retried |
-| A factory (`() => node({ url })`) | On the first command | Opens nothing | The next command calls the factory again |
-
-Reach for the factory when a module is loaded in a context that must not connect at all, which is why `benni/next`'s `cacheHandler` documents one: Next.js loads `cache-handler.mjs` at build time.
-
-`close()` is final for both, and for the factory that is the point: a request that lands after shutdown rejects with `Redis client is closed` instead of calling the factory and opening a connection nothing is left to close. Calling `close()` more than once is a no-op.
-
-`BenniOptions` has three fields, all optional:
-
-| Option | Effect |
+| Field | Effect |
 | --- | --- |
-| `schema` | The schema module that backs [`redis.query`](#redisquery). |
+| `client` | Required. The adapter's client, or a Benni handle. |
+| `schema` | The schema module that backs [`redis.query`](#redisquery). Required whenever you pass the schema type explicitly (`benni<typeof schema>(…)`), so the type cannot promise a registry the handle does not have. |
 | `onPubSubError` | Called when a Pub/Sub handler throws (see [`redis.pubsub`](#redispubsub)). Without it, the error is rethrown asynchronously rather than swallowed. |
 | `cluster` | Check, before sending, that every key in a multi-key command hashes to one Redis Cluster slot, throwing `CrossSlotError` when it does not. Off by default. See [Redis Cluster](/benni/advanced/cluster/). |
 
-Everything else a client can do follows from the adapter you pass in.
+Everything else a client can do follows from the adapter you pass in, and the handle's type says so: over `benni/upstash` there is no `redis.session()`, `redis.watch()`, or `subscribe()`, and over `benni/bun` no `redis.pubsub.pattern()`. See [What the client can do](#what-the-client-can-do).
 
 Every data-structure accessor exposes the store's methods plus `key(id)` for the full Redis key and `del(id)`.
+
+## Closing
+
+`redis.close()` shuts the handle down, in order: the Pub/Sub subscriptions, then queue workers started through the handle (each drains its in-flight jobs, as `worker.stop()` does), then sessions still open, then the client. `await using` does the same:
+
+```ts
+process.on("SIGTERM", async () => {
+  await redis.close();
+});
+
+// Or, scoped:
+await using redis = benni({ client: node({ url }), schema });
+```
+
+It closes only what the handle opened. A handle built over another handle leaves that handle's client open, and an ioredis client you adopted with `ioredis(instance)` is never closed: whoever created it owns it. `close()` is idempotent, and every command or lease issued after it rejects instead of reopening a connection nothing would close. `redis.raw.close()` is the same call.
+
+A worker's own `stop()` accepts a `timeoutMs`; `redis.close()` waits for in-flight jobs without one, so stop long-running workers yourself first if shutdown has a deadline.
+
+## What the client can do
+
+Each adapter returns a client type that says which optional capabilities it has, and `benni()` carries that type into the handle:
+
+| Adapter | Client type | `session()` / `watch()` | `subscribe()` | `pubsub.pattern()` |
+| --- | --- | --- | --- | --- |
+| `benni/node` | `FullRedisClient` | yes | yes | yes |
+| `benni/ioredis` | `FullRedisClient` | yes | yes | yes |
+| `benni/bun` | `BunClient` | yes | yes | no |
+| `benni/upstash` | `UpstashClient` | no | no (publish only) | no |
+
+A member the client cannot back is not on the handle's type at all, so the mistake is a compile error rather than a runtime `UnsupportedCapabilityError` (which stays as the backstop for untyped code). Blocking reads live on sessions, so they follow `session()`.
+
+`Benni<typeof schema>` assumes the full client, as `benni/node` and `benni/ioredis` return. On another adapter, name its client type: `Benni<typeof schema, UpstashClient>` with `import type { UpstashClient } from "benni/upstash"`. A library that accepts any handle takes `AnyBenni`, which offers the capability-free surface.
 
 ## Registering The Schema Module
 
@@ -73,6 +92,8 @@ export function makeHandlers(redis: Benni<typeof schema>) { /* ... */ }
 ```
 
 Pass the generic explicitly for a second handle bound to a different module, too: the registration sets the default, not a ceiling.
+
+Register in apps only, once per program, and never in a library. The augmentation is global to the compilation: a second one is a compile error (TS2717, "subsequent property declarations must have the same type"), and a library that registers its own schema retypes the bare `Benni` of every app that installs it. In a monorepo, declare it in each app package and nowhere else; shared packages take `AnyBenni` or an explicit `Benni<typeof schema>`.
 
 ## `redis.query`
 
@@ -351,7 +372,7 @@ await redis.pubsub.close();
 Subscribing requires a client that can hold a connection. An adapter advertises this with the optional `subscriber?()` method on the `RedisClient` contract, the pub/sub counterpart to `session?()`:
 
 ```ts
-import type { RedisClient, RedisSubscriber } from "benni";
+import type { RedisClient, RedisSubscriber } from "benni/core";
 
 declare const client: RedisClient;
 //    ^? { send, pipeline, transaction?, session?, subscriber?, close }
@@ -360,7 +381,7 @@ declare function open(): Promise<RedisSubscriber>;
 //    ^? { subscribe, unsubscribe, psubscribe?, punsubscribe?, closed, close }
 ```
 
-Benni leases at most one subscriber per client, so adapters do no bookkeeping. When `subscriber` is undefined (the HTTP adapter), `subscribe` throws `TypeError` at call time, the same style as the session guard. `psubscribe`/`punsubscribe` are optional in turn, which is how the Bun adapter reports patterns as unsupported instead of hanging. Pass `onPubSubError` to `benni()` to route a handler that throws; without it the error is rethrown asynchronously rather than swallowed. See [Pub/Sub](/benni/data-structures/pubsub/).
+Benni leases at most one subscriber per client, so adapters do no bookkeeping. When `subscriber` is undefined (the HTTP adapter), the handle's channel resources have `publish` but no `subscribe` or `stream`; code that forces the call anyway gets `UnsupportedCapabilityError`. `psubscribe`/`punsubscribe` are optional in turn, which is how the Bun adapter leaves out patterns instead of hanging on them. Pass `onPubSubError` to `benni()` to route a handler that throws; without it the error is rethrown asynchronously rather than swallowed. See [Pub/Sub](/benni/data-structures/pubsub/).
 
 ## `redis.session`
 
@@ -374,7 +395,7 @@ const job = await redis.session(async (s) => {
 await using session = await redis.session();
 ```
 
-A session carries the same store accessors as the Benni handle, bound to its private connection, where `list`, `zset`, and `stream` are supersets that add the blocking variants and the blocking consumer-group read. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. It throws `TypeError` if the client does not support sessions. See [Sessions](/benni/advanced/sessions/), [Blocking Operations](/benni/advanced/blocking-operations/), and [Consumer Groups](/benni/data-structures/consumer-groups/).
+A session carries the same store accessors as the Benni handle, bound to its private connection, where `list`, `zset`, and `stream` are supersets that add the blocking variants and the blocking consumer-group read. It also adds `session.watch(keys)`, `session.unwatch()`, and `session.multi()`, plus `session.raw`, `session.closed`, and `session.close()`. A handle over a client without sessions (`benni/upstash`) has no `session()`; forced through, it throws `UnsupportedCapabilityError`. See [Sessions](/benni/advanced/sessions/), [Blocking Operations](/benni/advanced/blocking-operations/), and [Consumer Groups](/benni/data-structures/consumer-groups/).
 
 ## `redis.watch`
 

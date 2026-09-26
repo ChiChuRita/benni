@@ -11,6 +11,6 @@ Before, an error the Redis *server* returned reached the caller in whatever shap
 - `command` names the command that drew the error, uppercased, wherever the throw site can attribute it: a single `send`, or a pipeline entry the adapter reports per command.
 - `cause` holds the adapter-native error (or, for the HTTP adapter, the raw payload string), so nothing the underlying client attached is lost.
 - `message` stays the server's text verbatim, code included, so message matching that predates this class keeps working.
-- Also exported: `redisErrorCode(message)` for classifying a raw message, and `redisServerError(source, command?)`, the normalizer the adapters use, which passes an already normalized error through unchanged.
+- Also exported: `redisErrorCode(message)` for classifying a raw message, and, from `benni/core`, `redisServerError(source, command?)`, the normalizer the adapters use, which passes an already normalized error through unchanged.
 
 All four adapters agree, including their pipeline, `MULTI`, and `WATCH` paths. Client-side failures are deliberately left alone: a closed client, a dropped socket, an ioredis `MaxRetriesPerRequestError`, or an Upstash HTTP transport failure never came from Redis, so none of them is reported as a server error. The `MULTI` rejection unwrap on `benni/node` and `WATCH` abort detection on every adapter behave exactly as before, and cluster redirections are still followed by the cluster-aware client underneath.

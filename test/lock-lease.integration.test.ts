@@ -22,7 +22,7 @@ describeRedis("lock lease (live)", () => {
     new Promise((resolve) => setTimeout(resolve, ms));
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();
@@ -212,7 +212,7 @@ describeCluster("lock on a cluster-enabled node", () => {
   const run = `lock-cluster:${Date.now()}`;
 
   beforeAll(async () => {
-    client = await node({ url: clusterUrl });
+    client = node({ url: clusterUrl });
   });
   afterAll(async () => {
     await client.close();

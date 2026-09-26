@@ -317,7 +317,7 @@ describeRedis("cache fill fencing (live)", () => {
   const run = `cache:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();
@@ -519,7 +519,7 @@ describeCluster("cache on a cluster-enabled node", () => {
   const run = `cache-cluster:${Date.now()}`;
 
   beforeAll(async () => {
-    client = await node({ url: clusterUrl });
+    client = node({ url: clusterUrl });
   });
   afterAll(async () => {
     await client.close();

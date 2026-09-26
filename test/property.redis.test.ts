@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import type { RedisClient } from "../src/core/index.js";
 import {
   codecs,
@@ -8,16 +9,15 @@ import {
   createListStore,
   createSetStore,
   createSortedSetStore,
-  defineHash,
-  defineKeyspace,
-  defineList,
-  defineSet,
-  defineSortedSet,
   scanHash,
   scanKeyspace,
   scanSet,
   scanSortedSet
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
+import { defineList } from "../src/core/list.js";
+import { defineSet } from "../src/core/set.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 import { node } from "../src/node/index.js";
 
 // Differential model-based tests against a live Redis: fast-check generates
@@ -52,7 +52,7 @@ describeRedis("differential properties against live Redis", () => {
   let client: RedisClient;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

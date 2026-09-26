@@ -93,6 +93,16 @@ export interface RedisSession {
  * | bun     | yes               | yes     | yes (no)              |
  * | upstash | yes (/multi-exec) | no      | no                    |
  *
+ * That runtime check is the backstop. Each adapter also returns a type that
+ * makes the optional members it has required (see {@link FullRedisClient}),
+ * and `benni()` carries that type, so a handle over a client without sessions
+ * has no `session()` to call in the first place. A hand-written adapter gets
+ * the same by returning an interface that narrows the members it implements.
+ *
+ * An adapter returns its client synchronously and connects on first use, so
+ * importing the module that builds a handle opens no socket. A failed connect
+ * rejects the commands that were waiting on it; a later command tries again.
+ *
  * Reply shapes (normative; pinned for every adapter by the shared contract
  * test). Replies are RESP2-shaped whatever the adapter speaks underneath, so
  * `redis.raw.send()` and a user's own decoders see the same value on every
@@ -167,6 +177,17 @@ export interface RedisClient {
 }
 
 /**
+ * A client that implements every optional member of {@link RedisClient},
+ * pattern subscriptions included: what `benni/node` and `benni/ioredis`
+ * return, and the client `Benni` assumes when a type names no other.
+ */
+export interface FullRedisClient extends RedisClient {
+  transaction(commands: readonly RedisCommand[]): Promise<RedisReply[]>;
+  session(): Promise<RedisSession>;
+  subscriber(): Promise<RedisPatternSubscriber>;
+}
+
+/**
  * A connection in subscriber mode. Core registers exactly ONE listener per
  * channel/pattern and fans out to its own handlers, so implementations never
  * need to track multiple listeners for the same name.
@@ -204,6 +225,15 @@ export interface RedisSubscriber {
    */
   readonly closed: boolean;
   close(): Promise<void>;
+}
+
+/** A {@link RedisSubscriber} that supports pattern subscriptions. */
+export interface RedisPatternSubscriber extends RedisSubscriber {
+  psubscribe(
+    pattern: string,
+    listener: (message: string, channel: string) => void
+  ): Promise<void>;
+  punsubscribe(pattern: string): Promise<void>;
 }
 
 export type RedisKeyPart = string | number | bigint;

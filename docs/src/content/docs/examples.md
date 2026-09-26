@@ -76,15 +76,14 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+export const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
 });
-
-export const redis = benni(client, { schema });
 ```
 
 The sections below assume these two files. The lower-level building blocks the
-client is made of (`defineKeyspace`, `createHashStore`, …) live under
+client is made of (`createKeyValueStore`, `createHashStore`, …) live under
 `benni/core` for adapter authors and advanced integrations; see the
 [API overview](/benni/api/overview/).
 
@@ -426,12 +425,8 @@ The `RedisClient` contract is three required methods: `send`, `pipeline`, and
 typed API with a scripted fake:
 
 ```ts
-import {
-  benni,
-  type RedisClient,
-  type RedisCommand,
-  type RedisReply
-} from "benni";
+import { benni } from "benni";
+import type { RedisClient, RedisCommand, RedisReply } from "benni/core";
 import { json, kv } from "benni/schema";
 
 function fakeClient(commands: RedisCommand[], replies: RedisReply[]): RedisClient {
@@ -452,7 +447,8 @@ function fakeClient(commands: RedisCommand[], replies: RedisReply[]): RedisClien
 
 const commands: RedisCommand[] = [];
 const profiles = kv("user", json<{ name: string }>());
-const redis = benni(fakeClient(commands, ["OK", "{\"name\":\"Ada\"}"]), {
+const redis = benni({
+  client: fakeClient(commands, ["OK", "{\"name\":\"Ada\"}"]),
   schema: { profiles }
 });
 

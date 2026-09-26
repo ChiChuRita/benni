@@ -443,8 +443,7 @@ export function createHashStore<
     // same window, a reader seeing the new fields beside the stale optional
     // one. MULTI/EXEC closes both. Every adapter implements transaction(); the
     // fallback is for a custom client that does not, which is no worse off
-    // than before, and it has to cover that client behind a promise or
-    // factory too (see transactionOrPipeline). On a session holding a WATCH
+    // than before (see transactionOrPipeline). On a session holding a WATCH
     // the facade degrades this back to a pipeline rather than let an EXEC
     // clear the caller's watch set (see createBenniSession).
     const replies =

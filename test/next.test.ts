@@ -8,7 +8,7 @@ import {
   vi
 } from "vitest";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
-import { cacheHandler, rateLimit } from "../src/next/index.js";
+import { cacheHandler, rateLimitMiddleware } from "../src/next/index.js";
 import { node } from "../src/node/index.js";
 import { fakeClient } from "./fake-client.js";
 import {
@@ -445,23 +445,6 @@ describe("cacheHandler: revalidation", () => {
     expect(commands.map((command) => command[0])).toEqual(["SMEMBERS", "SET"]);
   });
 
-  it("awaits a lazy client factory exactly once across operations", async () => {
-    const commands: RedisCommand[] = [];
-    const client = fakeClient(commands, ["OK", null]);
-    let calls = 0;
-    const factory = async (): Promise<RedisClient> => {
-      calls += 1;
-      return client;
-    };
-    const handler = new (cacheHandler({ client: factory }))();
-
-    await handler.set("/page", { kind: "APP_PAGE" }, {});
-    await handler.get("/page");
-
-    expect(calls).toBe(1);
-    expect(commands.map((command) => command[0])).toEqual(["SET", "GET"]);
-  });
-
   it("resetRequestCache is a no-op", () => {
     const Handler = cacheHandler({ client: fakeClient([], []) });
     expect(new Handler().resetRequestCache()).toBeUndefined();
@@ -477,7 +460,7 @@ describeRedis("cacheHandler (live)", () => {
   const key = (suffix: string) => `{${prefix}}:${suffix}`;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     const keys = (await client.send(["KEYS", `{${prefix}}:*`])) as string[];
@@ -554,7 +537,7 @@ describe("rateLimit", () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset]
     const client = fakeClient(commands, ["sha1", [1, 9, Date.now() + 60_000]]);
-    const limiter = rateLimit({
+    const limiter = rateLimitMiddleware({
       client,
       limit: 10,
       windowMs: 60_000,
@@ -583,7 +566,7 @@ describe("rateLimit", () => {
     // No fake timers needed any more: Retry-After comes from the server's own
     // duration, so the local clock is irrelevant to it.
     const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
-    const limiter = rateLimit({
+    const limiter = rateLimitMiddleware({
       client,
       limit: 5,
       windowMs: 60_000,
@@ -607,7 +590,7 @@ describe("rateLimit", () => {
     // knowing the deployment, so the fallback is the caller's to choose.
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
-    const limiter = rateLimit({
+    const limiter = rateLimitMiddleware({
       client,
       limit: 5,
       windowMs: 1_000,
@@ -624,7 +607,7 @@ describe("rateLimit", () => {
   it("supports a custom identify", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
-    const limiter = rateLimit({
+    const limiter = rateLimitMiddleware({
       client,
       limit: 5,
       windowMs: 1_000,
@@ -646,7 +629,7 @@ describe("rateLimit", () => {
       "sha1",
       [0, 0, 1_700_000_099_000, 900]
     ]);
-    const limiter = rateLimit({
+    const limiter = rateLimitMiddleware({
       client,
       limit: 3,
       windowMs: 10_000,
@@ -663,27 +646,5 @@ describe("rateLimit", () => {
       retryAfterMs: 900
     });
     expect(commands.at(-1)?.[3]).toBe("next-ratelimit:user:42");
-  });
-
-  it("awaits a lazy client factory exactly once across checks", async () => {
-    const client = fakeClient(
-      [],
-      ["sha1", [1, 1, 1], [1, 0, 2]] // one SCRIPT LOAD, two EVALSHAs
-    );
-    let calls = 0;
-    const limiter = rateLimit({
-      client: async () => {
-        calls += 1;
-        return client;
-      },
-      limit: 2,
-      windowMs: 1_000,
-      identify: () => "tester"
-    });
-
-    await limiter.check("a");
-    await limiter.check("b");
-
-    expect(calls).toBe(1);
   });
 });

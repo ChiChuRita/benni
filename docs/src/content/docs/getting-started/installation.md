@@ -69,10 +69,11 @@ pnpm redis:build
 pnpm redis:run
 ```
 
-Then point Benni at Redis:
+Then point Benni at Redis. The adapter returns its client at once and connects on the first command:
 
 ```ts
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
 });
 ```

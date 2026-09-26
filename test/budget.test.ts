@@ -42,7 +42,7 @@ describeRedis("budget (live)", () => {
   };
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

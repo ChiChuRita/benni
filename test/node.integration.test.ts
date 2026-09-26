@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { codecs } from "../src/core/index.js";
 import {
-  codecs,
   definePubSubChannel,
   definePubSubPattern
-} from "../src/core/index.js";
+} from "../src/core/pubsub.js";
 import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
 import {
@@ -32,8 +32,8 @@ describeRedis("node pubsub", () => {
     `benni:test:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   it("publishes and subscribes typed messages over a leased subscriber", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const channel = definePubSubChannel(
       unique("channel"),
       codecs.json<{ id: string; action: string }>()
@@ -60,8 +60,8 @@ describeRedis("node pubsub", () => {
   });
 
   it("multiplexes many subscriptions onto one connection and releases it", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const channel = definePubSubChannel(
       unique("multiplex"),
       codecs.json<{ n: number }>()
@@ -94,8 +94,8 @@ describeRedis("node pubsub", () => {
   });
 
   it("streams messages as an async iterable and stops on abort", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const channel = definePubSubChannel(
       unique("stream"),
       codecs.json<{ n: number }>()
@@ -124,8 +124,8 @@ describeRedis("node pubsub", () => {
   });
 
   it("subscribes typed patterns and reports the matched channel", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const prefix = unique("pattern");
     const pattern = definePubSubPattern(
       `${prefix}:*`,
@@ -161,8 +161,8 @@ describeRedis("node pubsub", () => {
     // consumed by a single pattern subscription. The two derivations have to
     // agree on the wire, which is the whole reason the id goes through the
     // keyspace key builder.
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const prefix = unique("room");
     const roomEvents = definePubSubChannel(
       prefix,
@@ -205,8 +205,8 @@ describeRedis("node pubsub", () => {
   });
 
   it("subscribes to an id-scoped channel and ignores the others", async () => {
-    const client = await node({ url: redisUrl });
-    const redis = benni(client);
+    const client = node({ url: redisUrl });
+    const redis = benni({ client: client });
     const roomEvents = definePubSubChannel(
       unique("scoped"),
       codecs.json<{ text: string }>()
@@ -242,7 +242,7 @@ describeRedis("node pubsub", () => {
     // result of forwarding an optional config field — erase the default, and
     // node-redis resolves undefined with `?? 3`. HGETALL then arrives as a
     // plain object outside the RedisReply union and every hash read throws.
-    const client = await node({ url: redisUrl, RESP: undefined });
+    const client = node({ url: redisUrl, RESP: undefined });
     const key = `benni:test:resp:${Date.now()}`;
     try {
       await client.send(["HSET", key, "a", "1"]);
@@ -264,7 +264,7 @@ describeRedis("node pubsub", () => {
     // "N commands failed, see .replies and .errorIndexes". benni/ioredis
     // throws the underlying error, so the two adapters disagreed on what a
     // per-command failure looks like.
-    const client = await node({ url: redisUrl });
+    const client = node({ url: redisUrl });
     const key = `benni:test:multi:${Date.now()}`;
     try {
       await expect(

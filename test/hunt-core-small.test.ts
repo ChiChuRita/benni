@@ -58,14 +58,17 @@ describe("benni() binds a module that co-exports a foreign validator", () => {
     // schema module co-exporting one is the ordinary layout. It used to throw
     // at bind time, blaming a copy the user never made.
     const validator = { kind: "schema", type: "object", entries: {} };
-    const db = benni(fakeClient([], []), { schema: { users, validator } });
+    const db = benni({
+      client: fakeClient([], []),
+      schema: { users, validator }
+    });
 
     expect(Object.keys(db.query)).toEqual(["users"]);
   });
 
   it("still rejects a copied benni schema, naming the export", () => {
     expect(() =>
-      benni(fakeClient([], []), { schema: { users: { ...users } } })
+      benni({ client: fakeClient([], []), schema: { users: { ...users } } })
     ).toThrow(/schema\.users .*no store binding/s);
   });
 });
@@ -102,14 +105,15 @@ describe("the script runner does not re-run a script's own NOSCRIPT", () => {
     });
   }
 
-  it("asks the server before reloading a cached sha", async () => {
+  it("rethrows a NOSCRIPT that is not in the server's own words", async () => {
+    // A script that returns redis.error_reply("NOSCRIPT ...") ran: its INCR
+    // is applied. Re-running it would apply it twice.
     const commands: RedisCommand[] = [];
     const runner = createScriptRunner(
       rejectingClient(commands, [
         "sha-1",
         1,
-        new Error("NOSCRIPT the script said so"),
-        [1]
+        new Error("NOSCRIPT the script said so")
       ])
     );
     const bump = defineBump();
@@ -118,91 +122,80 @@ describe("the script runner does not re-run a script's own NOSCRIPT", () => {
     await expect(runner.run(bump, ["n:1"], [])).rejects.toThrow(
       "NOSCRIPT the script said so"
     );
-    // No second EVALSHA: the script had already applied its INCR.
     expect(commands).toEqual([
       ["SCRIPT", "LOAD", lua],
       ["EVALSHA", "sha-1", 1, "n:1"],
-      ["EVALSHA", "sha-1", 1, "n:1"],
-      ["SCRIPT", "EXISTS", "sha-1"]
+      ["EVALSHA", "sha-1", 1, "n:1"]
     ]);
   });
 
-  it("still reloads when the server really has forgotten the script", async () => {
+  it("falls back to EVAL with the keys when the server has forgotten the script", async () => {
     const commands: RedisCommand[] = [];
     const runner = createScriptRunner(
       rejectingClient(commands, [
         "sha-1",
         1,
         new Error("NOSCRIPT No matching script. Please use EVAL."),
-        [0],
-        "sha-2",
-        2
+        2,
+        3
       ])
     );
     const bump = defineBump();
 
     await expect(runner.run(bump, ["n:1"], [])).resolves.toBe(1);
     await expect(runner.run(bump, ["n:1"], [])).resolves.toBe(2);
+    // EVAL left the script cached on that node, so the sha stays valid.
+    await expect(runner.run(bump, ["n:1"], [])).resolves.toBe(3);
     expect(commands).toEqual([
       ["SCRIPT", "LOAD", lua],
       ["EVALSHA", "sha-1", 1, "n:1"],
       ["EVALSHA", "sha-1", 1, "n:1"],
-      ["SCRIPT", "EXISTS", "sha-1"],
-      ["SCRIPT", "LOAD", lua],
-      ["EVALSHA", "sha-2", 1, "n:1"]
+      ["EVAL", lua, 1, "n:1"],
+      ["EVALSHA", "sha-1", 1, "n:1"]
     ]);
   });
 
-  it("treats a boolean SCRIPT EXISTS reply as an answer too", async () => {
+  it("recovers every concurrent caller after a SCRIPT FLUSH", async () => {
+    // The interleaving that failed under the full integration suite: N callers
+    // of one script all draw NOSCRIPT after a flush. With the old reload +
+    // SCRIPT EXISTS probe, the first caller's reload made the probe say "still
+    // there" for the others, and they rethrew NOSCRIPT to their callers.
     const commands: RedisCommand[] = [];
-    const runner = createScriptRunner(
-      rejectingClient(commands, [
-        "sha-1",
-        1,
-        new Error("NOSCRIPT No matching script. Please use EVAL."),
-        [false],
-        "sha-2",
-        3
-      ])
-    );
+    let evalshas = 0;
+    const client: RedisClient = {
+      async send(command) {
+        commands.push(command);
+        const name = String(command[0]);
+        if (name === "SCRIPT") return "sha-1";
+        if (name === "EVALSHA") {
+          evalshas += 1;
+          // Yield so every caller's EVALSHA is in flight before any fails.
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          // The first round warms the cache; the flush lands after it.
+          if (evalshas > 1) {
+            throw new Error("NOSCRIPT No matching script. Please use EVAL.");
+          }
+          return 0;
+        }
+        if (name === "EVAL") return Number(command[3]?.toString().slice(2));
+        throw new Error(`unexpected ${name}`);
+      },
+      async pipeline() {
+        throw new Error("pipeline is not used by the script runner");
+      },
+      async close() {}
+    };
+    const runner = createScriptRunner(client);
     const bump = defineBump();
+    await runner.run(bump, ["n:0"], []);
 
-    await runner.run(bump, ["n:1"], []);
-    await expect(runner.run(bump, ["n:1"], [])).resolves.toBe(3);
-  });
-
-  it("does not retry when the probe itself fails", async () => {
-    const commands: RedisCommand[] = [];
-    const runner = createScriptRunner(
-      rejectingClient(commands, [
-        "sha-1",
-        1,
-        new Error("NOSCRIPT No matching script. Please use EVAL."),
-        new Error("Connection is closed")
-      ])
+    const results = await Promise.all(
+      [1, 2, 3, 4].map((n) => runner.run(bump, [`n:${n}`], []))
     );
-    const bump = defineBump();
 
-    await runner.run(bump, ["n:1"], []);
-    // The original error, not the probe's: a guess cannot justify re-running
-    // side effects.
-    await expect(runner.run(bump, ["n:1"], [])).rejects.toThrow("NOSCRIPT");
-  });
-
-  it("does not retry on a probe reply it cannot read", async () => {
-    const commands: RedisCommand[] = [];
-    const runner = createScriptRunner(
-      rejectingClient(commands, [
-        "sha-1",
-        1,
-        new Error("NOSCRIPT No matching script. Please use EVAL."),
-        "surprise"
-      ])
-    );
-    const bump = defineBump();
-
-    await runner.run(bump, ["n:1"], []);
-    await expect(runner.run(bump, ["n:1"], [])).rejects.toThrow("NOSCRIPT");
+    expect(results).toEqual([1, 2, 3, 4]);
+    expect(commands.filter((command) => command[0] === "EVAL")).toHaveLength(4);
+    expect(commands.some((command) => command[1] === "EXISTS")).toBe(false);
   });
 });
 
@@ -365,7 +358,7 @@ describeRedis("GETRANGE and SETRANGE index bytes (live)", () => {
   });
 
   it("counts and slices in bytes, as the JSDoc now says", async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
     const store = createStringStore(client, texts);
     const value = "café ☕ résumé";
 

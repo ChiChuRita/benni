@@ -1,18 +1,18 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import type { RedisCommand } from "../src/core/index.js";
 import {
   codecs,
   createHashStore,
   createSortedSetStore,
-  defineHash,
-  defineKeyspace,
-  defineList,
-  defineSet,
-  defineSortedSet,
   ReplyShapeError,
   ValidationError
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
+import { defineList } from "../src/core/list.js";
+import { defineSet } from "../src/core/set.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
 import { bytes } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 

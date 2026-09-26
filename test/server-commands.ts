@@ -13,7 +13,7 @@ export async function serverCommands(
   names: readonly string[]
 ): Promise<ReadonlySet<string>> {
   if (url === undefined) return new Set();
-  const client = await node({ url });
+  const client = node({ url });
   try {
     const info = (await client.send([
       "COMMAND",

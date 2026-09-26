@@ -120,18 +120,16 @@ describe("core message-based server error checks", () => {
         commands.push(command);
         const name = String(command[0]).toUpperCase();
         if (name === "SCRIPT" && command[1] === "LOAD") return "sha-1";
-        // The probe core issues to prove the server really forgot the script.
-        if (name === "SCRIPT" && command[1] === "EXISTS") return [0];
         if (name === "EVALSHA") {
           evalshaCalls += 1;
-          if (evalshaCalls === 1) {
-            throw redisServerError(
-              new Error("NOSCRIPT No matching script. Please use EVAL."),
-              "EVALSHA"
-            );
-          }
-          return 7;
+          throw redisServerError(
+            new Error("NOSCRIPT No matching script. Please use EVAL."),
+            "EVALSHA"
+          );
         }
+        // The fallback: EVAL with the source, which the normalized NOSCRIPT
+        // must still trigger.
+        if (name === "EVAL") return 7;
         throw new Error(`Unexpected command ${name}`);
       },
       async pipeline() {
@@ -147,7 +145,8 @@ describe("core message-based server error checks", () => {
     });
 
     await expect(runner.run(script, [], [])).resolves.toBe(7);
-    expect(evalshaCalls).toBe(2);
+    expect(evalshaCalls).toBe(1);
+    expect(commands.at(-1)).toEqual(["EVAL", "return 7", 0]);
   });
 });
 

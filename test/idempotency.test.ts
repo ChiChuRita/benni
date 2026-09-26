@@ -249,7 +249,7 @@ describeRedis("idempotency (live)", () => {
   const run = `idem:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     await client.close();

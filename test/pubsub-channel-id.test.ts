@@ -9,8 +9,8 @@ import {
 import type {
   RedisClient,
   RedisCommand,
-  RedisReply,
-  RedisSubscriber
+  RedisPatternSubscriber,
+  RedisReply
 } from "../src/core/types.js";
 import { benni } from "../src/database.js";
 import { fakeClient } from "./fake-client.js";
@@ -57,7 +57,9 @@ function pubsubServer() {
     return new RegExp(`^${source}$`).test(channel);
   }
 
-  const client: RedisClient = {
+  const client: RedisClient & {
+    subscriber(): Promise<RedisPatternSubscriber>;
+  } = {
     async send(command: RedisCommand) {
       const [name, channel, message] = command as [string, string, string];
       if (name !== "PUBLISH") throw new Error(`unexpected command: ${name}`);
@@ -78,7 +80,7 @@ function pubsubServer() {
     async pipeline() {
       return [];
     },
-    async subscriber(): Promise<RedisSubscriber> {
+    async subscriber(): Promise<RedisPatternSubscriber> {
       let closed = false;
       log.push("lease");
       return {
@@ -148,7 +150,7 @@ describe("channel name derivation", () => {
 describe("publishing to a per-entity channel", () => {
   it("publishes to the bare channel when no id is given", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, [1]));
+    const redis = benni({ client: fakeClient(commands, [1]) });
 
     await expect(
       redis.pubsub.channel(roomEvents).publish({ text: "hi" })
@@ -158,7 +160,7 @@ describe("publishing to a per-entity channel", () => {
 
   it("publishes to prefix:id when an id is given", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, [2]));
+    const redis = benni({ client: fakeClient(commands, [2]) });
 
     await expect(
       redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" })
@@ -167,7 +169,7 @@ describe("publishing to a per-entity channel", () => {
   });
 
   it("exposes the resolved channel on the resource, without the schema", () => {
-    const redis = benni(fakeClient([], []));
+    const redis = benni({ client: fakeClient([], []) });
     expect(redis.pubsub.channel(roomEvents).channelName("42")).toBe(
       "chat:room:42"
     );
@@ -178,7 +180,8 @@ describe("publishing to a per-entity channel", () => {
 
   it("reaches per-entity channels through the schema registry", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, [1]), {
+    const redis = benni({
+      client: fakeClient(commands, [1]),
       schema: { roomEvents }
     });
 
@@ -200,7 +203,7 @@ describe("publishing to a per-entity channel", () => {
 describe("subscribing to a per-entity channel", () => {
   it("subscribes to prefix:id and decodes with the schema codec", async () => {
     const server = pubsubServer();
-    const redis = benni(server.client);
+    const redis = benni({ client: server.client });
     const seen: RoomMessage[] = [];
 
     const subscription = await redis.pubsub
@@ -220,7 +223,7 @@ describe("subscribing to a per-entity channel", () => {
 
   it("keeps the bare channel and an id-scoped one apart", async () => {
     const server = pubsubServer();
-    const redis = benni(server.client);
+    const redis = benni({ client: server.client });
     const bare: RoomMessage[] = [];
     const scoped: RoomMessage[] = [];
 
@@ -244,7 +247,7 @@ describe("subscribing to a per-entity channel", () => {
 
   it("multiplexes two resources for the same id onto one subscription", async () => {
     const server = pubsubServer();
-    const redis = benni(server.client);
+    const redis = benni({ client: server.client });
     const first: RoomMessage[] = [];
     const second: RoomMessage[] = [];
 
@@ -274,7 +277,7 @@ describe("subscribing to a per-entity channel", () => {
 
   it("delivers an id-scoped publish to a pattern subscriber", async () => {
     const server = pubsubServer();
-    const redis = benni(server.client);
+    const redis = benni({ client: server.client });
     const seen: Array<[RoomMessage, string]> = [];
 
     const subscription = await redis.pubsub
@@ -299,7 +302,7 @@ describe("subscribing to a per-entity channel", () => {
 
   it("streams an id-scoped channel and releases it on abort", async () => {
     const server = pubsubServer();
-    const redis = benni(server.client);
+    const redis = benni({ client: server.client });
     const controller = new AbortController();
     const received: string[] = [];
 
@@ -328,7 +331,7 @@ describe("per-entity channel types", () => {
     });
 
     const resolved = roomEvents.channelName("42");
-    const fromResource = benni(fakeClient([], []))
+    const fromResource = benni({ client: fakeClient([], []) })
       .pubsub.channel(roomEvents, 42)
       .channelName();
     const knownResolved = known.channelName("lobby");
@@ -352,7 +355,7 @@ describe("per-entity channel types", () => {
 
   it("keeps the message type on the id-scoped resource", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, [1]));
+    const redis = benni({ client: fakeClient(commands, [1]) });
     const scoped = redis.pubsub.channel(roomEvents, 42);
     type Published = Parameters<typeof scoped.publish>[0];
     type _Published = Expect<Equal<Published, RoomMessage>>;

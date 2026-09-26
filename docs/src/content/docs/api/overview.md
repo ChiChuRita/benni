@@ -27,10 +27,12 @@ channel("events:user", json<UserEvent>());
 
 ## Client API
 
-Bind a Redis client:
+Bind a Redis client, and close the handle at shutdown:
 
 ```ts
-const redis = benni(client, { schema });
+const redis = benni({ client: node({ url }), schema });
+
+await redis.close();
 ```
 
 Use data-structure resources:
@@ -53,6 +55,6 @@ await redis.raw.send(["PING"]);
 
 ## Lower-Level Core API
 
-The `benni/core` entrypoint exposes the building blocks the client is made of (`defineKeyspace`, `createKeyValueStore`, `createHashStore`, and the other store builders) for adapter authors and advanced integrations.
+The `benni/core` entrypoint is the adapter-author surface: the `RedisClient` contract and its capability types (`FullRedisClient`, `RedisSession`, `RedisSubscriber`, …), `resolveClient`, the server-error normalizer `redisServerError`, the script runner (`createScriptRunner`, `defineScript`), and the store builders the client is made of (`createKeyValueStore`, `createHashStore`, …). Schemas are declared from `benni/schema` only; `benni/core` does not repeat the builders under `define*` names.
 
 Application code should prefer the schema-first API shown in the guide; every accessor is documented in the [Benni Client reference](/benni/api/benni-client/).

@@ -16,7 +16,7 @@ const url = () => redisUrl as string;
  * The Bun adapter has the same guards; it is covered by
  * test/bun.integration.bun.ts, since it cannot run under Vitest.
  */
-const adapters: ReadonlyArray<[string, () => Promise<RedisClient>]> = [
+const adapters: ReadonlyArray<[string, () => RedisClient]> = [
   ["node", () => node({ url: url() })],
   ["ioredis", () => ioredis(url())]
 ];
@@ -43,7 +43,7 @@ async function pubsubClientId(
 describeRedis("adapter leak backstop", () => {
   for (const [label, open] of adapters) {
     it(`${label}: refuses a lease whose connect is in flight when close() runs`, async () => {
-      const client = await open();
+      const client = open();
       // The Set is populated only after connect() resolves, so this lease used
       // to land behind the drain loop and stay open forever.
       const pending = client.session?.();
@@ -53,7 +53,7 @@ describeRedis("adapter leak backstop", () => {
     });
 
     it(`${label}: refuses session() and subscriber() after close()`, async () => {
-      const client = await open();
+      const client = open();
       await client.close();
       await expect(client.session?.()).rejects.toThrow(/client is closed/);
       await expect(client.subscriber?.()).rejects.toThrow(/client is closed/);
@@ -63,7 +63,7 @@ describeRedis("adapter leak backstop", () => {
 
 describeRedis("benni/node close()", () => {
   it("is idempotent, like every other adapter", async () => {
-    const client = await node({ url: url() });
+    const client = node({ url: url() });
     await client.close();
     // node-redis's own close() throws ClientClosedError on a second call, so a
     // SIGTERM and a SIGINT handler both calling close() used to produce an
@@ -77,7 +77,7 @@ describeRedis("benni/node subscriber", () => {
     const name = `benni-hunt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // reconnectStrategy: false makes a dropped socket terminal rather than a
     // reconnect window, which is the state the getter has to surface.
-    const client = await node({
+    const client = node({
       url: url(),
       name,
       socket: { reconnectStrategy: false }
@@ -99,7 +99,7 @@ describeRedis("benni/node subscriber", () => {
 
 describeRedis("benni/ioredis send()", () => {
   it("returns the same reply shape whatever case the command is written in", async () => {
-    const client = await ioredis(url());
+    const client = ioredis(url());
     const key = `benni:hunt:f79:${Date.now()}`;
     try {
       await client.send(["HSET", key, "a", "1", "b", "2"]);
@@ -130,7 +130,7 @@ describeCluster("benni/ioredis session on an adopted Cluster", () => {
     });
     cluster.on("error", () => {});
     await new Promise((resolve) => cluster.once("ready", resolve));
-    const client = await ioredis(cluster);
+    const client = ioredis(cluster);
     const admin = new IORedis({ host, port });
     admin.on("error", () => {});
     try {

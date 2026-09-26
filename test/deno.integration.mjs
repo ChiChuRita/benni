@@ -6,12 +6,12 @@ import { json, kv } from "benni/schema";
 const url = Deno.env.get("BENNI_REDIS_URL");
 if (!url) throw new Error("BENNI_REDIS_URL is required");
 
-const client = await node({ url });
+const client = node({ url });
 const profiles = kv(
   `benni:deno:${Date.now()}:${crypto.randomUUID()}`,
   json()
 );
-const redis = benni(client, { schema: { profiles } });
+const redis = benni({ client: client, schema: { profiles } });
 
 try {
   const profile = { name: "Ada", score: 10 };

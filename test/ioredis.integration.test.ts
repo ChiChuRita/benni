@@ -1,14 +1,11 @@
 import IORedis from "ioredis";
 import { afterAll, describe, expect, it } from "vitest";
-import {
-  codecs,
-  definePubSubChannel,
-  type RedisClient
-} from "../src/core/index.js";
+import { codecs, type RedisClient } from "../src/core/index.js";
+import { definePubSubChannel } from "../src/core/pubsub.js";
 import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
 import { queue } from "../src/primitives/index.js";
-import { json, kv } from "../src/schema.js";
+import { json, kv, number, script } from "../src/schema.js";
 import { freePort } from "./free-port.js";
 import {
   expectPubSubSurvivesReconnect,
@@ -46,7 +43,7 @@ describeRedis("ioredis", () => {
     // retryStrategy returning null makes a drop terminal: ioredis goes to
     // "end" instead of "reconnecting", the state the getter has to surface.
     // The subscriber duplicate inherits both options from the parent.
-    const client = await ioredis({
+    const client = ioredis({
       url: redisUrl,
       connectionName,
       retryStrategy: () => null
@@ -80,7 +77,7 @@ describeRedis("ioredis", () => {
   });
 
   it("accepts a bare URL string", async () => {
-    const client = await ioredis(redisUrl as string);
+    const client = ioredis(redisUrl as string);
     try {
       await expect(client.send(["PING"])).resolves.toBe("PONG");
     } finally {
@@ -90,7 +87,7 @@ describeRedis("ioredis", () => {
 
   it("accepts host/port options without a url", async () => {
     const { hostname, port } = new URL(redisUrl as string);
-    const client = await ioredis({
+    const client = ioredis({
       host: hostname,
       port: Number(port || 6379)
     });
@@ -105,7 +102,7 @@ describeRedis("ioredis", () => {
     // ioredis prefixes key arguments but not SCAN patterns, so a prefixed
     // client stored at `app:user:1` while every MATCH pattern and
     // schema.key() still said `user:1`. Scans returned nothing, silently.
-    await expect(ioredis({ url: redisUrl, keyPrefix: "app:" })).rejects.toThrow(
+    expect(() => ioredis({ url: redisUrl, keyPrefix: "app:" })).toThrow(
       /keyPrefix/
     );
 
@@ -114,7 +111,7 @@ describeRedis("ioredis", () => {
       protocol: 2
     });
     try {
-      await expect(ioredis(raw)).rejects.toThrow(/keyPrefix/);
+      expect(() => ioredis(raw)).toThrow(/keyPrefix/);
     } finally {
       raw.disconnect();
     }
@@ -124,8 +121,8 @@ describeRedis("ioredis", () => {
     // ioredis 6 defaults to RESP3, whose XREAD reply is a map: every stream
     // read then failed with ReplyShapeError. Ask the server what it speaks.
     for (const client of [
-      await ioredis(redisUrl as string),
-      await ioredis({ url: redisUrl, protocol: undefined })
+      ioredis(redisUrl as string),
+      ioredis({ url: redisUrl, protocol: undefined })
     ]) {
       try {
         await expect(client.send(["CLIENT", "INFO"])).resolves.toMatch(
@@ -138,12 +135,10 @@ describeRedis("ioredis", () => {
   });
 
   it("refuses RESP3 instead of failing on the first stream read", async () => {
-    await expect(ioredis({ url: redisUrl, protocol: 3 })).rejects.toThrow(
+    expect(() => ioredis({ url: redisUrl, protocol: 3 })).toThrow(
       /protocol: 2/
     );
-    await expect(ioredis(`${redisUrl}?protocol=3`)).rejects.toThrow(
-      /protocol: 2/
-    );
+    expect(() => ioredis(`${redisUrl}?protocol=3`)).toThrow(/protocol: 2/);
 
     const raw = new IORedis(redisUrl as string, {
       lazyConnect: true,
@@ -154,8 +149,8 @@ describeRedis("ioredis", () => {
       redisOptions: { protocol: 3 }
     });
     try {
-      await expect(ioredis(raw)).rejects.toThrow(/protocol: 2/);
-      await expect(ioredis(cluster)).rejects.toThrow(/protocol: 2/);
+      expect(() => ioredis(raw)).toThrow(/protocol: 2/);
+      expect(() => ioredis(cluster)).toThrow(/protocol: 2/);
     } finally {
       raw.disconnect();
       cluster.disconnect();
@@ -177,9 +172,10 @@ describeRedis("ioredis", () => {
     const port = await freePort();
     const socketsBefore = activeSockets();
     try {
-      await expect(
-        ioredis({ host: "127.0.0.1", port, connectTimeout: 300 })
-      ).rejects.toThrow();
+      const client = ioredis({ host: "127.0.0.1", port, connectTimeout: 300 });
+      await expect(client.send(["PING"])).rejects.toThrow(
+        /could not connect to Redis/
+      );
       // Long enough for at least one reconnect attempt to fire.
       await new Promise((resolve) => setTimeout(resolve, 900));
     } finally {
@@ -216,7 +212,7 @@ describeCluster("ioredis (adopted Cluster)", () => {
     });
     cluster.on("error", () => {});
     await new Promise((resolve) => cluster.once("ready", resolve));
-    return { cluster, client: await ioredis(cluster) };
+    return { cluster, client: ioredis(cluster) };
   }
 
   it("supports session() on an adopted Cluster", async () => {
@@ -258,6 +254,54 @@ describeCluster("ioredis (adopted Cluster)", () => {
       cluster.disconnect();
     }
   });
+
+  it("runs scripts on whichever node owns the keys", async () => {
+    // SCRIPT LOAD carries no key, so a Cluster sends it to a random node,
+    // and EVALSHA then went to the node owning the key and drew NOSCRIPT. The
+    // retry reloaded through the same keyless route, so with several nodes
+    // most scripts failed. The runner now falls back to EVAL, which carries
+    // the keys. A single-node cluster (CI) cannot show the routing, but still
+    // runs the fallback against a real Cluster client after the flush below;
+    // point BENNI_REDIS_CLUSTER_URL at a multi-node cluster to see the rest.
+    const { cluster, client } = await adopt();
+    const counter = script("benni-cluster-counter", {
+      keys: ["counter"],
+      args: { by: number() },
+      returns: number(),
+      lua: 'return redis.call("INCRBY", KEYS[1], ARGV[1])'
+    });
+    const redis = benni({ client, schema: { counter } });
+    const keys = Array.from(
+      { length: 24 },
+      (_, index) => `benni-t-script:${index}`
+    );
+    const flushAll = () =>
+      Promise.all(
+        cluster.nodes("master").map((master) => master.script("FLUSH"))
+      );
+    try {
+      await Promise.all(keys.map((key) => cluster.del(key)));
+      // No node has the script: the one load lands on a single node.
+      await flushAll();
+      for (const key of keys) {
+        await expect(
+          redis.query.counter.run({ keys: { counter: key }, args: { by: 2 } })
+        ).resolves.toBe(2);
+      }
+      // Every node forgets it again, under concurrent callers this time.
+      await flushAll();
+      const again = await Promise.all(
+        keys.map((key) =>
+          redis.query.counter.run({ keys: { counter: key }, args: { by: 3 } })
+        )
+      );
+      expect(again).toEqual(keys.map(() => 5));
+    } finally {
+      await Promise.all(keys.map((key) => cluster.del(key)));
+      await client.close();
+      cluster.disconnect();
+    }
+  });
 });
 
 describeRedis("ioredis (adopted client)", () => {
@@ -273,7 +317,7 @@ describeRedis("ioredis (adopted client)", () => {
 
   it("adopts an existing instance instead of dialing its own", async () => {
     await owned.connect();
-    const client = await ioredis(owned);
+    const client = ioredis(owned);
     const key = `benni:test:adopt:${Date.now()}`;
 
     await expect(client.send(["PING"])).resolves.toBe("PONG");
@@ -284,7 +328,7 @@ describeRedis("ioredis (adopted client)", () => {
   });
 
   it("leaves an adopted client open on close, but reaps what it leased", async () => {
-    const client = await ioredis(owned);
+    const client = ioredis(owned);
     const session = await client.session?.();
     expect(session?.closed).toBe(false);
 
@@ -303,8 +347,8 @@ describeRedis("ioredis: typed client and primitives", () => {
     `benni:test:${label}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   it("runs the typed store API end to end", async () => {
-    const client = await ioredis({ url: redisUrl });
-    const redis = benni(client);
+    const client = ioredis({ url: redisUrl });
+    const redis = benni({ client: client });
     const id = unique("kv");
     try {
       const profiles = redis.kv(
@@ -319,8 +363,8 @@ describeRedis("ioredis: typed client and primitives", () => {
   });
 
   it("delivers typed Pub/Sub over a leased subscriber", async () => {
-    const client = await ioredis({ url: redisUrl });
-    const redis = benni(client);
+    const client = ioredis({ url: redisUrl });
+    const redis = benni({ client: client });
     const channel = definePubSubChannel(
       unique("channel"),
       codecs.json<{ id: string; action: string }>()
@@ -345,7 +389,7 @@ describeRedis("ioredis: typed client and primitives", () => {
   });
 
   it("runs the AI job queue, Lua and all", async () => {
-    const client: RedisClient = await ioredis({ url: redisUrl });
+    const client: RedisClient = ioredis({ url: redisUrl });
     const jobs = queue<{ prompt: string }, string>(client, {
       prefix: unique("queue")
     });

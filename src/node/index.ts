@@ -1,17 +1,65 @@
 import { Buffer } from "node:buffer";
 import type { RedisArgument } from "redis";
 import { createClient, ErrorReply, MultiErrorReply, WatchError } from "redis";
+import {
+  type ConnectionEvents,
+  lazyConnection,
+  reporter
+} from "../core/connection.js";
 import { redisServerError } from "../core/errors.js";
 import type {
-  RedisClient,
+  FullRedisClient,
   RedisCommand,
   RedisCommandArgument,
+  RedisPatternSubscriber,
   RedisReply,
-  RedisSession,
-  RedisSubscriber
+  RedisSession
 } from "../core/index.js";
 
-export type NodeOptions = Parameters<typeof createClient>[0];
+/** node-redis client options, plus the {@link ConnectionEvents} hooks. */
+export type NodeOptions = NonNullable<Parameters<typeof createClient>[0]> &
+  ConnectionEvents;
+
+type SocketOptions = NonNullable<NonNullable<NodeOptions>["socket"]>;
+type ReconnectStrategy = NonNullable<
+  { reconnectStrategy?: unknown } & SocketOptions
+>["reconnectStrategy"];
+
+/**
+ * The connection's own reconnect strategy while it is up, and none while it is
+ * being dialed.
+ *
+ * node-redis uses one strategy for both, and by default it retries a first
+ * connect forever while commands wait in the offline queue, so a process that
+ * started while Redis was down hung every request instead of failing it. While
+ * `dialing()` holds, this refuses, the connect rejects, and {@link
+ * lazyConnection} decides when to try again. A drop after the connection was
+ * ready still reconnects in the background the way node-redis always has.
+ */
+function unlessDialing(
+  strategy: ReconnectStrategy,
+  dialing: () => boolean
+): (retries: number, cause: Error) => false | Error | number {
+  return (retries, cause) => {
+    if (dialing()) return false;
+    if (strategy === undefined) return defaultReconnectDelay(retries, cause);
+    if (strategy === false || typeof strategy === "number") return strategy;
+    return (
+      strategy as (retries: number, cause: Error) => false | Error | number
+    )(retries, cause);
+  };
+}
+
+/**
+ * node-redis 6's own default, restated because a custom strategy replaces it
+ * and the library does not export it: no reconnect after a socket timeout,
+ * otherwise exponential backoff from 50 ms capped at 2 s, plus up to 200 ms of
+ * jitter.
+ */
+function defaultReconnectDelay(retries: number, cause: Error): false | number {
+  if (cause.name === "SocketTimeoutError") return false;
+  return Math.min(2 ** retries * 50, 2000) + Math.floor(Math.random() * 200);
+}
 
 // node-redis decodes RESP3 map replies (HGETALL, CONFIG GET, ...) as plain
 // objects, which fall outside the RedisReply union the typed stores validate
@@ -76,40 +124,88 @@ function commandName(command: RedisCommand): string {
 }
 
 /**
- * The Node.js adapter: connects a [node-redis](https://www.npmjs.com/package/redis)
- * client and returns the `RedisClient` handle `benni()` binds to. Accepts
- * every node-redis option (`url`, `socket`, `username`/`password`, ...).
- * Replies default to RESP2 for stable wire shapes. Deno uses this same
- * adapter via `npm:` specifiers. Supports Pub/Sub subscribing: core leases a
- * duplicate connection through `subscriber()` on the first subscribe.
+ * The Node.js adapter: returns the `RedisClient` `benni()` binds to, backed by
+ * a [node-redis](https://www.npmjs.com/package/redis) client. Accepts every
+ * node-redis option (`url`, `socket`, `username`/`password`, ...) plus
+ * `onError` and `onReconnect`. Replies default to RESP2 for stable wire
+ * shapes. Deno uses this same adapter via `npm:` specifiers.
+ *
+ * Returns synchronously and connects on the first command, so nothing touches
+ * the network at import time. A connect that fails rejects the commands
+ * waiting on it and the next command tries again, with backoff. Once
+ * connected, a dropped connection reconnects in the background under
+ * node-redis's own `reconnectStrategy`.
+ *
+ * Supports sessions and Pub/Sub, pattern subscriptions included: core leases
+ * duplicate connections through `session()` and `subscriber()` as needed.
  *
  * @example
  * ```ts
  * import { node } from "benni/node";
- * const client = await node({ url: process.env.REDIS_URL });
- * const redis = benni(client, { schema });
+ * const redis = benni({ client: node({ url: process.env.REDIS_URL }), schema });
  * ```
  */
-export async function node(options?: NodeOptions): Promise<RedisClient> {
-  const client = await createClient(withReplyDefaults(options)).connect();
+export function node(options?: NodeOptions): FullRedisClient {
+  const { onError, onReconnect, ...clientOptions } = options ?? {};
+  const report = reporter(onError);
+  const userStrategy = (clientOptions.socket as { reconnectStrategy?: unknown })
+    ?.reconnectStrategy as ReconnectStrategy;
+  let dialing = false;
+  const client = createClient(
+    withReplyDefaults({
+      ...clientOptions,
+      socket: {
+        ...clientOptions.socket,
+        reconnectStrategy: unlessDialing(userStrategy, () => dialing)
+      } as SocketOptions
+    })
+  );
   // node-redis re-emits socket errors as client 'error' events; with no
   // listener, a network blip while idle crashes the process (unhandled
-  // 'error'). The client reconnects on its own — the listener just absorbs.
-  client.on("error", () => {});
+  // 'error'). The client reconnects on its own; the listener only reports.
+  client.on("error", report);
+  let wasReady = false;
+  client.on("ready", () => {
+    if (wasReady) onReconnect?.("client");
+    wasReady = true;
+  });
+  const connection = lazyConnection("benni/node", async () => {
+    dialing = true;
+    try {
+      await client.connect();
+    } finally {
+      dialing = false;
+    }
+  });
   // Leak backstop: live sessions leased from this client. The parent close()
   // force-closes survivors so a leaked session cannot pin a connection past
   // the client's lifetime.
   const sessions = new Set<RedisSession>();
   // Same backstop for the subscriber connection core may lease.
-  const subscribers = new Set<RedisSubscriber>();
+  const subscribers = new Set<RedisPatternSubscriber>();
   // The backstop only drains what it can see. A lease requested after close(),
   // or one whose connect() is still in flight when close() drains the Sets,
   // would open a live socket nobody will ever iterate again — and in Node a
   // live socket pins the event loop, so a "graceful" shutdown never exits.
   let clientClosed = false;
 
+  /**
+   * Connect if the client is not open: never used, or node-redis gave up
+   * reconnecting. Commands issued while that connect is in flight wait for it
+   * too (node-redis reports the client open as soon as it starts dialing), so
+   * a failed connect rejects them all with the same error. While node-redis
+   * is reconnecting after a drop, commands wait in its offline queue, as they
+   * always have.
+   */
+  async function connected(): Promise<void> {
+    if (clientClosed) throw closedError();
+    if (dialing || !client.isOpen) await connection.ready();
+    if (clientClosed) throw closedError();
+  }
+
   return {
     async send(command: RedisCommand) {
+      await connected();
       try {
         return await client.sendCommand<RedisReply>(toRedisArguments(command));
       } catch (error) {
@@ -117,6 +213,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       }
     },
     async pipeline(commands: readonly RedisCommand[]) {
+      await connected();
       const pipeline = client.multi();
       for (const command of commands) {
         pipeline.sendCommand(toRedisArguments(command));
@@ -130,6 +227,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       }
     },
     async transaction(commands: readonly RedisCommand[]) {
+      await connected();
       const transaction = client.multi();
       for (const command of commands) {
         transaction.sendCommand(toRedisArguments(command));
@@ -149,7 +247,7 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       // options — replacing the whole object would drop host/port/tls and
       // dial the default localhost instead of the configured server.
       const duplicate = client.duplicate({
-        socket: { ...options?.socket, reconnectStrategy: false }
+        socket: { ...clientOptions.socket, reconnectStrategy: false }
       });
       await duplicate.connect();
       if (clientClosed) throw discardOnClose(duplicate);
@@ -202,16 +300,33 @@ export async function node(options?: NodeOptions): Promise<RedisClient> {
       sessions.add(session);
       return session;
     },
-    async subscriber(): Promise<RedisSubscriber> {
+    async subscriber(): Promise<RedisPatternSubscriber> {
       if (clientClosed) throw closedError();
       // Subscriber mode monopolizes a connection, so duplicate rather than
-      // borrow the shared one.
-      const duplicate = client.duplicate();
-      duplicate.on("error", () => {});
-      await duplicate.connect();
+      // borrow the shared one. It gets its own strategy rather than the
+      // parent's: the same fail-fast first connect, so a subscribe while Redis
+      // is down rejects instead of hanging, then node-redis's reconnect (and
+      // native resubscribe) once it has been up.
+      let subscriberDialing = true;
+      const duplicate = client.duplicate({
+        socket: {
+          ...clientOptions.socket,
+          reconnectStrategy: unlessDialing(
+            userStrategy,
+            () => subscriberDialing
+          )
+        } as SocketOptions
+      });
+      duplicate.on("error", report);
+      try {
+        await duplicate.connect();
+      } finally {
+        subscriberDialing = false;
+      }
+      duplicate.on("ready", () => onReconnect?.("subscriber"));
       if (clientClosed) throw discardOnClose(duplicate);
       let closed = false;
-      const subscriber: RedisSubscriber = {
+      const subscriber: RedisPatternSubscriber = {
         async subscribe(channel, listener) {
           await duplicate.subscribe(channel, (message: string) =>
             listener(message)

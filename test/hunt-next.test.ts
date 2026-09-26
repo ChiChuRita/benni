@@ -71,7 +71,7 @@ describeRedis("cacheHandler tag sets (live)", () => {
     Number(await client.send(["TTL", `{${prefix}}:tag:${tag}`]));
 
   beforeAll(async () => {
-    client = await node({ url: redisUrl });
+    client = node({ url: redisUrl });
   });
   afterAll(async () => {
     // Permanent tag sets would otherwise survive the run.

@@ -34,8 +34,13 @@ import {
   stringOrNullReply,
   stringReply
 } from "../src/core/transaction.js";
-import type { RedisClient } from "../src/core/types.js";
-import { type BenniSession, benni } from "../src/database.js";
+import type { FullRedisClient, RedisClient } from "../src/core/types.js";
+import {
+  type Benni,
+  type BenniSchema,
+  type BenniSession,
+  benni
+} from "../src/database.js";
 import { WatchRetriesExceededError } from "../src/index.js";
 import { node } from "../src/node/index.js";
 import { serverCommands } from "./server-commands.js";
@@ -82,13 +87,13 @@ async function deleteMatching(
 }
 
 describeRedis("node feature modules against real Redis", () => {
-  let client: RedisClient;
-  let db: ReturnType<typeof benni>;
+  let client: FullRedisClient;
+  let db: Benni<BenniSchema>;
 
   beforeAll(async () => {
     expect(redisUrl).toBeDefined();
-    client = await node({ url: redisUrl });
-    db = benni(client);
+    client = node({ url: redisUrl });
+    db = benni({ client: client });
   });
 
   afterAll(async () => {

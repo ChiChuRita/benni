@@ -80,14 +80,14 @@ describe("cluster guard", () => {
   it("is off by default: cross-slot mget still sends", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [[null, null]]);
-    await benni(client).kv(profiles).mget(["a", "b"]);
+    await benni({ client: client }).kv(profiles).mget(["a", "b"]);
     expect(commands).toEqual([["MGET", "profile:a", "profile:b"]]);
   });
 
   it("throws before sending once the guard is installed", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, []);
-    const redis = benni(client, { cluster: assertSameSlot });
+    const redis = benni({ client: client, cluster: assertSameSlot });
     await expect(redis.kv(profiles).mget(["a", "b"])).rejects.toThrow(
       CrossSlotError
     );
@@ -96,7 +96,7 @@ describe("cluster guard", () => {
 
   it("carries both keys and both slots on the error", async () => {
     const client = fakeClient([], []);
-    const redis = benni(client, { cluster: assertSameSlot });
+    const redis = benni({ client: client, cluster: assertSameSlot });
     const error = (await redis
       .set(tags)
       .sunion("a1", ["b7"])
@@ -111,7 +111,7 @@ describe("cluster guard", () => {
   it('hashTag: "prefix" makes the same call legal', async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, [["x"]]);
-    const redis = benni(client, { cluster: assertSameSlot });
+    const redis = benni({ client: client, cluster: assertSameSlot });
     await redis.set(tagsPinned).sunion("a1", ["b7"]);
     expect(commands).toEqual([["SUNION", "{tag}:a1", "{tag}:b7"]]);
   });
@@ -123,7 +123,7 @@ describe("cluster guard", () => {
 
   it("multi().keys() declares what exec checks", async () => {
     const client = fakeClient([], []);
-    const redis = benni(client, { cluster: assertSameSlot });
+    const redis = benni({ client: client, cluster: assertSameSlot });
     // Built at runtime, so the compile-time check cannot see the tags. This is
     // exactly the case the runtime guard exists for.
     const declared: string[] = ["cart:{a}", "cart:{b}"];
@@ -138,7 +138,7 @@ describe("cluster guard", () => {
 
   it("checks script keys, which Lua cannot span either", async () => {
     const client = fakeClient([], []);
-    const redis = benni(client, { cluster: assertSameSlot });
+    const redis = benni({ client: client, cluster: assertSameSlot });
     const keys: Record<string, string> = { a: "x:{1}", b: "y:{2}" };
     await expect(
       redis.script(twoKeyScript).run({
@@ -294,7 +294,10 @@ describe("every multi-key method is guarded", () => {
 
   it.each(cases)("$command throws and sends nothing", async ({ run }) => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, []), { cluster: assertSameSlot });
+    const redis = benni({
+      client: fakeClient(commands, []),
+      cluster: assertSameSlot
+    });
     await expect(run(redis, false)).rejects.toThrow(CrossSlotError);
     expect(commands).toEqual([]);
   });
@@ -303,13 +306,13 @@ describe("every multi-key method is guarded", () => {
     const commands: RedisCommand[] = [];
     // Replies are generous and untyped; we only care that nothing threw before
     // the send and that every key carries the tag.
-    const redis = benni(
-      fakeClient(
+    const redis = benni({
+      client: fakeClient(
         commands,
         Array.from({ length: 8 }, () => 0)
       ),
-      { cluster: assertSameSlot }
-    );
+      cluster: assertSameSlot
+    });
     await run(redis, true).catch(() => {
       // Decode failures are fine: the guard ran and let the command through,
       // which is the whole assertion.

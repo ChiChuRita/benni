@@ -4,14 +4,19 @@ import IORedis, {
   type Redis as IORedisClient,
   type RedisOptions
 } from "ioredis";
+import {
+  type ConnectionEvents,
+  lazyConnection,
+  reporter
+} from "../core/connection.js";
 import { redisServerError } from "../core/errors.js";
 import type {
-  RedisClient,
+  FullRedisClient,
   RedisCommand,
   RedisCommandArgument,
+  RedisPatternSubscriber,
   RedisReply,
-  RedisSession,
-  RedisSubscriber
+  RedisSession
 } from "../core/index.js";
 
 /**
@@ -39,10 +44,12 @@ type AdoptableClient = Pick<
   duplicate(...args: never[]): unknown;
 };
 
-export type IoredisOptions = RedisOptions & {
-  /** Connection URL, e.g. `redis://localhost:6379`. */
-  readonly url?: string;
-};
+/** ioredis client options, plus `url` and the {@link ConnectionEvents} hooks. */
+export type IoredisOptions = RedisOptions &
+  ConnectionEvents & {
+    /** Connection URL, e.g. `redis://localhost:6379`. */
+    readonly url?: string;
+  };
 
 /** What `ioredis()` accepts: a URL, options, or an existing client to adopt. */
 export type IoredisSource = string | IoredisOptions | AdoptableClient;
@@ -236,17 +243,24 @@ function defaultProtocol(): unknown {
  * ```ts
  * import { ioredis } from "benni/ioredis";
  *
- * const client = await ioredis("redis://localhost:6379");   // URL
- * const client = await ioredis({ host, port, password });   // options
- * const client = await ioredis(existingIoredisInstance);    // adopt
+ * const client = ioredis("redis://localhost:6379");   // URL
+ * const client = ioredis({ host, port, password });   // options
+ * const client = ioredis(existingIoredisInstance);    // adopt
  * ```
+ *
+ * All three return synchronously. A client this adapter creates connects on
+ * the first command: a connect that fails rejects the commands waiting on it
+ * and the next command tries again, with backoff; once connected, ioredis's
+ * own `retryStrategy` reconnects after a drop. An adopted client is used as it
+ * is, connecting (or not) however its owner configured it.
  *
  * An adopted client is *borrowed*: `close()` shuts down the sessions and
  * subscriber connections Benni leased from it, but leaves the client itself
- * open, because whoever created it still owns its lifetime. An adopted client
- * should also carry its own `"error"` listener — this adapter does not attach
- * one, since silently swallowing errors on a client it does not own would hide
- * failures from the code that does.
+ * open, because whoever created it still owns its lifetime. For the same
+ * reason this adapter attaches no `"error"` listener to an adopted client
+ * unless you pass `onError` (as the second argument): silently absorbing
+ * errors on a client it does not own would hide failures from the code that
+ * does.
  *
  * The adapter speaks RESP2, whose flat reply shapes are exactly what the typed
  * stores decode, so replies pass through without normalization. Clients it
@@ -255,7 +269,19 @@ function defaultProtocol(): unknown {
  * `WATCH` transactions, and Pub/Sub — including pattern subscriptions — are all
  * supported.
  */
-export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
+export function ioredis(options?: IoredisOptions): FullRedisClient;
+export function ioredis(
+  url: string,
+  events?: ConnectionEvents
+): FullRedisClient;
+export function ioredis(
+  client: AdoptableClient,
+  events?: ConnectionEvents
+): FullRedisClient;
+export function ioredis(
+  source?: IoredisSource,
+  events?: ConnectionEvents
+): FullRedisClient {
   const adopted = source !== undefined && isAdoptable(source);
   if (adopted) {
     assertNoKeyPrefix(
@@ -264,21 +290,78 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
     );
     assertResp2(protocolOf(source), "the adopted client");
   }
+  const { onError, onReconnect } = {
+    ...(typeof source === "object" && !adopted
+      ? (source as ConnectionEvents)
+      : {}),
+    ...events
+  };
+  const report = reporter(onError);
+  let dialing = false;
   const client: AdoptableClient = adopted
     ? source
-    : await open(createFrom(source as string | IoredisOptions | undefined));
+    : createFrom(source as string | IoredisOptions | undefined, () => dialing);
+  // A created client gets a listener either way: ioredis re-emits socket
+  // errors as client 'error' events and a client with no listener crashes the
+  // process. An adopted one only when the caller asked, per the note above.
+  if (!adopted || onError !== undefined) {
+    (client as IORedisClient).on("error", report);
+  }
+  if (onReconnect !== undefined) {
+    let wasReady = client.status === "ready";
+    (client as IORedisClient).on("ready", () => {
+      if (wasReady) onReconnect("client");
+      wasReady = true;
+    });
+  }
+  const connection = lazyConnection("benni/ioredis", async () => {
+    dialing = true;
+    // ioredis rejects a failed connect with a bare "Connection is closed.",
+    // having emitted the actual cause (ECONNREFUSED, a TLS failure, ...) as
+    // 'error' just before; report that instead.
+    let cause: unknown;
+    const capture = (error: unknown) => {
+      cause ??= error;
+    };
+    (client as IORedisClient).on("error", capture);
+    try {
+      await (client as IORedisClient).connect();
+    } catch (error) {
+      throw cause ?? error;
+    } finally {
+      dialing = false;
+      (client as IORedisClient).off("error", capture);
+    }
+  });
 
   // Leak backstops: the parent close() force-closes any survivors, so a leaked
   // session or subscriber cannot pin a connection past the client's lifetime.
   const sessions = new Set<RedisSession>();
-  const subscribers = new Set<RedisSubscriber>();
+  const subscribers = new Set<RedisPatternSubscriber>();
   // The backstops only drain what they can see. A lease requested after
   // close(), or one whose connect() is still in flight when close() drains the
   // Sets, would open a live socket nobody will ever iterate again.
   let clientClosed = false;
 
+  /**
+   * Connect a created client that is not connected: never used ("wait"), or
+   * ioredis gave up reconnecting ("end"). Commands issued while that connect
+   * is in flight wait for it rather than for ioredis's offline queue, so a
+   * failed connect rejects them all with the same error. While ioredis is
+   * reconnecting after a drop, commands queue in ioredis as they always have.
+   */
+  async function connected(): Promise<void> {
+    if (clientClosed) throw closedError();
+    if (adopted) return;
+    if (dialing || client.status === "wait" || client.status === "end") {
+      await connection.ready();
+    }
+    if (clientClosed) throw closedError();
+  }
+
   return {
     async send(command: RedisCommand) {
+      await connected();
       try {
         return normalize(await client.call(name(command), args(command)));
       } catch (error) {
@@ -287,6 +370,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
     },
     async pipeline(commands: readonly RedisCommand[]) {
       if (commands.length === 0) return [];
+      await connected();
       const pipeline = client.pipeline();
       for (const command of commands) {
         pipeline.call(name(command), args(command));
@@ -295,6 +379,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
     },
     async transaction(commands: readonly RedisCommand[]) {
       if (commands.length === 0) return [];
+      await connected();
       const transaction = client.multi();
       for (const command of commands) {
         transaction.call(name(command), args(command));
@@ -355,12 +440,14 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       sessions.add(session);
       return session;
     },
-    async subscriber(): Promise<RedisSubscriber> {
+    async subscriber(): Promise<RedisPatternSubscriber> {
       if (clientClosed) throw closedError();
       // Subscriber mode monopolizes a connection, so duplicate rather than
       // borrow the shared one.
       const duplicate = await open(duplicateOf(client, { lazyConnect: true }));
       if (clientClosed) throw discardOnClose(duplicate);
+      duplicate.on("error", report);
+      duplicate.on("ready", () => onReconnect?.("subscriber"));
       let closed = false;
 
       // ioredis delivers every subscription through one 'message'/'pmessage'
@@ -381,7 +468,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
         }
       );
 
-      const subscriber: RedisSubscriber = {
+      const subscriber: RedisPatternSubscriber = {
         async subscribe(channel, listener) {
           channels.set(channel, listener);
           await duplicate.subscribe(channel);
@@ -455,9 +542,10 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
  * caught too.
  */
 function createFrom(
-  source: string | IoredisOptions | undefined
+  source: string | IoredisOptions | undefined,
+  dialing: () => boolean
 ): IORedisClient {
-  const client = construct(source);
+  const client = construct(source, dialing);
   assertResp2(
     (client.options as { protocol?: unknown }).protocol,
     "the options passed to ioredis()"
@@ -465,25 +553,56 @@ function createFrom(
   return client;
 }
 
-function construct(source: string | IoredisOptions | undefined): IORedisClient {
+function construct(
+  source: string | IoredisOptions | undefined,
+  dialing: () => boolean
+): IORedisClient {
   if (typeof source === "string") {
-    return new IORedis(source, { lazyConnect: true, protocol: 2 });
+    return new IORedis(source, {
+      lazyConnect: true,
+      protocol: 2,
+      retryStrategy: unlessDialing(undefined, dialing)
+    });
   }
-  const { url, ...options } = source ?? {};
+  const { url, onError, onReconnect, ...options } = source ?? {};
   assertNoKeyPrefix(options.keyPrefix, "the options passed to ioredis()");
   const pinned = {
     ...options,
     lazyConnect: true,
-    protocol: options.protocol ?? 2
+    protocol: options.protocol ?? 2,
+    retryStrategy: unlessDialing(options.retryStrategy, dialing)
   };
   return url === undefined ? new IORedis(pinned) : new IORedis(url, pinned);
 }
 
 /**
- * Every client this adapter opens is created lazily and connected here, so a
- * command is never issued against a socket that is not ready — which matters
- * because sessions disable the offline queue and would reject instead of
- * waiting.
+ * The client's own `retryStrategy` while it is up, and none while it is being
+ * dialed, for the same reason as `benni/node`'s: a first connect that retries
+ * in the background leaves the commands waiting on it queued for as long as
+ * Redis is down. Refusing makes ioredis settle the failed connect as "end",
+ * from which a later command can connect() again. (Tearing the client down
+ * with disconnect() instead strands it: once a retry is scheduled, disconnect()
+ * cancels the timer but leaves the status at "reconnecting" for good.)
+ */
+function unlessDialing(
+  strategy: RedisOptions["retryStrategy"],
+  dialing: () => boolean
+): (times: number) => number | void | null {
+  return (times) => {
+    if (dialing()) return null;
+    // ioredis's own default.
+    if (strategy === undefined) return Math.min(times * 50, 2000);
+    // An explicit null is ioredis's "never reconnect".
+    if (strategy === null) return null;
+    return strategy(times);
+  };
+}
+
+/**
+ * Every duplicate this adapter opens (sessions, the subscriber) is created
+ * lazily and connected here, so a command is never issued against a socket
+ * that is not ready — which matters because sessions disable the offline
+ * queue and would reject instead of waiting.
  *
  * The 'error' listener goes on *before* connecting, for two reasons. ioredis
  * re-emits socket errors as client 'error' events and a client with no
@@ -491,7 +610,7 @@ function construct(source: string | IoredisOptions | undefined): IORedisClient {
  * connect window uncovered. And a rejected connect does not stop the client:
  * it keeps retrying on its own schedule, so an unguarded failure left an
  * orphan reconnecting forever, logging "Unhandled error event" and holding the
- * process open. Tear it down instead.
+ * process open. Tear it down instead; a failed duplicate is discarded.
  *
  * Only ever called for clients this adapter created; an adopted client carries
  * its own listener, per the note on `ioredis()`.

@@ -1,13 +1,8 @@
-// Public API of the root entrypoint. The full low-level surface (store
-// builders, keyspace helpers, reply utilities) lives under `benni/core`.
+// Public API of the root entrypoint: `benni()`, its errors, and the types an
+// app names. Schema declarations live under `benni/schema`; the adapter-author
+// surface (the client contract, `resolveClient`, the server-error normalizer,
+// the script runner, the store builders) lives under `benni/core`.
 
-// How every entry point takes a client: connected, connecting, or not created
-// yet.
-export {
-  type ClientProvider,
-  type ClientSource,
-  resolveClient
-} from "./core/client-source.js";
 // Codecs.
 export { codecs } from "./core/codecs.js";
 // Errors.
@@ -18,21 +13,10 @@ export {
   type RedisServerErrorOptions,
   ReplyShapeError,
   redisErrorCode,
-  // Named for custom adapters: the normalizer every built-in adapter runs a
-  // server error reply through.
-  redisServerError,
   UnsupportedCapabilityError,
   ValidationError
 } from "./core/errors.js";
 export type { HashTagLayout, KeyOptions } from "./core/keys.js";
-// Typed Lua scripts.
-export {
-  createScriptRunner,
-  type DefineScriptOptions,
-  defineScript,
-  type RedisScript,
-  type ScriptRunner
-} from "./core/script.js";
 export {
   type BlockingTimeout,
   type BlockingWait,
@@ -54,33 +38,37 @@ export {
   stringOrNullReply,
   stringReply
 } from "./core/transaction.js";
-// Client contract — what an adapter provides and `redis.raw` speaks.
 export type {
   Codec,
   InferInput,
   InferOutput,
-  RedisClient,
-  RedisCommand,
-  RedisCommandArgument,
   RedisKey,
-  RedisKeyPart,
-  RedisReply,
-  RedisSession,
-  RedisSubscriber
+  RedisKeyPart
 } from "./core/types.js";
 export {
+  type AnyBenni,
   type Benni,
+  type BenniBase,
   type BenniConfig,
+  type BenniNoPatterns,
+  type BenniNoSessions,
   type BenniOptions,
+  type BenniPatterns,
+  type BenniPubSub,
+  type BenniScan,
   type BenniSchema,
   type BenniSession,
+  type BenniSessions,
   type BenniWatchOptions,
   benni,
+  type ChannelResourceFor,
   type PrimitiveResource,
+  type PubSubPublisher,
   type QueryRegistry,
   type QueryResource,
   // The module-augmentation target: declare `schema` on it once and every
   // `Benni` in the app is typed without being handed `typeof schema` again.
+  // Apps only, once per program; libraries take `AnyBenni`.
   type Register,
   type RegisteredSchema,
   type SchemaKind

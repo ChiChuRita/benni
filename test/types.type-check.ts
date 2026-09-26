@@ -4,6 +4,8 @@
 // run, and as a test file it needed a placeholder `it()` asserting
 // `true === true` just to stop vitest reporting an empty suite. `tsconfig.json`
 // includes `test/`, so `pnpm typecheck` is what enforces the file.
+
+import { defineHash } from "../src/core/hash.js";
 import type { RedisClient } from "../src/core/index.js";
 import {
   codecs,
@@ -15,20 +17,19 @@ import {
   createSetStore,
   createSortedSetStore,
   createStringStore,
-  defineHash,
-  defineKeyspace,
-  defineList,
-  definePubSubChannel,
-  defineSet,
-  defineSortedSet,
-  defineStream,
   type InferHashInput,
   type InferHashOutput,
   type PendingStreamEntry,
   type RedisKey,
   type StreamEntry
 } from "../src/core/index.js";
+import { defineKeyspace } from "../src/core/key-value.js";
 import type { SameSlotScriptKeys } from "../src/core/keys.js";
+import { defineList } from "../src/core/list.js";
+import { definePubSubChannel } from "../src/core/pubsub.js";
+import { defineSet } from "../src/core/set.js";
+import { defineSortedSet } from "../src/core/sorted-set.js";
+import { defineStream } from "../src/core/stream-resource.js";
 import { benni } from "../src/index.js";
 import {
   hash as schemaHash,
@@ -57,7 +58,7 @@ const client: RedisClient = {
   async close() {}
 };
 
-const db = benni(client);
+const db = benni({ client: client });
 
 const schemaProfiles = schemaKv(
   "schema-profile",

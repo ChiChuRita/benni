@@ -21,7 +21,7 @@ import { hash, number, optional, stream, string } from "../src/schema.js";
 declare const client: RedisClient;
 const users = hash("user", { name: string(), score: number(), bio: optional(string()) });
 const events = stream("event", { kind: string(), at: number() });
-const redis = benni(client, { schema: { users, events } });
+const redis = benni({ client, schema: { users, events } });
 
 export async function probe() {
   const whole = await redis.query.users.hget("42");

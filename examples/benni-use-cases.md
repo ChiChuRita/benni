@@ -10,12 +10,10 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+export const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
 });
-
-export { client };
-export const redis = benni(client, { schema });
 ```
 
 ## 1. SaaS User Profiles And Team Membership
@@ -281,8 +279,7 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node();
-const redis = benni(client, { schema });
+const redis = benni({ client: node(), schema });
 
 // The first subscribe leases one subscriber connection off the bound client and
 // closes it again when the last subscription goes away.
@@ -297,7 +294,7 @@ await redis.query.tenantNotifications.publish({
 });
 
 await subscription.unsubscribe();
-await client.close();
+await redis.close();
 ```
 
 ## 8. Store Locator With Geo Queries
@@ -442,9 +439,9 @@ export const scheduledJobs = zset("scheduled-jobs", json<ScheduledJob>());
 // scheduler.ts
 import { lock } from "benni/primitives";
 import type { ScheduledJob } from "./schema";
-import { client, redis } from "./redis";
+import { redis } from "./redis";
 
-const locks = lock(client, { prefix: "scheduled-job-lock", ttlMs: 30_000 });
+const locks = lock({ client: redis, prefix: "scheduled-job-lock", ttlMs: 30_000 });
 
 export async function schedule(job: ScheduledJob) {
   await redis.query.scheduledJobs.zadd("default", [{ member: job, score: job.runAt }]);

@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
+import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
   createHashStore,
-  defineHash,
   RedisServerError
 } from "../src/core/index.js";
 import { upstash } from "../src/upstash/index.js";
