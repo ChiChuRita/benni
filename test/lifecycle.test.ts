@@ -130,7 +130,7 @@ describe("redis.close()", () => {
     const redis = benni({ client: recordingClient(events) });
     await redis.session(async (s) =>
       s
-        .kv(notes)
+        .store(notes)
         .get("a")
         .catch(() => null)
     );

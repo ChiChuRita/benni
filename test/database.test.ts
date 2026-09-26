@@ -6,7 +6,7 @@ import type {
   RedisReply,
   RedisSession
 } from "../src/core/index.js";
-import type { BenniSession } from "../src/database.js";
+import type { BenniSchema, BenniSession } from "../src/database.js";
 import {
   benni,
   numberReply,
@@ -63,7 +63,7 @@ describe("benni", () => {
     });
     const profiles = kv("profile", json<{ name: string }>());
 
-    const store = db.kv(profiles);
+    const store = db.store(profiles);
 
     await store.set("42", { name: "Ada" }, { ttlSeconds: 60 });
     await expect(store.get("42")).resolves.toEqual({ name: "Ada" });
@@ -81,7 +81,7 @@ describe("benni", () => {
 
     await expect(
       db
-        .kv(profiles)
+        .store(profiles)
         // @ts-expect-error nx+xx no longer compiles; pin the runtime guard for JS callers
         .set("42", { name: "Ada" }, { nx: true, xx: true })
     ).rejects.toThrow("nx cannot be combined with xx");
@@ -95,7 +95,7 @@ describe("benni", () => {
       score: number()
     });
 
-    const store = db.hash(users);
+    const store = db.store(users);
 
     await store.hset("42", { name: "Ada", score: 10 }, { ttlSeconds: 120 });
     await expect(store.hget("42")).resolves.toEqual({ name: "Ada", score: 10 });
@@ -113,9 +113,7 @@ describe("benni", () => {
     const db = benni({ client: fakeClient(commands, [1]) });
     const events = channel("events:user", json<{ id: string }>());
 
-    await expect(db.pubsub.channel(events).publish({ id: "42" })).resolves.toBe(
-      1
-    );
+    await expect(db.store(events).publish({ id: "42" })).resolves.toBe(1);
 
     expect(commands).toEqual([["PUBLISH", "events:user", '{"id":"42"}']]);
   });
@@ -127,9 +125,9 @@ describe("benni", () => {
     const visitors = hll("visitors", string());
 
     await expect(
-      db.zset(leaderboard).zadd("daily", [{ member: "ada", score: 100 }])
+      db.store(leaderboard).zadd("daily", [{ member: "ada", score: 100 }])
     ).resolves.toBe(1);
-    await expect(db.hll(visitors).pfadd("today", ["u1"])).resolves.toBe(true);
+    await expect(db.store(visitors).pfadd("today", ["u1"])).resolves.toBe(true);
 
     expect(commands).toEqual([
       ["ZADD", "leaderboard:daily", 100, "ada"],
@@ -150,7 +148,7 @@ describe("benni", () => {
     });
 
     await expect(
-      db.script(incrementBy).run({
+      db.store(incrementBy).run({
         keys: {
           counter: "counter:page-views"
         },
@@ -179,7 +177,7 @@ describe("benni", () => {
       size: number()
     });
 
-    const store = db.stream(events);
+    const store = db.store(events);
 
     await expect(store.xadd("42", { type: "click", size: 2 })).resolves.toBe(
       "1-1"
@@ -200,7 +198,7 @@ describe("benni", () => {
     const db = benni({ client: fakeClient(commands, [0, 1]) });
     const flags = bitmap("flags");
 
-    const store = db.bitmap(flags);
+    const store = db.store(flags);
 
     await expect(store.setbit("42", 7, true)).resolves.toBe(false);
     await expect(store.bitcount("42")).resolves.toBe(1);
@@ -217,7 +215,7 @@ describe("benni", () => {
     const db = benni({ client: fakeClient(commands, [1, "877.4"]) });
     const cities = geo("cities", string());
 
-    const store = db.geo(cities);
+    const store = db.store(cities);
 
     await expect(
       store.geoadd("eu", [
@@ -339,11 +337,11 @@ describe("benni", () => {
     const db = benni({ client: fakeSessionClient(commands, ["v"]) });
     const notes = kv("note", string());
 
-    let leased: BenniSession | undefined;
+    let leased: BenniSession<BenniSchema> | undefined;
     const result = await db.session(async (s) => {
       leased = s;
       expect(s.closed).toBe(false);
-      return s.kv(notes).get("42");
+      return s.store(notes).get("42");
     });
 
     expect(result).toBe("v");
@@ -355,7 +353,7 @@ describe("benni", () => {
     const commands: RedisCommand[] = [];
     const db = benni({ client: fakeSessionClient(commands, []) });
 
-    let leased: BenniSession | undefined;
+    let leased: BenniSession<BenniSchema> | undefined;
     await expect(
       db.session(async (s) => {
         leased = s;
@@ -376,7 +374,7 @@ describe("benni", () => {
     const session = await db.session();
     try {
       await expect(
-        session.list(jobs).blpop("pending", { timeoutSeconds: 5 })
+        session.store(jobs).blpop("pending", { timeoutSeconds: 5 })
       ).resolves.toBe("job");
       expect(session.closed).toBe(false);
     } finally {
@@ -397,7 +395,7 @@ describe("benni", () => {
 
     await db.session(async (s) => {
       await expect(
-        s.list(jobs).blpop(["urgent", "pending"], { timeoutSeconds: 2.5 })
+        s.store(jobs).blpop(["urgent", "pending"], { timeoutSeconds: 2.5 })
       ).resolves.toEqual({ id: "pending", value: "email-1" });
     });
 
@@ -417,7 +415,7 @@ describe("benni", () => {
     });
 
     const entries = await db
-      .stream(auditEvents)
+      .store(auditEvents)
       .group("processors")
       .consumer("c-1")
       .xreadgroup("login");
@@ -451,7 +449,7 @@ describe("benni", () => {
     });
 
     await db.session(async (s) => {
-      const live = s.stream(auditEvents).group("processors").consumer("c-1");
+      const live = s.store(auditEvents).group("processors").consumer("c-1");
       await expect(
         live.xreadgroup("login", { timeoutSeconds: 5, count: 20 })
       ).resolves.toEqual([
@@ -494,7 +492,7 @@ describe("benni", () => {
     const result = await db.watch(
       views.key("home"),
       async (s) => {
-        const current = (await s.kv(views).get("home")) ?? 0;
+        const current = (await s.store(views).get("home")) ?? 0;
         return s
           .multi()
           .add(["SET", views.key("home"), current + 1], okReply)
@@ -641,13 +639,13 @@ const typeClient = fakeClient([], []) as FullRedisClient;
 const typeDb = benni({ client: typeClient });
 
 const typeProfiles = kv("type-profile", json<{ name: string }>());
-const typeKvStore = typeDb.kv(typeProfiles);
+const typeKvStore = typeDb.store(typeProfiles);
 const typeRoles = set("type-role", json<{ role: string }>());
 const typeEvents = stream("type-event", {
   type: string(),
   size: number()
 });
-const typeStreamStore = typeDb.stream(typeEvents);
+const typeStreamStore = typeDb.store(typeEvents);
 
 type StreamAddValue = Parameters<typeof typeStreamStore.xadd>[1];
 type _StreamAddValue = Expect<
@@ -681,8 +679,8 @@ function databaseTypeAssertions() {
   // ConditionalSetOptions accepts the combination, and set() throws. See the
   // "rejects a set combining nx and xx" runtime test above.
 
-  // @ts-expect-error counters require a number-codec keyspace.
-  void typeDb.counter(kv("type-note", string()));
+  // @ts-expect-error only a number() kv carries the counter commands.
+  void typeDb.store(kv("type-note", string())).incr;
 
   // @ts-expect-error stream values must match the declared field codecs.
   void typeStreamStore.xadd("42", { type: "click", size: "2" });
@@ -758,11 +756,11 @@ function sessionTypeAssertions() {
 
   // Blocking methods exist only on the session's list accessor — the shared
   // db.list has no blpop (ts(2339), not a runtime throw).
-  const sessionList = session.list(typeJobs);
+  const sessionList = session.store(typeJobs);
   void sessionList.blpop;
 
   // @ts-expect-error blocking pops are session-only, absent on the shared store.
-  void typeDb.list(typeJobs).blpop;
+  void typeDb.store(typeJobs).blpop;
 
   // { timeoutSeconds: "forever" } removes null from the return type: the call can
   // time out never — it either resolves a value or rejects on close.
@@ -776,7 +774,7 @@ function sessionTypeAssertions() {
   void maybe;
 
   // The session zset accessor is a superset too (blocking + non-blocking).
-  const sessionZset = session.zset(zset("type-scores", string()));
+  const sessionZset = session.store(zset("type-scores", string()));
   void sessionZset.bzpopmin;
   void sessionZset.zadd;
 
@@ -797,7 +795,7 @@ function sessionTypeAssertions() {
 
   const watched = typeDb.watch(typeViews.key("home"), async (s) =>
     s
-      .kv(typeViews)
+      .store(typeViews)
       .get("home")
       .then(() => s.multi().add(["INCR", typeViews.key("home")], numberReply))
   );

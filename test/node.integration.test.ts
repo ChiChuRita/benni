@@ -40,7 +40,7 @@ describeRedis("node pubsub", () => {
     );
     const seen: Array<{ id: string; action: string }> = [];
     const first = new Promise<void>((resolve) => {
-      void redis.pubsub.channel(channel).subscribe((message) => {
+      void redis.store(channel).subscribe((message) => {
         seen.push(message);
         resolve();
       });
@@ -49,7 +49,7 @@ describeRedis("node pubsub", () => {
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       await expect(
-        redis.pubsub.channel(channel).publish({ id: "42", action: "created" })
+        redis.store(channel).publish({ id: "42", action: "created" })
       ).resolves.toBe(1);
       await first;
       expect(seen).toEqual([{ id: "42", action: "created" }]);
@@ -68,22 +68,22 @@ describeRedis("node pubsub", () => {
     );
     const a: number[] = [];
     const b: number[] = [];
-    const subA = await redis.pubsub.channel(channel).subscribe((m) => {
+    const subA = await redis.store(channel).subscribe((m) => {
       a.push(m.n);
     });
-    const subB = await redis.pubsub.channel(channel).subscribe((m) => {
+    const subB = await redis.store(channel).subscribe((m) => {
       b.push(m.n);
     });
 
     try {
-      await redis.pubsub.channel(channel).publish({ n: 1 });
+      await redis.store(channel).publish({ n: 1 });
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(a).toEqual([1]);
       expect(b).toEqual([1]);
 
       // Dropping one handler must not tear down the other's delivery.
       await subA.unsubscribe();
-      await redis.pubsub.channel(channel).publish({ n: 2 });
+      await redis.store(channel).publish({ n: 2 });
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(a).toEqual([1]);
       expect(b).toEqual([1, 2]);
@@ -104,8 +104,8 @@ describeRedis("node pubsub", () => {
     const received: number[] = [];
 
     const consume = (async () => {
-      for await (const message of redis.pubsub
-        .channel(channel)
+      for await (const message of redis
+        .store(channel)
         .stream({ signal: controller.signal })) {
         received.push(message.n);
         if (received.length === 2) controller.abort();
@@ -114,8 +114,8 @@ describeRedis("node pubsub", () => {
 
     try {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      await redis.pubsub.channel(channel).publish({ n: 1 });
-      await redis.pubsub.channel(channel).publish({ n: 2 });
+      await redis.store(channel).publish({ n: 1 });
+      await redis.store(channel).publish({ n: 2 });
       await consume;
       expect(received).toEqual([1, 2]);
     } finally {
@@ -137,7 +137,7 @@ describeRedis("node pubsub", () => {
     );
     const seen: Array<{ id: string; channel: string }> = [];
     const first = new Promise<void>((resolve) => {
-      void redis.pubsub.pattern(pattern).subscribe((message, name) => {
+      void redis.store(pattern).subscribe((message, name) => {
         seen.push({ id: message.id, channel: name });
         resolve();
       });
@@ -145,9 +145,7 @@ describeRedis("node pubsub", () => {
 
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      await expect(
-        redis.pubsub.channel(channel).publish({ id: "42" })
-      ).resolves.toBe(1);
+      await expect(redis.store(channel).publish({ id: "42" })).resolves.toBe(1);
       await first;
       expect(seen).toEqual([{ id: "42", channel: `${prefix}:created` }]);
     } finally {
@@ -175,18 +173,16 @@ describeRedis("node pubsub", () => {
     const seen: Array<{ text: string; channel: string }> = [];
 
     try {
-      const subscription = await redis.pubsub
-        .pattern(anyRoom)
+      const subscription = await redis
+        .store(anyRoom)
         .subscribe((message, name) => {
           seen.push({ text: message.text, channel: name });
         });
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      expect(redis.pubsub.channel(roomEvents, 42).channelName()).toBe(
-        `${prefix}:42`
-      );
+      expect(redis.store(roomEvents).at(42).channelName()).toBe(`${prefix}:42`);
       await expect(
-        redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" })
+        redis.store(roomEvents).at(42).publish({ text: "hi" })
       ).resolves.toBe(1);
       await vi.waitUntil(() => seen.length === 1);
       expect(seen).toEqual([{ text: "hi", channel: `${prefix}:42` }]);
@@ -194,7 +190,7 @@ describeRedis("node pubsub", () => {
       // The bare channel is a different channel, so the pattern sees it only
       // if it also matches; `prefix` itself does not.
       await expect(
-        redis.pubsub.channel(roomEvents).publish({ text: "all" })
+        redis.store(roomEvents).publish({ text: "all" })
       ).resolves.toBe(0);
 
       await subscription.unsubscribe();
@@ -214,20 +210,23 @@ describeRedis("node pubsub", () => {
     const seen: string[] = [];
 
     try {
-      await redis.pubsub.channel(roomEvents, "42").subscribe((message) => {
-        seen.push(message.text);
-      });
+      await redis
+        .store(roomEvents)
+        .at("42")
+        .subscribe((message) => {
+          seen.push(message.text);
+        });
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Nobody is listening on room 7 or on the bare channel.
       await expect(
-        redis.pubsub.channel(roomEvents, "7").publish({ text: "elsewhere" })
+        redis.store(roomEvents).at("7").publish({ text: "elsewhere" })
       ).resolves.toBe(0);
       await expect(
-        redis.pubsub.channel(roomEvents).publish({ text: "bare" })
+        redis.store(roomEvents).publish({ text: "bare" })
       ).resolves.toBe(0);
       await expect(
-        redis.pubsub.channel(roomEvents, "42").publish({ text: "here" })
+        redis.store(roomEvents).at("42").publish({ text: "here" })
       ).resolves.toBe(1);
 
       await vi.waitUntil(() => seen.length === 1);

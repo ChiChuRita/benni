@@ -61,7 +61,9 @@ describe("schema store bindings", () => {
 
   it("rejects a copied schema passed to an accessor", () => {
     const redis = benni({ client: fakeClient([], []) });
-    expect(() => redis.hash({ ...users })).toThrow(/hash schema/);
+    expect(() => redis.store({ ...users })).toThrow(
+      /redis.store\(\) schema was not built/
+    );
   });
 
   it("still ignores non-schema exports on the schema module", () => {

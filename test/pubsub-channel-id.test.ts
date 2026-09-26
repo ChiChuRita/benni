@@ -152,9 +152,9 @@ describe("publishing to a per-entity channel", () => {
     const commands: RedisCommand[] = [];
     const redis = benni({ client: fakeClient(commands, [1]) });
 
-    await expect(
-      redis.pubsub.channel(roomEvents).publish({ text: "hi" })
-    ).resolves.toBe(1);
+    await expect(redis.store(roomEvents).publish({ text: "hi" })).resolves.toBe(
+      1
+    );
     expect(commands).toEqual([["PUBLISH", "chat:room", '{"text":"hi"}']]);
   });
 
@@ -163,19 +163,15 @@ describe("publishing to a per-entity channel", () => {
     const redis = benni({ client: fakeClient(commands, [2]) });
 
     await expect(
-      redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" })
+      redis.store(roomEvents).at(42).publish({ text: "hi" })
     ).resolves.toBe(2);
     expect(commands).toEqual([["PUBLISH", "chat:room:42", '{"text":"hi"}']]);
   });
 
   it("exposes the resolved channel on the resource, without the schema", () => {
     const redis = benni({ client: fakeClient([], []) });
-    expect(redis.pubsub.channel(roomEvents).channelName("42")).toBe(
-      "chat:room:42"
-    );
-    expect(redis.pubsub.channel(roomEvents, "42").channelName()).toBe(
-      "chat:room:42"
-    );
+    expect(redis.store(roomEvents).channelName("42")).toBe("chat:room:42");
+    expect(redis.store(roomEvents).at("42").channelName()).toBe("chat:room:42");
   });
 
   it("reaches per-entity channels through the schema registry", async () => {
@@ -206,14 +202,15 @@ describe("subscribing to a per-entity channel", () => {
     const redis = benni({ client: server.client });
     const seen: RoomMessage[] = [];
 
-    const subscription = await redis.pubsub
-      .channel(roomEvents, 42)
+    const subscription = await redis
+      .store(roomEvents)
+      .at(42)
       .subscribe((message) => {
         seen.push(message);
       });
 
     expect(server.log).toEqual(["lease", "subscribe:chat:room:42"]);
-    await redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" });
+    await redis.store(roomEvents).at(42).publish({ text: "hi" });
     expect(seen).toEqual([{ text: "hi" }]);
 
     await subscription.unsubscribe();
@@ -227,16 +224,19 @@ describe("subscribing to a per-entity channel", () => {
     const bare: RoomMessage[] = [];
     const scoped: RoomMessage[] = [];
 
-    await redis.pubsub.channel(roomEvents).subscribe((message) => {
+    await redis.store(roomEvents).subscribe((message) => {
       bare.push(message);
     });
-    await redis.pubsub.channel(roomEvents, 42).subscribe((message) => {
-      scoped.push(message);
-    });
+    await redis
+      .store(roomEvents)
+      .at(42)
+      .subscribe((message) => {
+        scoped.push(message);
+      });
 
     try {
-      await redis.pubsub.channel(roomEvents).publish({ text: "all" });
-      await redis.pubsub.channel(roomEvents, 42).publish({ text: "room" });
+      await redis.store(roomEvents).publish({ text: "all" });
+      await redis.store(roomEvents).at(42).publish({ text: "room" });
 
       expect(bare).toEqual([{ text: "all" }]);
       expect(scoped).toEqual([{ text: "room" }]);
@@ -253,18 +253,24 @@ describe("subscribing to a per-entity channel", () => {
 
     // Two independently built resources, so the hub can only share the
     // subscription if the id-scoped channels agree on their name.
-    const a = await redis.pubsub.channel(roomEvents, 42).subscribe((m) => {
-      first.push(m);
-    });
-    const b = await redis.pubsub.channel(roomEvents, 42).subscribe((m) => {
-      second.push(m);
-    });
+    const a = await redis
+      .store(roomEvents)
+      .at(42)
+      .subscribe((m) => {
+        first.push(m);
+      });
+    const b = await redis
+      .store(roomEvents)
+      .at(42)
+      .subscribe((m) => {
+        second.push(m);
+      });
 
     expect(
       server.log.filter((entry) => entry === "subscribe:chat:room:42")
     ).toHaveLength(1);
 
-    await redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" });
+    await redis.store(roomEvents).at(42).publish({ text: "hi" });
     expect(first).toEqual([{ text: "hi" }]);
     expect(second).toEqual([{ text: "hi" }]);
 
@@ -280,20 +286,20 @@ describe("subscribing to a per-entity channel", () => {
     const redis = benni({ client: server.client });
     const seen: Array<[RoomMessage, string]> = [];
 
-    const subscription = await redis.pubsub
-      .pattern(roomPattern)
+    const subscription = await redis
+      .store(roomPattern)
       .subscribe((message, channel) => {
         seen.push([message, channel]);
       });
 
     try {
       await expect(
-        redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" })
+        redis.store(roomEvents).at(42).publish({ text: "hi" })
       ).resolves.toBe(1);
       expect(seen).toEqual([[{ text: "hi" }, "chat:room:42"]]);
 
       // A second room lands on the same pattern subscription.
-      await redis.pubsub.channel(roomEvents, 7).publish({ text: "yo" });
+      await redis.store(roomEvents).at(7).publish({ text: "yo" });
       expect(seen.at(-1)).toEqual([{ text: "yo" }, "chat:room:7"]);
     } finally {
       await subscription.unsubscribe();
@@ -307,8 +313,9 @@ describe("subscribing to a per-entity channel", () => {
     const received: string[] = [];
 
     const consume = (async () => {
-      for await (const message of redis.pubsub
-        .channel(roomEvents, 42)
+      for await (const message of redis
+        .store(roomEvents)
+        .at(42)
         .stream({ signal: controller.signal })) {
         received.push(message.text);
         controller.abort();
@@ -316,7 +323,7 @@ describe("subscribing to a per-entity channel", () => {
     })();
 
     await vi.waitUntil(() => server.log.includes("subscribe:chat:room:42"));
-    await redis.pubsub.channel(roomEvents, 42).publish({ text: "hi" });
+    await redis.store(roomEvents).at(42).publish({ text: "hi" });
     await consume;
 
     expect(received).toEqual(["hi"]);
@@ -332,7 +339,8 @@ describe("per-entity channel types", () => {
 
     const resolved = roomEvents.channelName("42");
     const fromResource = benni({ client: fakeClient([], []) })
-      .pubsub.channel(roomEvents, 42)
+      .store(roomEvents)
+      .at(42)
       .channelName();
     const knownResolved = known.channelName("lobby");
     type _Resolved = Expect<Equal<typeof resolved, "chat:room:42">>;
@@ -356,7 +364,7 @@ describe("per-entity channel types", () => {
   it("keeps the message type on the id-scoped resource", async () => {
     const commands: RedisCommand[] = [];
     const redis = benni({ client: fakeClient(commands, [1]) });
-    const scoped = redis.pubsub.channel(roomEvents, 42);
+    const scoped = redis.store(roomEvents).at(42);
     type Published = Parameters<typeof scoped.publish>[0];
     type _Published = Expect<Equal<Published, RoomMessage>>;
 

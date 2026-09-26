@@ -259,7 +259,7 @@ describeRedis("session-bound hset with a ttl against a live server", () => {
           // The write under test. Its TTL used to turn it into a MULTI/EXEC
           // that disarmed the WATCH above.
           await session
-            .hash(profiles)
+            .store(profiles)
             .hset("42", { name: "benni", score: seen }, { ttlSeconds: 60 });
           return session
             .multi()
@@ -273,7 +273,7 @@ describeRedis("session-bound hset with a ttl against a live server", () => {
       expect(bodyRuns).toBe(2);
       // The retry read 2 and committed 12; the lost-update path commits 11.
       await expect(client.send(["GET", counter])).resolves.toBe("12");
-      await expect(redis.hash(profiles).hget("42")).resolves.toEqual({
+      await expect(redis.store(profiles).hget("42")).resolves.toEqual({
         name: "benni",
         score: 2
       });

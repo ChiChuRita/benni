@@ -164,7 +164,7 @@ describeRedis("bun pubsub", () => {
     );
     const seen: Array<{ id: string; action: "created" }> = [];
     const first = new Promise<void>((resolve) => {
-      void redis.pubsub.channel(channel).subscribe((message) => {
+      void redis.store(channel).subscribe((message) => {
         seen.push(message);
         resolve();
       });
@@ -173,7 +173,7 @@ describeRedis("bun pubsub", () => {
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       await expect(
-        redis.pubsub.channel(channel).publish({ id: "42", action: "created" })
+        redis.store(channel).publish({ id: "42", action: "created" })
       ).resolves.toBe(1);
       await first;
       expect(seen).toEqual([{ id: "42", action: "created" }]);
@@ -202,9 +202,9 @@ describeRedis("bun pubsub", () => {
     const pattern = definePubSubPattern("benni:test:none:*", codecs.string());
 
     try {
-      await expect(
-        redis.pubsub.pattern(pattern).subscribe(() => {})
-      ).rejects.toThrow(TypeError);
+      await expect(redis.store(pattern).subscribe(() => {})).rejects.toThrow(
+        TypeError
+      );
     } finally {
       await client.close();
     }

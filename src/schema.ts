@@ -132,14 +132,14 @@ export const geo = defineGeoSet;
 /**
  * A pub/sub channel schema: publish/subscribe with a message codec.
  *
- * Reach the channel itself with `redis.pubsub.channel(schema)`, or the
- * per-entity channel `prefix:<id>` with `redis.pubsub.channel(schema, id)` —
- * derived exactly the way a keyspace derives a key, so it pairs with a
+ * Reach the channel itself with `redis.query.<name>`, or the per-entity
+ * channel `prefix:<id>` with `redis.query.<name>.at(id)` — derived exactly
+ * the way a keyspace derives a key, so it pairs with a
  * `pattern("chat:room:*")` subscriber.
  * @example
  * ```ts
- * const roomEvents = channel("chat:room", json<{ text: string }>());
- * await redis.pubsub.channel(roomEvents, "42").publish({ text: "hi" });
+ * export const roomEvents = channel("chat:room", json<{ text: string }>());
+ * await redis.query.roomEvents.at("42").publish({ text: "hi" });
  * ```
  */
 export const channel = definePubSubChannel;
@@ -149,7 +149,7 @@ export const pattern = definePubSubPattern;
 export type { ScriptOptions, ScriptSchema } from "./core/script.js";
 /**
  * A Lua script schema with named keys, typed args, and a scalar return codec.
- * Run it with `redis.script(schema).run({ keys, args })` — the runner loads the
+ * Run it with `redis.query.<name>.run({ keys, args })` — the runner loads the
  * script once and executes cached `EVALSHA`.
  */
 export { script } from "./core/script.js";

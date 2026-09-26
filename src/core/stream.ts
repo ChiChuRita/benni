@@ -195,7 +195,7 @@ export function createStreamStore<
    * reply nullable (missing stream), so only a call that could set it types
    * as `string | null`; a call that provably leaves it off has no null.
    *
-   * @example const entryId = await redis.stream(events).xadd("42", { kind: "click" });
+   * @example const entryId = await redis.query.events.xadd("42", { kind: "click" });
    */
   function xadd(
     id: TId,

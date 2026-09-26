@@ -109,12 +109,12 @@ describeCluster("redis cluster", () => {
   }> = [
     {
       command: "MGET",
-      run: async (r, s) => void (await r.kv(s.kv).mget(["a", "b"]))
+      run: async (r, s) => void (await r.store(s.kv).mget(["a", "b"]))
     },
     {
       command: "MSET",
       run: async (r, s) =>
-        void (await r.kv(s.kv).mset([
+        void (await r.store(s.kv).mset([
           ["a", "1"],
           ["b", "2"]
         ]))
@@ -122,26 +122,26 @@ describeCluster("redis cluster", () => {
     {
       command: "SUNIONSTORE",
       run: async (r, s) =>
-        void (await r.set(s.set).sunionstore("d", "a", ["b"]))
+        void (await r.store(s.set).sunionstore("d", "a", ["b"]))
     },
     {
       command: "SINTER",
-      run: async (r, s) => void (await r.set(s.set).sinter("a", ["b"]))
+      run: async (r, s) => void (await r.store(s.set).sinter("a", ["b"]))
     },
     {
       command: "SMOVE",
-      run: async (r, s) => void (await r.set(s.set).smove("a", "b", "m"))
+      run: async (r, s) => void (await r.store(s.set).smove("a", "b", "m"))
     },
     {
       command: "ZUNIONSTORE",
       run: async (r, s) =>
-        void (await r.zset(s.zset).zunionstore("d", "a", ["b"]))
+        void (await r.store(s.zset).zunionstore("d", "a", ["b"]))
     },
     {
       command: "ZRANGESTORE",
       run: async (r, s) =>
         void (await r
-          .zset(s.zset)
+          .store(s.zset)
           .zrangestore("d", "a", { start: 0, stop: -1 }))
     }
   ];

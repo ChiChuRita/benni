@@ -247,7 +247,7 @@ export function createBitmapStore<TId extends RedisKeyPart = RedisKeyPart>(
     ...createKeyLifecycleOps(client, (id: TId) => schema.key(id)),
     /**
      * SETBIT — set the bit at `offset`; returns the previous bit.
-     * @example await redis.bitmap(seen).setbit("2026-07-11", userId, true);
+     * @example await redis.query.seen.setbit("2026-07-11", userId, true);
      */
     async setbit(id: TId, offset: number, value: boolean): Promise<boolean> {
       return (
@@ -273,7 +273,7 @@ export function createBitmapStore<TId extends RedisKeyPart = RedisKeyPart>(
     },
     /**
      * BITCOUNT — number of set bits, optionally within a `BYTE`/`BIT` range.
-     * @example const active = await redis.bitmap(seen).bitcount("2026-07-11");
+     * @example const active = await redis.query.seen.bitcount("2026-07-11");
      */
     async bitcount(id: TId, range?: BitmapRange): Promise<number> {
       const args: RedisCommandArgument[] = [];

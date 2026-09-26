@@ -1446,16 +1446,16 @@ describeRedis("node feature modules against real Redis", () => {
 
     it("blocks on two keys and attributes the answering key to its typed id", async () => {
       await db.session(async (s) => {
-        const queue = s.list(jobs);
+        const queue = s.store(jobs);
         // Arm the blocking pop across two empty keys, then push from the
         // shared client so Redis serves the reply onto the session.
         const popped = queue.blpop(["urgent", "pending"], {
           timeoutSeconds: "forever"
         });
         await sleep(50);
-        await expect(db.list(jobs).rpush("pending", ["email-1"])).resolves.toBe(
-          1
-        );
+        await expect(
+          db.store(jobs).rpush("pending", ["email-1"])
+        ).resolves.toBe(1);
 
         const hit = await popped;
         // { timeoutSeconds: "forever" } removes null from the type — hit is non-null.
@@ -1470,7 +1470,7 @@ describeRedis("node feature modules against real Redis", () => {
       await db.session(async (s) => {
         const started = Date.now();
         const result = await s
-          .list(jobs)
+          .store(jobs)
           .blpop("timeout", { timeoutSeconds: 0.2 });
         const elapsed = Date.now() - started;
         expect(result).toBeNull();
@@ -1482,30 +1482,30 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("round-trips a job through BLMOVE into a processing list", async () => {
-      await db.list(jobs).rpush("src", ["job-a", "job-b"]);
+      await db.store(jobs).rpush("src", ["job-a", "job-b"]);
       await db.session(async (s) => {
         const moved = await s
-          .list(jobs)
+          .store(jobs)
           .blmove("src", "processing", "left", "right", {
             timeoutSeconds: 0.3
           });
         expect(moved).toBe("job-a");
       });
       // The job now lives in the processing list, recoverable after a crash.
-      await expect(db.list(jobs).lrange("processing", 0, -1)).resolves.toEqual([
-        "job-a"
-      ]);
-      await expect(db.list(jobs).lrange("src", 0, -1)).resolves.toEqual([
+      await expect(db.store(jobs).lrange("processing", 0, -1)).resolves.toEqual(
+        ["job-a"]
+      );
+      await expect(db.store(jobs).lrange("src", 0, -1)).resolves.toEqual([
         "job-b"
       ]);
     });
 
     it("blocks on a sorted set and pops the minimum-score member", async () => {
       await db.session(async (s) => {
-        const board = s.zset(scores);
+        const board = s.store(scores);
         const popped = board.bzpopmin("live", { timeoutSeconds: "forever" });
         await sleep(50);
-        await db.zset(scores).zadd("live", [
+        await db.store(scores).zadd("live", [
           { member: "low", score: 1 },
           { member: "high", score: 9 }
         ]);
@@ -1515,19 +1515,19 @@ describeRedis("node feature modules against real Redis", () => {
       });
       // The higher-score member is left behind.
       await expect(
-        db.zset(scores).zrange("live", { start: 0, stop: -1 })
+        db.store(scores).zrange("live", { start: 0, stop: -1 })
       ).resolves.toEqual(["high"]);
     });
 
     it("blocks with BLMPOP and pops a counted batch from the first ready key", async () => {
       await db.session(async (s) => {
-        const popped = s.list(jobs).blmpop(["mb-a", "mb-b"], {
+        const popped = s.store(jobs).blmpop(["mb-a", "mb-b"], {
           direction: "left",
           timeoutSeconds: "forever",
           count: 2
         });
         await sleep(50);
-        await db.list(jobs).rpush("mb-b", ["a", "b", "c"]);
+        await db.store(jobs).rpush("mb-b", ["a", "b", "c"]);
 
         const hit = await popped;
         expect(hit).toEqual({ id: "mb-b", values: ["a", "b"] });
@@ -1535,12 +1535,14 @@ describeRedis("node feature modules against real Redis", () => {
         expect(answered).toBe("mb-b");
       });
       // The uncounted remainder stays in the list.
-      await expect(db.list(jobs).lrange("mb-b", 0, -1)).resolves.toEqual(["c"]);
+      await expect(db.store(jobs).lrange("mb-b", 0, -1)).resolves.toEqual([
+        "c"
+      ]);
     });
 
     it("blocks with BZMPOP and pops a counted batch of min-score members", async () => {
       await db.session(async (s) => {
-        const popped = s.zset(scores).bzmpop(
+        const popped = s.store(scores).bzmpop(
           ["zb-a", "zb-b"],
           { min: true, count: 2 },
           {
@@ -1548,7 +1550,7 @@ describeRedis("node feature modules against real Redis", () => {
           }
         );
         await sleep(50);
-        await db.zset(scores).zadd("zb-b", [
+        await db.store(scores).zadd("zb-b", [
           { member: "low", score: 1 },
           { member: "mid", score: 5 },
           { member: "high", score: 9 }
@@ -1564,7 +1566,7 @@ describeRedis("node feature modules against real Redis", () => {
         });
       });
       await expect(
-        db.zset(scores).zrange("zb-b", { start: 0, stop: -1 })
+        db.store(scores).zrange("zb-b", { start: 0, stop: -1 })
       ).resolves.toEqual(["high"]);
     });
   });
@@ -1584,16 +1586,16 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("pops from the first non-empty list key with typed attribution", async () => {
-      await db.list(jobs).rpush("b", ["one", "two", "three"]);
+      await db.store(jobs).rpush("b", ["one", "two", "three"]);
 
       await expect(
-        db.list(jobs).lmpop(["a", "b"], { direction: "left" })
+        db.store(jobs).lmpop(["a", "b"], { direction: "left" })
       ).resolves.toEqual({
         id: "b",
         values: ["one"]
       });
       const hit = await db
-        .list(jobs)
+        .store(jobs)
         .lmpop(["a", "b"], { direction: "left", count: 5 });
       expect(hit).toEqual({ id: "b", values: ["two", "three"] });
       const answered: "a" | "b" | undefined = hit?.id;
@@ -1601,25 +1603,25 @@ describeRedis("node feature modules against real Redis", () => {
 
       // Every key empty -> null.
       await expect(
-        db.list(jobs).lmpop(["a", "b"], { direction: "right" })
+        db.store(jobs).lmpop(["a", "b"], { direction: "right" })
       ).resolves.toBeNull();
     });
 
     it("pops from the first non-empty sorted set key with typed attribution", async () => {
-      await db.zset(scores).zadd("b", [
+      await db.store(scores).zadd("b", [
         { member: "alice", score: 10 },
         { member: "bob", score: 20 },
         { member: "carol", score: 30 }
       ]);
 
       await expect(
-        db.zset(scores).zmpop(["a", "b"], { min: true })
+        db.store(scores).zmpop(["a", "b"], { min: true })
       ).resolves.toEqual({
         id: "b",
         entries: [{ member: "alice", score: 10 }]
       });
       await expect(
-        db.zset(scores).zmpop(["a", "b"], { max: true, count: 2 })
+        db.store(scores).zmpop(["a", "b"], { max: true, count: 2 })
       ).resolves.toEqual({
         id: "b",
         entries: [
@@ -1629,7 +1631,7 @@ describeRedis("node feature modules against real Redis", () => {
       });
 
       await expect(
-        db.zset(scores).zmpop(["a", "b"], { min: true })
+        db.store(scores).zmpop(["a", "b"], { min: true })
       ).resolves.toBeNull();
     });
   });
@@ -1651,7 +1653,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("retries exactly once after a deterministic single conflict", async () => {
-      await db.kv(views).set("home", 0);
+      await db.store(views).set("home", 0);
 
       // Clobber the watched key from the shared client exactly once, on the
       // first attempt only — after the body read, before exec — so the first
@@ -1661,10 +1663,10 @@ describeRedis("node feature modules against real Redis", () => {
       const result = await db.watch(
         views.key("home"),
         async (s) => {
-          const current = (await s.kv(views).get("home")) ?? 0;
+          const current = (await s.store(views).get("home")) ?? 0;
           if (!clobbered) {
             clobbered = true;
-            await db.kv(views).incr("home");
+            await db.store(views).incr("home");
           }
           return s
             .multi()
@@ -1678,15 +1680,15 @@ describeRedis("node feature modules against real Redis", () => {
       expect(attempts).toEqual([1]);
       // Second attempt read 1 (the clobbering INCR) and set it to 2.
       expect(result).toEqual([undefined, 1]);
-      await expect(db.kv(views).get("home")).resolves.toBe(2);
+      await expect(db.store(views).get("home")).resolves.toBe(2);
     });
 
     it("N=5 parallel increments converge to exactly 5", async () => {
-      await db.kv(parallel).set("counter", 0);
+      await db.store(parallel).set("counter", 0);
 
       const runs = Array.from({ length: 5 }, () =>
         db.watch(parallel.key("counter"), async (s) => {
-          const current = (await s.kv(parallel).get("counter")) ?? 0;
+          const current = (await s.store(parallel).get("counter")) ?? 0;
           return s
             .multi()
             .add(["SET", parallel.key("counter"), current + 1], okReply);
@@ -1696,22 +1698,22 @@ describeRedis("node feature modules against real Redis", () => {
       const results = await Promise.all(runs);
       // Every run committed (no exhaustion) under contention.
       for (const result of results) expect(result).toEqual([undefined]);
-      await expect(db.kv(parallel).get("counter")).resolves.toBe(5);
+      await expect(db.store(parallel).get("counter")).resolves.toBe(5);
     });
 
     it("throws WatchRetriesExceededError under sustained conflict", async () => {
       const key = views.key("home");
-      await db.kv(views).set("home", 0);
+      await db.store(views).set("home", 0);
 
       const attempts: number[] = [];
       await expect(
         db.watch(
           key,
           async (s) => {
-            const current = (await s.kv(views).get("home")) ?? 0;
+            const current = (await s.store(views).get("home")) ?? 0;
             // Clobber the watched key from the shared client after the read but
             // before exec, guaranteeing every attempt aborts.
-            await db.kv(views).incr("home");
+            await db.store(views).incr("home");
             return s.multi().add(["SET", key, current + 1], okReply);
           },
           {
@@ -1724,16 +1726,16 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("opts out with a null body and leaves the key untouched", async () => {
-      await db.kv(views).set("home", 100);
+      await db.store(views).set("home", 100);
 
       const result = await db.watch(views.key("home"), async (s) => {
-        const current = (await s.kv(views).get("home")) ?? 0;
+        const current = (await s.store(views).get("home")) ?? 0;
         if (current >= 100) return null;
         return s.multi().add(["SET", views.key("home"), current + 1], okReply);
       });
 
       expect(result).toBeNull();
-      await expect(db.kv(views).get("home")).resolves.toBe(100);
+      await expect(db.store(views).get("home")).resolves.toBe(100);
     });
   });
 
@@ -1749,7 +1751,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("creates, consumes, acks, claims, and reports pending state", async () => {
-      const group = db.stream(auditEvents).group(groupName);
+      const group = db.store(auditEvents).group(groupName);
       const worker = group.consumer("w-1");
 
       // create() -> true on first call, false (BUSYGROUP) on the second.
@@ -1760,7 +1762,7 @@ describeRedis("node feature modules against real Redis", () => {
         false
       );
 
-      const stream = db.stream(auditEvents);
+      const stream = db.store(auditEvents);
       const firstId = await stream.xadd("login", {
         type: "click",
         userId: "u1"
@@ -1812,9 +1814,9 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("surfaces an XDEL tombstone through readPending and still acks it", async () => {
-      const group = db.stream(auditEvents).group("tombstones");
+      const group = db.store(auditEvents).group("tombstones");
       const worker = group.consumer("t-1");
-      const stream = db.stream(auditEvents);
+      const stream = db.store(auditEvents);
 
       await group.create("login", { from: "end" });
       const liveId = await stream.xadd("login", {
@@ -1849,10 +1851,10 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("moves ownership with autoClaim and drops deleted ids from the PEL", async () => {
-      const group = db.stream(auditEvents).group("claim");
+      const group = db.store(auditEvents).group("claim");
       const dead = group.consumer("dead");
       const live = group.consumer("live");
-      const stream = db.stream(auditEvents);
+      const stream = db.store(auditEvents);
 
       await group.create("login", { from: "end" });
       const keepId = await stream.xadd("login", {
@@ -1894,12 +1896,12 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("receives a late add through a session blocking group read", async () => {
-      const group = db.stream(auditEvents).group("blocking");
+      const group = db.store(auditEvents).group("blocking");
       await group.create("login", { from: "end" });
-      const stream = db.stream(auditEvents);
+      const stream = db.store(auditEvents);
 
       await db.session(async (s) => {
-        const live = s.stream(auditEvents).group("blocking").consumer("b-1");
+        const live = s.store(auditEvents).group("blocking").consumer("b-1");
         const batch = live.xreadgroup("login", {
           timeoutSeconds: "forever",
           count: 5
@@ -1927,7 +1929,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("await using disposes a session and rejects a forever-block fast", async () => {
-      let disposed: BenniSession;
+      let disposed: BenniSession<BenniSchema>;
       const started = Date.now();
       const rejection = await (async () => {
         // eslint-disable-next-line no-lone-blocks
@@ -1938,7 +1940,7 @@ describeRedis("node feature modules against real Redis", () => {
           // rejection without awaiting so the block leaves scope and dispose
           // fires, rejecting it promptly.
           const blocked = session
-            .list(jobs)
+            .store(jobs)
             .blpop("blocked", { timeoutSeconds: "forever" })
             .then(
               () => ({ rejected: false as const }),
@@ -1959,12 +1961,12 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("scoped db.session(fn) closes the session after the body resolves", async () => {
-      let leased: BenniSession | undefined;
+      let leased: BenniSession<BenniSchema> | undefined;
       const value = await db.session(async (s) => {
         leased = s;
         expect(s.closed).toBe(false);
-        await db.list(jobs).rpush("blocked", ["scoped"]);
-        return s.list(jobs).blpop("blocked", { timeoutSeconds: 0.3 });
+        await db.store(jobs).rpush("blocked", ["scoped"]);
+        return s.store(jobs).blpop("blocked", { timeoutSeconds: 0.3 });
       });
 
       expect(value).toBe("scoped");

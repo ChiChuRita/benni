@@ -49,11 +49,10 @@ export {
   type AnyBenni,
   type Benni,
   type BenniBase,
+  type BenniCloseOptions,
   type BenniConfig,
-  type BenniNoPatterns,
   type BenniNoSessions,
   type BenniOptions,
-  type BenniPatterns,
   type BenniPubSub,
   type BenniScan,
   type BenniSchema,
@@ -71,5 +70,9 @@ export {
   // Apps only, once per program; libraries take `AnyBenni`.
   type Register,
   type RegisteredSchema,
-  type SchemaKind
+  type SchemaKind,
+  type SessionQueryRegistry,
+  type SessionQueryResource,
+  type SessionSchemaKind,
+  type StorableSchema
 } from "./database.js";

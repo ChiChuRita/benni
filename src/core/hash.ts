@@ -837,7 +837,7 @@ export function createHashStore<
     },
     /**
      * HDEL — delete one field or several, returning the count removed.
-     * @example await redis.hash(users).hdel("42", ["name", "score"]);
+     * @example await redis.query.users.hdel("42", ["name", "score"]);
      */
     async hdel<TField extends keyof TFields & string>(
       id: TId,

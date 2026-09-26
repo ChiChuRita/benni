@@ -55,11 +55,11 @@ describeRedis("normalized server errors", () => {
       const client = createClient();
       const redis = benni({ client: client });
 
-      await redis.hash(users).hset("1", { name: "Ada", score: 10 });
+      await redis.store(users).hset("1", { name: "Ada", score: 10 });
 
       let thrown: unknown;
       try {
-        await redis.zset(leaderboard).zadd("1", { score: 1, member: "ada" });
+        await redis.store(leaderboard).zadd("1", { score: 1, member: "ada" });
       } catch (error) {
         thrown = error;
       }

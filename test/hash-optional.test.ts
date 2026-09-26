@@ -342,14 +342,14 @@ describeRedis("schema evolution against a live server", () => {
     const client = node({ url: redisUrl });
     const redis = benni({ client });
     try {
-      await redis.hash(v1).hset("old", { name: "Ada", score: 10 });
-      await expect(redis.hash(v2).hget("old")).resolves.toStrictEqual({
+      await redis.store(v1).hset("old", { name: "Ada", score: 10 });
+      await expect(redis.store(v2).hget("old")).resolves.toStrictEqual({
         name: "Ada",
         score: 10
       });
 
-      await redis.hash(v2).hmset("old", { bio: "hi", score: 11 });
-      await expect(redis.hash(v2).hget("old")).resolves.toStrictEqual({
+      await redis.store(v2).hmset("old", { bio: "hi", score: 11 });
+      await expect(redis.store(v2).hget("old")).resolves.toStrictEqual({
         name: "Ada",
         score: 11,
         bio: "hi"
@@ -357,9 +357,9 @@ describeRedis("schema evolution against a live server", () => {
 
       // The whole-record write replaces the record: the omitted bio goes.
       await redis
-        .hash(v2)
+        .store(v2)
         .hset("old", { name: "Ada", score: 12 }, { ttlSeconds: 60 });
-      await expect(redis.hash(v2).hget("old")).resolves.toStrictEqual({
+      await expect(redis.store(v2).hget("old")).resolves.toStrictEqual({
         name: "Ada",
         score: 12
       });
@@ -368,8 +368,8 @@ describeRedis("schema evolution against a live server", () => {
         client.send(["TTL", v2.key("old")])
       ).resolves.toBeGreaterThan(0);
 
-      await redis.hash(v2).hdel("old", "score");
-      await expect(redis.hash(v2).hget("old")).rejects.toMatchObject({
+      await redis.store(v2).hdel("old", "score");
+      await expect(redis.store(v2).hget("old")).rejects.toMatchObject({
         missing: ["score"]
       });
     } finally {

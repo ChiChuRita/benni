@@ -23,15 +23,15 @@ void onNode.session;
 void onNode.watch;
 void onNode.query.chat.subscribe;
 void onNode.query.allChats.subscribe;
-void onNode.pubsub.pattern(allChats).subscribe;
-void onNode.pubsub.channel(chat, 1).subscribe;
+void onNode.store(allChats).subscribe;
+void onNode.store(chat).at(1).subscribe;
 
 // Bun: sessions and channels, no patterns.
 const onBun = benni({ client: bunClient, schema });
 void onBun.session;
 void onBun.query.chat.subscribe;
 // @ts-expect-error Bun cannot pattern-subscribe
-void onBun.pubsub.pattern;
+void onBun.store(allChats);
 // @ts-expect-error a pattern resource has nothing but subscribe, so it is dropped
 void onBun.query.allChats;
 
@@ -39,7 +39,7 @@ void onBun.query.allChats;
 const onUpstash = benni({ client: upstashClient, schema });
 void onUpstash.query.chat.publish({ text: "hi" });
 void onUpstash.query.chat.at(7).publish({ text: "hi" });
-void onUpstash.pubsub.channel(chat, 7).publish({ text: "hi" });
+void onUpstash.store(chat).at(7).publish({ text: "hi" });
 // @ts-expect-error HTTP holds no session
 void onUpstash.session;
 // @ts-expect-error WATCH needs a session
@@ -47,9 +47,9 @@ void onUpstash.watch;
 // @ts-expect-error HTTP holds no subscriber connection
 void onUpstash.query.chat.subscribe;
 // @ts-expect-error nor on a per-entity channel
-void onUpstash.pubsub.channel(chat, 7).stream;
+void onUpstash.store(chat).at(7).stream;
 // @ts-expect-error nor pattern subscriptions
-void onUpstash.pubsub.pattern;
+void onUpstash.store(allChats);
 
 // A hand-written client with only the required members gets the base surface.
 const onCustom = benni({ client: custom });

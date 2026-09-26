@@ -63,7 +63,7 @@ const schemaProfiles = schemaKv(
   "schema-profile",
   schemaJson<{ name: string; score: number }>()
 );
-const schemaProfileStore = db.kv(schemaProfiles);
+const schemaProfileStore = db.store(schemaProfiles);
 type SchemaProfileSetValue = Parameters<typeof schemaProfileStore.set>[1];
 type SchemaProfileGetValue = Awaited<ReturnType<typeof schemaProfileStore.get>>;
 type _SchemaProfileSetValue = Expect<
@@ -97,7 +97,7 @@ const schemaUsers = schemaHash("schema-user", {
   name: schemaString(),
   score: schemaNumber()
 });
-const schemaUserStore = db.hash(schemaUsers);
+const schemaUserStore = db.store(schemaUsers);
 // hset/hget are overloaded (whole-record vs single-field); Parameters/ReturnType
 // resolve to the last overload, so probe the whole-record forms via calls.
 const schemaUserRecordSet = (value: { name: string; score: number }) =>
@@ -126,7 +126,7 @@ const schemaIncrementBy = schemaScript("incrementBy", {
   returns: schemaNumber(),
   lua: "return redis.call('INCRBY', KEYS[1], ARGV[1])"
 });
-const schemaIncrementRunner = db.script(schemaIncrementBy);
+const schemaIncrementRunner = db.store(schemaIncrementBy);
 type SchemaScriptRunInput = Parameters<typeof schemaIncrementRunner.run>[0];
 type SchemaScriptRunValue = Awaited<
   ReturnType<typeof schemaIncrementRunner.run>
