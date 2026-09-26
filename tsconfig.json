@@ -6,7 +6,6 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "declaration": true,
-    "declarationMap": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
