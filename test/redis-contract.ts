@@ -126,7 +126,12 @@ export async function expectPubSubSurvivesReconnect(
   const client = await createClient();
   const redis = benni(client);
   const id = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  const channelCount = 7;
+  // The victim is found in CLIENT LIST as "new since we started, holding
+  // exactly channelCount subscriptions". The node and ioredis files call this
+  // helper concurrently against one server, so without the mutex below each
+  // could pick (and kill) the other's subscriber. The count is unusual so an
+  // unrelated test's subscriber cannot match it either.
+  const channelCount = 23;
   const channels = Array.from({ length: channelCount }, (_, index) =>
     definePubSubChannel(`benni:test:reconnect:${id}:${index}`, codecs.string())
   );
@@ -135,6 +140,16 @@ export async function expectPubSubSurvivesReconnect(
     codecs.string()
   );
   const seen = new Set<string>();
+  const mutex = "benni:test:reconnect:mutex";
+  const deadlineForMutex = Date.now() + 60_000;
+  while (
+    (await client.send(["SET", mutex, id, "NX", "PX", "30000"])) !== "OK"
+  ) {
+    if (Date.now() > deadlineForMutex) {
+      throw new Error("timed out waiting for the reconnect-test mutex");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 
   try {
     const before = new Set(
@@ -190,6 +205,8 @@ export async function expectPubSubSurvivesReconnect(
     }
   } finally {
     await redis.pubsub.close();
+    const release = `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) end return 0`;
+    await client.send(["EVAL", release, "1", mutex, id]);
     await client.close();
   }
 }

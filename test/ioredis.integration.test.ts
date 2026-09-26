@@ -39,7 +39,7 @@ describeRedis("ioredis", () => {
     await expectPubSubSurvivesReconnect(() => ioredis({ url: redisUrl }), {
       patterns: true
     });
-  });
+  }, 30_000);
 
   it("reports the subscriber closed once ioredis gives up reconnecting", async () => {
     const connectionName = `benni-ioredis-sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

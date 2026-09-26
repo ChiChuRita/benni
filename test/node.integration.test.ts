@@ -24,7 +24,7 @@ describeRedis("node", () => {
     await expectPubSubSurvivesReconnect(() => node({ url: redisUrl }), {
       patterns: true
     });
-  });
+  }, 30_000);
 });
 
 describeRedis("node pubsub", () => {
