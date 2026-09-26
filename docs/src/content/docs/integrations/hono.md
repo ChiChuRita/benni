@@ -51,6 +51,7 @@ app.use(
 | `windowMs` | - | Window length in milliseconds. |
 | `prefix` | `"ratelimit"` | Key namespace; keys are `<prefix>:<id>`. |
 | `key` | - | `(c) => string \| Promise<string>`, the rate-limit subject. Required: see below. |
+| `failOpen` | `false` | Let requests through, unlimited, while Redis is failing. See [When Redis fails](#when-redis-fails). |
 
 `key` is required on purpose. There is no request property a limiter can trust without knowing the deployment: `x-forwarded-for` and `cf-connecting-ip` are set by the client on a direct deploy, and appended to rather than replaced by many proxies, so a default built on either would let a caller pick its own identity and nullify the limit by varying one header. Pass the value your deployment actually verifies: an authenticated user or API key id where you have one, otherwise the client address your platform exposes.
 
@@ -65,15 +66,21 @@ key: (c) => c.req.header("cf-connecting-ip") ?? "anonymous"
 
 Read-through caching for `GET`/`HEAD` responses (other methods pass through). On a hit the stored response is replayed with an `X-Benni-Cache: hit` header; on a miss the handler runs and successful responses are stored with `SET PX ttlMs`. **Every Redis failure fails open**: the request always runs.
 
-The cache key is the full URL (`method:origin+path+query`) plus any `vary` headers, so it is a *shared* cache, and one app bound to several hostnames keeps one entry per host. A response is never stored when any of these hold:
+The cache key is the full URL (`method:origin+path+query`) plus any `vary` headers, so it is a *shared* cache, and one app bound to several hostnames keeps one entry per host.
 
-- the request carried an `Authorization` or a `Range` header;
+A request that carries credentials passes straight through, neither read from nor stored in the cache:
+
+- an `Authorization` header, always;
+- a `Cookie` header, unless you opt in. A route authenticated by a cookie through middleware Benni cannot see (your own auth, a third-party session library) sends no `Set-Cookie` and touches no Benni session, so nothing about its response says "per user", and a shared cache would store the first visitor's page and replay it to everyone. Two ways to cache cookie-carrying requests anyway: list `cookie` in `vary`, which keys the entry on the exact `Cookie` header so each visitor only ever sees their own response, or set `ignoreCookies: true`, which shares one entry across all cookies and is only safe when no response behind the middleware depends on one (analytics cookies on a public page, say).
+
+A ranged request (`Range` header) also passes straight through. Beyond that, a response is never stored when any of these hold:
+
 - the response is anything but a plain `200`;
 - the handler or an inner middleware set a cookie on the response;
 - the response carries a `no-store`, `no-cache`, or `private` `Cache-Control`, or a `Vary` naming a header you did not list in `vary` (`Vary: *` is never storable);
 - the handler read or wrote the [`session`](#sessions) in any way, including reading `id` or `isNew` (`cache()` asks the session bag directly, so this holds whichever order the two middlewares are composed in).
 
-That last rule is what keeps a per-user route safe. Note the cookie check alone would not: a returning visitor already has their `sid`, so `session()` emits no `Set-Cookie` and there is nothing for a cookie check to see. If a route varies by anything the cache cannot observe (a header you did not list in `vary` and the response does not declare in `Vary`, a value read straight from `c.req.header("Cookie")`), do not put `cache()` on it, or give it a `key` that includes the distinguishing value.
+That last rule keeps a route that reads Benni's own session safe even under `ignoreCookies`: a returning visitor already has their `sid`, so `session()` emits no `Set-Cookie` and there is nothing for a cookie check to see. If a route varies by anything else the cache cannot observe (a header you did not list in `vary` and the response does not declare in `Vary`), do not put `cache()` on it, or give it a `key` that includes the distinguishing value.
 
 Stored entries keep `content-type`, `cache-control`, `vary`, `etag`, and `last-modified`, so a replay stays honest to the browser and to any CDN in front of you. Every other response header is dropped.
 
@@ -95,9 +102,10 @@ app.get(
 | `ttlMs` | - | Entry lifetime in milliseconds. |
 | `prefix` | `"hono-cache"` | Key namespace; keys are `<prefix>:<key>`. |
 | `key` | `method + ":" + origin + path + query` | `(c) => string`, the cache key. |
-| `vary` | `[]` | Header names folded into the key. |
+| `vary` | `[]` | Header names folded into the key. Include `cookie` to cache cookie-carrying requests per visitor. |
+| `ignoreCookies` | `false` | Cache cookie-carrying requests in the one shared entry. |
 
-Bodies are stored as text (`{ status, headers, body }` JSON), so this is for text-ish responses (JSON, HTML), not streaming or binary payloads.
+Bodies are stored as their exact bytes (`{ status, headers, body64 }` JSON, the body base64-encoded), so images and other binary responses replay byte for byte. The body is buffered in full, so this is not for streaming responses. Entries written by an earlier version in the old text form read as a miss and are replaced on the next request.
 
 ## Sessions
 
@@ -145,6 +153,18 @@ app.post("/logout", (c) => {
 
 Session values are `unknown` per key; `get<T>` is a convenience assertion, not a validation. The session is a convenience bag; codec-level typing belongs to your [Benni schemas](/benni/core-concepts/defining-schemas/).
 
+## When Redis fails
+
+Each middleware takes the side of the trade its job calls for:
+
+| Middleware | On a Redis error | Why |
+| --- | --- | --- |
+| `cache` | Fails open: a miss, the handler runs. Not configurable. | A cache is an optimization; an outage should cost latency, never availability. |
+| `ratelimit` | Fails closed by default: the error propagates, so Hono answers `500` (or your `app.onError`). `failOpen: true` lets the request through without `X-RateLimit-*` headers instead. | A limiter that cannot count should not silently stop limiting; choose availability explicitly when that is the better trade. |
+| `session` | Fails closed: the error propagates. Not configurable. | Failing open would treat a signed-in visitor as anonymous and silently drop whatever the handler wrote. |
+
+`failOpen` covers only the limiter's own Redis round trip: errors from `key` and from your handler propagate either way. It also swallows the Redis error, so watch Redis health somewhere else if you turn it on.
+
 ## Putting it together
 
 ```ts
@@ -165,7 +185,9 @@ app.use(
 );
 app.use("*", session({ client }));
 
-app.get("/pricing", cache({ client, ttlMs: 60_000 }), (c) =>
+// Returning visitors carry the sid cookie, which cache() bypasses by default.
+// This page depends on no cookie, and session() reads stay guarded, so opt in.
+app.get("/pricing", cache({ client, ttlMs: 60_000, ignoreCookies: true }), (c) =>
   c.json({ plans: ["free", "pro"] })
 );
 

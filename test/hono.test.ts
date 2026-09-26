@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import type { RedisCommand, RedisReply } from "../src/core/types.js";
@@ -95,7 +96,9 @@ describe("hono cache", () => {
     expect(set?.slice(3)).toEqual(["PX", 30_000]);
     const stored = JSON.parse(set?.[2] as string);
     expect(stored.status).toBe(200);
-    expect(stored.body).toBe('{"n":1}');
+    expect(Buffer.from(stored.body64, "base64").toString("utf8")).toBe(
+      '{"n":1}'
+    );
     expect(stored.headers["content-type"]).toContain("application/json");
 
     // Second request: GET returns the stored entry.
@@ -200,7 +203,9 @@ describe("hono cache", () => {
     ]);
     const app = new Hono();
     app.use("*", session({ client }));
-    app.get("/me", cache({ client, ttlMs: 30_000 }), (c) =>
+    // ignoreCookies: the sid cookie alone would bypass the cache now, and
+    // this pins the session guard that still holds when a caller opts in.
+    app.get("/me", cache({ client, ttlMs: 30_000, ignoreCookies: true }), (c) =>
       c.text(getSession(c).get<string>("userId") ?? "anonymous")
     );
 
@@ -214,7 +219,11 @@ describe("hono cache", () => {
     const client = fakeClient(commands, [null, null, "OK"]);
     const app = new Hono();
     app.use("*", session({ client }));
-    app.get("/public", cache({ client, ttlMs: 30_000 }), (c) => c.text("hi"));
+    app.get(
+      "/public",
+      cache({ client, ttlMs: 30_000, ignoreCookies: true }),
+      (c) => c.text("hi")
+    );
 
     await app.request("/public", { headers: { Cookie: "sid=abc" } });
     expect(commands.some((command) => command[0] === "SET")).toBe(true);
@@ -231,6 +240,169 @@ describe("hono cache", () => {
     });
     expect(await res.text()).toBe("ok");
     expect(commands).toEqual([]);
+  });
+});
+
+describe("hono cache bodies and credentials", () => {
+  it("replays a binary body byte for byte", async () => {
+    // text() decoded the body as UTF-8 before storing it, so every byte that
+    // was not valid UTF-8 came back as U+FFFD on replay.
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0xfe, 0x80
+    ]);
+    const commands: RedisCommand[] = [];
+    const replies: RedisReply[] = [null, "OK"];
+    const client = fakeClient(commands, replies);
+    const app = new Hono();
+    app.get(
+      "/logo.png",
+      cache({ client, ttlMs: 30_000 }),
+      () => new Response(png, { headers: { "content-type": "image/png" } })
+    );
+
+    const miss = await app.request("/logo.png");
+    expect(new Uint8Array(await miss.arrayBuffer())).toEqual(png);
+    replies.push(commands.at(-1)?.[2] as string);
+    const hit = await app.request("/logo.png");
+    expect(hit.headers.get("X-Benni-Cache")).toBe("hit");
+    expect(hit.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await hit.arrayBuffer())).toEqual(png);
+  });
+
+  it("treats an entry stored in the old text form as a miss", async () => {
+    const legacy = JSON.stringify({ status: 200, headers: {}, body: "old" });
+    const client = fakeClient([], [legacy, "OK"]);
+    const app = new Hono();
+    app.get("/data", cache({ client, ttlMs: 30_000 }), (c) => c.text("fresh"));
+
+    const res = await app.request("/data");
+    expect(await res.text()).toBe("fresh");
+    expect(res.headers.get("X-Benni-Cache")).toBeNull();
+  });
+
+  it("passes a cookie-carrying request straight through by default", async () => {
+    // A route authenticated by a cookie through someone else's middleware
+    // sends no set-cookie and touches no benni session, so neither storage
+    // guard fired and the first visitor's page was replayed to everyone.
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, []);
+    const app = new Hono();
+    app.get("/account", cache({ client, ttlMs: 30_000 }), (c) =>
+      c.text(`hello ${c.req.header("Cookie")}`)
+    );
+
+    const res = await app.request("/account", {
+      headers: { Cookie: "auth=alice" }
+    });
+    expect(await res.text()).toBe("hello auth=alice");
+    expect(commands).toEqual([]);
+  });
+
+  it("keys cookie-carrying requests per cookie when vary names it", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [null, "OK"]);
+    const app = new Hono();
+    app.get(
+      "/account",
+      cache({ client, ttlMs: 30_000, vary: ["Cookie"] }),
+      (c) => c.text("hi")
+    );
+
+    await app.request("/account", { headers: { Cookie: "auth=alice" } });
+    expect(commands.map((command) => command[0])).toEqual(["GET", "SET"]);
+    expect(commands[0]?.[1]).toBe(
+      "hono-cache:GET:http://localhost/account|cookie=10:auth=alice"
+    );
+  });
+
+  it("shares one entry across cookies only with ignoreCookies", async () => {
+    const commands: RedisCommand[] = [];
+    const client = fakeClient(commands, [null, "OK"]);
+    const app = new Hono();
+    app.get(
+      "/pricing",
+      cache({ client, ttlMs: 30_000, ignoreCookies: true }),
+      (c) => c.text("public")
+    );
+
+    await app.request("/pricing", { headers: { Cookie: "_ga=GA1.1" } });
+    expect(commands[0]?.[1]).toBe("hono-cache:GET:http://localhost/pricing");
+    expect(commands.map((command) => command[0])).toEqual(["GET", "SET"]);
+  });
+});
+
+describe("hono Redis failure policy", () => {
+  it("ratelimit fails closed by default: a Redis error is a 500", async () => {
+    let handled = false;
+    const app = new Hono();
+    app.use(
+      "*",
+      ratelimit({
+        client: fakeClient([], []),
+        limit: 5,
+        windowMs: 60_000,
+        key: () => "tester"
+      })
+    );
+    app.get("/", (c) => {
+      handled = true;
+      return c.text("ok");
+    });
+
+    const res = await app.request("/");
+    expect(res.status).toBe(500);
+    expect(handled).toBe(false);
+  });
+
+  it("ratelimit with failOpen lets the request through, unlimited", async () => {
+    const app = new Hono();
+    app.use(
+      "*",
+      ratelimit({
+        client: fakeClient([], []),
+        limit: 5,
+        windowMs: 60_000,
+        key: () => "tester",
+        failOpen: true
+      })
+    );
+    app.get("/", (c) => c.text("ok"));
+
+    const res = await app.request("/");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("ok");
+    expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
+  });
+
+  it("ratelimit with failOpen still surfaces the handler's own error", async () => {
+    const app = new Hono();
+    app.use(
+      "*",
+      ratelimit({
+        client: fakeClient([], []),
+        limit: 5,
+        windowMs: 60_000,
+        key: () => "tester",
+        failOpen: true
+      })
+    );
+    app.get("/", () => {
+      throw new Error("handler broke");
+    });
+    app.onError((error, c) => c.text(error.message, 500));
+
+    const res = await app.request("/");
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe("handler broke");
+  });
+
+  it("session fails closed: a Redis error loading the record is a 500", async () => {
+    const app = new Hono();
+    app.use("*", session({ client: fakeClient([], []) }));
+    app.get("/", (c) => c.text("ok"));
+
+    const res = await app.request("/", { headers: { Cookie: "sid=abc" } });
+    expect(res.status).toBe(500);
   });
 });
 
