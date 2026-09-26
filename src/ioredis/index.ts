@@ -341,8 +341,14 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
           patterns.delete(pattern);
           await duplicate.punsubscribe(pattern);
         },
+        // "end" only, not isFinished(): a subscriber connection is allowed to
+        // reconnect (ioredis resubscribes on its own), and "close" is the
+        // passing state between a drop and "reconnecting". "end" is where
+        // ioredis lands once it has given up (retryStrategy returned a
+        // non-number, or disconnect()), which is the terminal state core must
+        // see so it drops the dead lease, like node-redis's `isOpen`.
         get closed() {
-          return closed;
+          return closed || duplicate.status === "end";
         },
         async close() {
           closed = true;
