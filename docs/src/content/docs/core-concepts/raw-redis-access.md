@@ -16,7 +16,7 @@ await redis.raw.send(["ZADD", "custom:leaderboard", 10, "user:42"]);
 Use typed schemas where they reduce repeated app code:
 
 ```ts
-await redis.kv(profiles).set("42", profile, {
+await redis.query.profiles.set("42", profile, {
   ttlSeconds: 3600
 });
 ```
@@ -30,7 +30,7 @@ await redis.raw.send(["CLIENT", "INFO"]);
 Typed Benni keys are useful even when you drop down to raw Redis:
 
 ```ts
-const key = redis.hash(users).key("42");
+const key = redis.query.users.key("42");
 await redis.raw.send(["EXISTS", key]);
 ```
 

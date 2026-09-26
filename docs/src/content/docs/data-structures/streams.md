@@ -19,7 +19,7 @@ export const activity = stream("activity", {
 ## Add Entries
 
 ```ts
-const entryId = await redis.stream(activity).xadd("42", {
+const entryId = await redis.query.activity.xadd("42", {
   action: "login",
   points: 5
 });
@@ -29,7 +29,7 @@ const entryId = await redis.stream(activity).xadd("42", {
 `xadd` accepts options for the entry ID, stream creation, and trimming on write:
 
 ```ts
-await redis.stream(activity).xadd(
+await redis.query.activity.xadd(
   "42",
   { action: "login", points: 5 },
   {
@@ -44,10 +44,10 @@ With `nomkstream: true`, Redis skips missing streams (`NOMKSTREAM`) and `xadd` r
 ## Read Ranges
 
 ```ts
-const entries = await redis.stream(activity).xrange("42", { count: 10 });
+const entries = await redis.query.activity.xrange("42", { count: 10 });
 //    ^? Array<{ id: string; value: Partial<{ action: string; points: number }> }>
 
-const newest = await redis.stream(activity).xrevrange("42", { count: 10 });
+const newest = await redis.query.activity.xrevrange("42", { count: 10 });
 ```
 
 `start` and `end` default to the full stream (`-` to `+`). Fields not declared in the schema are skipped.
@@ -57,7 +57,7 @@ const newest = await redis.stream(activity).xrevrange("42", { count: 10 });
 Every read shape that carries a stream entry value (`xrange`, `xrevrange`, `xread`, and the consumer-group reads) types it as `Partial<...>`, so a field declared as `action: string()` reads back as `string | undefined` and needs a fallback:
 
 ```ts
-for (const entry of await redis.stream(activity).xrange("42")) {
+for (const entry of await redis.query.activity.xrange("42")) {
   const action = entry.value.action ?? "(unknown)";
   const points = entry.value.points ?? 0;
 }
@@ -82,7 +82,7 @@ A [consumer group](/benni/data-structures/consumer-groups/) re-reading its pendi
 ## Read After An Entry ID
 
 ```ts
-const next = await redis.stream(activity).xread("42", "1720094400000-0", {
+const next = await redis.query.activity.xread("42", "1720094400000-0", {
   count: 100
 });
 ```
@@ -92,8 +92,8 @@ const next = await redis.stream(activity).xread("42", "1720094400000-0", {
 ## Trim
 
 ```ts
-await redis.stream(activity).xtrim("42", { maxLen: { count: 1000, approximate: true } });
-await redis.stream(activity).xtrim("42", { minId: { value: "1720094400000-0" } });
+await redis.query.activity.xtrim("42", { maxLen: { count: 1000, approximate: true } });
+await redis.query.activity.xtrim("42", { minId: { value: "1720094400000-0" } });
 ```
 
 Both return the number of removed entries. `approximate: true` lets Redis trim in whole macro nodes, which is faster. `{ maxLen: { count: 0 } }` empties the stream but keeps the key, so its consumer groups and their pending lists survive; `del` deletes the groups along with the stream.
@@ -101,9 +101,9 @@ Both return the number of removed entries. `approximate: true` lets Redis trim i
 ## Remove, Count, Delete
 
 ```ts
-await redis.stream(activity).xdel("42", ["1720094400000-0"]);
-const size = await redis.stream(activity).xlen("42");
-await redis.stream(activity).del("42");
+await redis.query.activity.xdel("42", ["1720094400000-0"]);
+const size = await redis.query.activity.xlen("42");
+await redis.query.activity.del("42");
 ```
 
 ## Raw Redis Equivalent
@@ -115,6 +115,6 @@ await nodeRedis.xAdd("activity:42", "*", {
 });
 ```
 
-For at-least-once delivery across many workers, use [consumer groups](/benni/data-structures/consumer-groups/) (`XGROUP`, `XREADGROUP`, `XACK`) via `redis.stream(activity).group(name)`. Use `xread` for single-consumer polling. To block a worker until an entry arrives, [`xread` with a `timeoutSeconds`](/benni/advanced/blocking-operations/) and the blocking group read run on a [session](/benni/advanced/sessions/).
+For at-least-once delivery across many workers, use [consumer groups](/benni/data-structures/consumer-groups/) (`XGROUP`, `XREADGROUP`, `XACK`) via `redis.query.activity.group(name)`. Use `xread` for single-consumer polling. To block a worker until an entry arrives, [`xread` with a `timeoutSeconds`](/benni/advanced/blocking-operations/) and the blocking group read run on a [session](/benni/advanced/sessions/).
 
 Use streams for activity feeds, audit logs, and event pipelines where entries need stable IDs and time ordering.

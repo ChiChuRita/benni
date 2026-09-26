@@ -28,12 +28,12 @@ Read-through caching:
 
 ```ts
 async function getProduct(id: string) {
-  const cached = await redis.kv(productCache).get(id);
+  const cached = await redis.query.productCache.get(id);
   if (cached) return cached;
 
   const product = await fetchProductFromDatabase(id);
 
-  await redis.kv(productCache).set(id, product, {
+  await redis.query.productCache.set(id, product, {
     ttlSeconds: 60 * 5
   });
 
@@ -44,7 +44,7 @@ async function getProduct(id: string) {
 Invalidate when the source of truth changes:
 
 ```ts
-await redis.kv(productCache).del(id);
+await redis.query.productCache.del(id);
 ```
 
 Raw Redis equivalent:

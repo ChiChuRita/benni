@@ -15,12 +15,12 @@ export const users = hash("user", {
   score: number()
 });
 
-await redis.hash(users).hset("42", {
+await redis.query.users.hset("42", {
   name: "Ada",
   score: 10
 });
 
-const user = await redis.hash(users).hget("42");
+const user = await redis.query.users.hget("42");
 //    ^? { name: string; score: number } | null
 ```
 

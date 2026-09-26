@@ -34,7 +34,7 @@ const nextConfig = {
 export default nextConfig;
 ```
 
-`cacheHandler(options)` returns a class; Next.js instantiates the module's default export itself. Adapters connect on the first command, so loading the module at build time opens no connection.
+`cacheHandler(options)` returns a class; Next.js instantiates the module's default export itself. Adapters connect on the first command, so loading the module at build time opens no connection, and `upstash()` checks its `url` and `token` on that first command too, so a build without the environment variables set still succeeds; the first request names the missing one.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -82,20 +82,39 @@ Next.js 16's `revalidateTag(tag, "max")` asks for stale-while-revalidate. This h
 
 ## Rate limiting
 
-`rateLimitMiddleware(options)` wraps the [`ratelimit`](/benni/primitives/ratelimit/) primitive (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
+`rateLimitMiddleware(options)` wraps a [`ratelimit`](/benni/primitives/ratelimit/) primitive from your schema module (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`. The limit, window, and key prefix are the ones declared on the schema.
 
 ```ts
-// middleware.ts
-import { rateLimitMiddleware } from "benni/next";
-import { upstash } from "benni/upstash";
+// schema.ts
+import { ratelimit } from "benni/schema";
 
-const limiter = rateLimitMiddleware({
+export const apiLimit = ratelimit("api", { limit: 20, windowMs: 10_000 });
+```
+
+```ts
+// lib/redis.ts
+import { benni } from "benni";
+import { upstash } from "benni/upstash";
+import * as schema from "../schema";
+
+// Built at import, which `next build` does too: upstash() checks url and
+// token on the first command, so unset variables do not fail the build.
+export const redis = benni({
   client: upstash({
     url: process.env.UPSTASH_REDIS_REST_URL as string,
     token: process.env.UPSTASH_REDIS_REST_TOKEN as string
   }),
-  limit: 20,
-  windowMs: 10_000,
+  schema
+});
+```
+
+```ts
+// middleware.ts
+import { rateLimitMiddleware } from "benni/next";
+import { redis } from "./lib/redis";
+
+const limiter = rateLimitMiddleware({
+  limiter: redis.query.apiLimit,
   identify: (request) =>
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "anonymous"
 });
@@ -116,9 +135,7 @@ The denial response carries `Retry-After` (seconds) plus `X-RateLimit-Limit`, `X
 
 ```ts
 const limiter = rateLimitMiddleware({
-  client,
-  limit: 100,
-  windowMs: 60_000,
+  limiter: redis.query.apiLimit,
   identify: (request) => request.headers.get("x-api-key") ?? "anonymous"
 });
 ```

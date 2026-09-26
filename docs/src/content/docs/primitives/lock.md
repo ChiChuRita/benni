@@ -20,16 +20,17 @@ await redis.query.orderLocks.run("42", async () => {
 });
 ```
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, `benni/primitives` exports the same lock in its client-taking form, over the same keys:
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no schema module, wrap the client once and reach the same lock, over the same keys, through `store()`:
 
 ```ts
-import { lock } from "benni/primitives";
+import { benni } from "benni";
+import { lock } from "benni/schema";
 
-const locks = lock({ client, prefix: "order", ttlMs: 10_000 });
+const locks = benni({ client }).store(lock("order", { ttlMs: 10_000 }));
 await locks.run("42", async () => { /* ... */ });
 ```
 
-`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `EVALSHA`, no persistent connection).
+It works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `EVALSHA`, no persistent connection).
 
 Two defaults decide how it behaves under pressure, and both are worth reading before you ship: acquisition **fails fast**, and `run` **renews the lease** while your body is in flight. One assumption decides what it can promise at all: it is a lock on **one Redis primary**, and [a failover can grant it twice](#one-primary-no-redlock).
 
@@ -42,7 +43,7 @@ Concretely, six concurrent callers on the same id means one runs and **five thro
 Catch the error when "someone else is doing it" is a real answer:
 
 ```ts
-import { LockNotAcquiredError } from "benni/primitives";
+import { LockNotAcquiredError } from "benni";
 
 try {
   await locks.run("order:42", processOrder);
@@ -83,7 +84,7 @@ The TTL is a safety net for crashes: if your process dies mid-section, the lock 
 So `run` renews the lock while `fn` is in flight, every `heartbeatMs`:
 
 ```ts
-const locks = lock(client, { ttlMs: 10_000 }); // renewed every 2.5s
+const locks = redis.query.reports; // lock("report", { ttlMs: 10_000 }): renewed every 2.5s
 
 await locks.run("report:nightly", async () => {
   await generateReport(); // may take minutes; the lock is held throughout
@@ -120,7 +121,7 @@ Renewal can fail for a real reason: the lock expired and someone else took it, o
 It rejects **even when `fn` resolved**. A body that finished without the lock did not finish under the mutual exclusion it was written against, and resolving would hide exactly that:
 
 ```ts
-import { LockLeaseLostError } from "benni/primitives";
+import { LockLeaseLostError } from "benni";
 
 try {
   const receipt = await locks.run("order:42", chargeCard);
@@ -241,7 +242,7 @@ if (stillOurs === false) {
 
 | Option | Where | Default | Meaning |
 | --- | --- | --- | --- |
-| `prefix` | `lock(client, …)` | `"lock"` | Key namespace; locks are `<prefix>:<id>`, fence counters `{<prefix>:<id>}:fence`. |
+| prefix | `lock(prefix, …)` | required | The builder's first argument. Locks are `<prefix>:<id>`, fence counters `{<prefix>:<id>}:fence`. |
 | `ttlMs` | `lock` / `acquire` / `run` | `30000` | Lock lifetime. It is the crash backstop, and with `run` it is also the renewal window. |
 | `retries` | `acquire` / `run` | `0` | Attempts when the lock is held. `0` fails fast; unlimited when only `waitTimeoutMs` is set. |
 | `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries, jittered over 0.5 to 1.5 times this. |

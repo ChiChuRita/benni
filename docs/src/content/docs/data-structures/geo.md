@@ -16,7 +16,7 @@ export const stores = geo("stores", string());
 ## Add Members
 
 ```ts
-await redis.geo(stores).geoadd("berlin", [
+await redis.query.stores.geoadd("berlin", [
   { member: "store:1", longitude: 13.405, latitude: 52.52 },
   { member: "store:2", longitude: 13.3888, latitude: 52.517 }
 ]);
@@ -29,11 +29,11 @@ Coordinates are validated before the command is sent: longitude must be between 
 ## Positions And Distances
 
 ```ts
-const positions = await redis.geo(stores).geopos("berlin", ["store:1"]);
+const positions = await redis.query.stores.geopos("berlin", ["store:1"]);
 //    ^? Array<{ longitude: number; latitude: number } | null>
 
-const meters = await redis.geo(stores).geodist("berlin", "store:1", "store:2");
-const km = await redis.geo(stores).geodist("berlin", "store:1", "store:2", "km");
+const meters = await redis.query.stores.geodist("berlin", "store:1", "store:2");
+const km = await redis.query.stores.geodist("berlin", "store:1", "store:2", "km");
 ```
 
 `geodist` returns `null` when either member is missing. Units are `"m"` (the default), `"km"`, `"mi"`, and `"ft"`.
@@ -41,14 +41,14 @@ const km = await redis.geo(stores).geodist("berlin", "store:1", "store:2", "km")
 ## Geohashes
 
 ```ts
-const hashes = await redis.geo(stores).geohash("berlin", ["store:1", "store:2"]);
+const hashes = await redis.query.stores.geohash("berlin", ["store:1", "store:2"]);
 //    ^? Array<string | null>
 ```
 
 ## Search
 
 ```ts
-const nearby = await redis.geo(stores).geosearch("berlin", {
+const nearby = await redis.query.stores.geosearch("berlin", {
   from: { longitude: 13.4, latitude: 52.52 },
   by: { radius: 5, unit: "km" },
   order: "asc",
@@ -64,7 +64,7 @@ const nearby = await redis.geo(stores).geosearch("berlin", {
 ## Store Search Results
 
 ```ts
-await redis.geo(stores).geosearchstore("berlin-center", "berlin", {
+await redis.query.stores.geosearchstore("berlin-center", "berlin", {
   from: { member: "store:1" },
   by: { radius: 2, unit: "km" }
 });
@@ -75,7 +75,7 @@ await redis.geo(stores).geosearchstore("berlin-center", "berlin", {
 ## Delete
 
 ```ts
-await redis.geo(stores).del("berlin");
+await redis.query.stores.del("berlin");
 ```
 
 ## Raw Redis Equivalent

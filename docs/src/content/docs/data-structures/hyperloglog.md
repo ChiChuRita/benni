@@ -14,7 +14,7 @@ export const pageViews = hll("page-views", string());
 Add values:
 
 ```ts
-await redis.hll(pageViews).pfadd("2026-07-04", [
+await redis.query.pageViews.pfadd("2026-07-04", [
   "user:42",
   "user:7"
 ]);
@@ -25,13 +25,13 @@ await redis.hll(pageViews).pfadd("2026-07-04", [
 Count unique values:
 
 ```ts
-const uniqueVisitors = await redis.hll(pageViews).pfcount("2026-07-04");
+const uniqueVisitors = await redis.query.pageViews.pfcount("2026-07-04");
 ```
 
 Count across multiple keys:
 
 ```ts
-const weeklyVisitors = await redis.hll(pageViews).pfcount([
+const weeklyVisitors = await redis.query.pageViews.pfcount([
   "2026-07-01",
   "2026-07-02",
   "2026-07-03"
@@ -41,7 +41,7 @@ const weeklyVisitors = await redis.hll(pageViews).pfcount([
 Merge keys:
 
 ```ts
-await redis.hll(pageViews).pfmerge("2026-week-27", [
+await redis.query.pageViews.pfmerge("2026-week-27", [
   "2026-07-01",
   "2026-07-02",
   "2026-07-03"

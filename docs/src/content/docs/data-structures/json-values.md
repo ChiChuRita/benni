@@ -24,7 +24,7 @@ export const settings = kv("settings", json(Settings));
 Write JSON:
 
 ```ts
-await redis.kv(settings).set("user:42", {
+await redis.query.settings.set("user:42", {
   theme: "dark",
   emailNotifications: true
 });
@@ -33,7 +33,7 @@ await redis.kv(settings).set("user:42", {
 Read JSON:
 
 ```ts
-const value = await redis.kv(settings).get("user:42");
+const value = await redis.query.settings.get("user:42");
 //    ^? { theme: "light" | "dark"; emailNotifications: boolean } | null (validated)
 ```
 

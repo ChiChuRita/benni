@@ -33,8 +33,8 @@ user:ada
 It also gives you typed access to those keys:
 
 ```ts
-await redis.hash(users).hset("42", { name: "Ada", score: 10 });
-const user = await redis.hash(users).hget("42");
+await redis.query.users.hset("42", { name: "Ada", score: 10 });
+const user = await redis.query.users.hget("42");
 ```
 
 Schemas are not database schemas in the migration sense. They are plain TypeScript values.

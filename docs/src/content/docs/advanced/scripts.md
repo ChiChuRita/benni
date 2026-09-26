@@ -32,7 +32,7 @@ Keys are named and map to `KEYS[1..n]` in declared order. Args encode through th
 ## Run A Script
 
 ```ts
-const current = await redis.script(rateLimit).run({
+const current = await redis.query.rateLimit.run({
   keys: { counter: "rate:user:42" },
   args: { limit: 100, windowSeconds: 60 }
 });

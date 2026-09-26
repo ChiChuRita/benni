@@ -3,7 +3,7 @@ title: "Blocking Operations"
 description: "Block on lists, sorted sets, and streams from a session with a required timeout and typed multi-key attribution."
 ---
 
-Blocking commands park a connection until an entry is available or the timeout elapses. Because they monopolize a connection, they live only on the [session](/benni/advanced/sessions/) accessors (`session.list(x)`, `session.zset(x)`, and `session.stream(x)`), never on the shared client. Calling one on `redis.list(x)` is a compile error.
+Blocking commands park a connection until an entry is available or the timeout elapses. Because they monopolize a connection, they live only on the [session](/benni/advanced/sessions/): `session.query.<name>` for a list, sorted set, or stream, never on the shared client. Calling one on `redis.query.<name>` is a compile error.
 
 ## The Timeout Is Required
 
@@ -11,7 +11,7 @@ Every blocking method takes a `{ timeoutSeconds }` option. There is no default: 
 
 ```ts
 await using s = await redis.session();
-const job = await s.list(jobs).blpop("pending", { timeoutSeconds: 5 });
+const job = await s.query.jobs.blpop("pending", { timeoutSeconds: 5 });
 ```
 
 The unit is in the name, and fractional values are allowed (`{ timeoutSeconds: 0.1 }`). `0`, negatives, `NaN`, and `Infinity` throw a `TypeError`. Redis treats a `0` timeout as block-forever, and arriving there through arithmetic is a shutdown hazard.
@@ -19,7 +19,7 @@ The unit is in the name, and fractional values are allowed (`{ timeoutSeconds: 0
 To block forever, spell it out with the literal `{ timeoutSeconds: "forever" }`:
 
 ```ts
-const job = await s.list(jobs).blpop("pending", { timeoutSeconds: "forever" });
+const job = await s.query.jobs.blpop("pending", { timeoutSeconds: "forever" });
 //    ^? Job, never null: the call either resolves a value or rejects on close
 ```
 
@@ -31,7 +31,7 @@ Session list stores add the blocking pops and blocking move on top of the [regul
 
 ```ts
 await using s = await redis.session();
-const queue = s.list(jobs);
+const queue = s.query.jobs;
 
 const job = await queue.blpop("pending", { timeoutSeconds: 5 });   // BLPOP  -> Job | null
 const tail = await queue.brpop("pending", { timeoutSeconds: 5 });  // BRPOP  -> Job | null
@@ -50,9 +50,9 @@ Session sorted-set stores add blocking pops of the lowest or highest scoring mem
 
 ```ts
 const s = await redis.session();
-const min = await s.zset(priorities).bzpopmin("queue", { timeoutSeconds: 5 });
+const min = await s.query.priorities.bzpopmin("queue", { timeoutSeconds: 5 });
 //    ^? { member: string; score: number } | null   (BZPOPMIN)
-const max = await s.zset(priorities).bzpopmax("queue", { timeoutSeconds: 5 }); // BZPOPMAX
+const max = await s.query.priorities.bzpopmax("queue", { timeoutSeconds: 5 }); // BZPOPMAX
 await s.close();
 ```
 
@@ -63,7 +63,7 @@ Each returns a `{ member, score }` entry or `null` on timeout.
 Session stream stores add a blocking read for entries newer than an id:
 
 ```ts
-const batch = await s.stream(auditEvents).xread(
+const batch = await s.query.auditEvents.xread(
   "login", lastSeenId, { timeoutSeconds: 5, count: 100 }
 ); // XREAD BLOCK -> StreamEntry[]  ([] on timeout)
 ```
@@ -75,7 +75,7 @@ const batch = await s.stream(auditEvents).xread(
 Passing an **array** of keys blocks across several keys at once and tells you which key answered, with the id typed to exactly the keys you passed:
 
 ```ts
-const hit = await s.list(jobs).blpop(["urgent", "pending"], { timeoutSeconds: 5 });
+const hit = await s.query.jobs.blpop(["urgent", "pending"], { timeoutSeconds: 5 });
 if (hit) {
   console.log(hit.id, hit.value);
   //         ^? "urgent" | "pending"    ^? Job
@@ -85,7 +85,7 @@ if (hit) {
 The answering key from the reply is reverse-mapped back to your typed id, so literal id types survive the round trip. The sorted-set forms mirror this shape:
 
 ```ts
-const hit = await s.zset(priorities).bzpopmin(["high", "low"], { timeoutSeconds: 5 });
+const hit = await s.query.priorities.bzpopmin(["high", "low"], { timeoutSeconds: 5 });
 //    ^? { id: "high" | "low"; entry: { member: string; score: number } } | null
 // brpop and bzpopmax are the mirror-image variants.
 ```
@@ -95,10 +95,10 @@ const hit = await s.zset(priorities).bzpopmin(["high", "low"], { timeoutSeconds:
 `LMPOP` and `ZMPOP` never block, so they land on the **shared** store with the same typed attribution shape, no session needed:
 
 ```ts
-const hit = await redis.list(jobs).lmpop(["urgent", "pending"], { direction: "left", count: 10 });
+const hit = await redis.query.jobs.lmpop(["urgent", "pending"], { direction: "left", count: 10 });
 //    ^? { id: "urgent" | "pending"; values: Job[] } | null
 
-const scored = await redis.zset(priorities).zmpop(["high", "low"], { min: true, count: 10 });
+const scored = await redis.query.priorities.zmpop(["high", "low"], { min: true, count: 10 });
 //    ^? { id: "high" | "low"; entries: Array<{ member: string; score: number }> } | null
 // lmpop with { direction: "right" } and zmpop with { max: true } are the mirror-image variants.
 ```
@@ -112,14 +112,14 @@ These check the keys in order and return `null` only when all of them are empty.
 ```ts
 await using s = await redis.session();
 
-const hit = await s.list(jobs).blmpop(["urgent", "pending"], {
+const hit = await s.query.jobs.blmpop(["urgent", "pending"], {
   direction: "left",
   timeoutSeconds: 5,
   count: 10
 });
 //    ^? { id: "urgent" | "pending"; values: Job[] } | null
 
-const scored = await s.zset(priorities).bzmpop(["high", "low"], { min: true, count: 10 }, {
+const scored = await s.query.priorities.bzmpop(["high", "low"], { min: true, count: 10 }, {
   timeoutSeconds: "forever"
 });
 //    ^? { id: "high" | "low"; entries: Array<{ member: string; score: number }> }
@@ -145,9 +145,9 @@ process.on("SIGTERM", () => stop.abort());
 
 // startup recovery: drain this worker's processing list from a previous crash
 for (
-  let job = await redis.list(jobs).lpop(processing);
+  let job = await redis.query.jobs.lpop(processing);
   job;
-  job = await redis.list(jobs).lpop(processing)
+  job = await redis.query.jobs.lpop(processing)
 ) {
   await handle(job);
 }
@@ -157,15 +157,15 @@ while (!stop.signal.aborted) {
   const abort = () => void s.close();          // close() rejects an in-flight block in ~ms
   stop.signal.addEventListener("abort", abort, { once: true });
   try {
-    const queue = s.list(jobs);
+    const queue = s.query.jobs;
     while (!stop.signal.aborted) {
-      // redis.list(jobs).blmove(...) would be a compile error; session only.
+      // redis.query.jobs.blmove(...) would be a compile error; session only.
       const job = await queue.blmove(
         "pending", processing, "left", "right", { timeoutSeconds: 5 }
       );
       if (job === null) continue;              // heartbeat tick: re-check the stop signal
       await handle(job);
-      await redis.list(jobs).lrem(processing, 1, job); // ack via the shared client
+      await redis.query.jobs.lrem(processing, 1, job); // ack via the shared client
     }
   } catch (error) {
     if (s.closed) break;                       // shutdown or dropped connection

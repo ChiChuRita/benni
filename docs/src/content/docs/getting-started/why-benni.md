@@ -35,12 +35,12 @@ export const users = hash("user", {
   score: number()
 });
 
-await redis.hash(users).hset(id, {
+await redis.query.users.hset(id, {
   name: "Ada",
   score: 10
 });
 
-const user = await redis.hash(users).hget(id);
+const user = await redis.query.users.hget(id);
 ```
 
 You still use Redis. You still understand what happens. You just stop scattering strings and parsers across your app.

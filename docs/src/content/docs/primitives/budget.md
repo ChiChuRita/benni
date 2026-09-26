@@ -25,7 +25,7 @@ export const tokens = budget("tokens", {
 });
 ```
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. `benni/primitives` exports the same budget in its client-taking form for code that holds a client but no handle: `budget({ client, limit, windowMs })`.
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Code that holds a client but no schema module reaches the same budget with `benni({ client }).store(budget("tokens", { limit, windowMs }))`.
 
 ```ts
 // app.ts
@@ -112,7 +112,7 @@ This is deliberate. The exact alternative is a log with one entry per request, a
 
 `retryAfterMs` is the time until enough units decay out of the window for that exact spend, computed server-side. It is not the time to the next bucket boundary, which frees nothing: the two-bucket estimate is continuous across the roll.
 
-Which bucket a call lands in is decided by the server's clock, so a call that crosses a boundary is re-run against the bucket the server named. If this process is stalled for longer than a whole window in between, every attempt misses and the call throws `BudgetWindowRolledError` (exported from `benni/primitives`) rather than inventing an answer. Nothing was applied, so it is safe to retry, and a hold whose `settle` throws it is still usable.
+Which bucket a call lands in is decided by the server's clock, so a call that crosses a boundary is re-run against the bucket the server named. If this process is stalled for longer than a whole window in between, every attempt misses and the call throws `BudgetWindowRolledError` (exported from `benni`) rather than inventing an answer. Nothing was applied, so it is safe to retry, and a hold whose `settle` throws it is still usable.
 
 ## Cluster Safety
 

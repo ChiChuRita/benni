@@ -1,6 +1,6 @@
 # Benni Use Cases
 
-These examples pressure-test Benni against common application workloads. They use the schema-first API: define Redis resources as TypeScript values, bind a client once, then use `redis.query` or the explicit `redis.<kind>(schema)` accessors.
+These examples pressure-test Benni against common application workloads. They use the schema-first API: define Redis resources as TypeScript values, bind a client once, then reach every store by name through `redis.query`.
 
 ## Shared Setup
 
@@ -198,7 +198,7 @@ export async function enqueue(job: Job) {
 export async function runWorker() {
   await redis.session(async (session) => {
     while (true) {
-      const job = await session.list(jobs).blmove(
+      const job = await session.query.jobs.blmove(
         "pending",
         "processing",
         "left",
@@ -211,7 +211,7 @@ export async function runWorker() {
       try {
         await handleJob(job);
       } finally {
-        await session.list(jobs).lrem("processing", 1, job);
+        await session.query.jobs.lrem("processing", 1, job);
       }
     }
   });
@@ -329,7 +329,8 @@ export async function nearbyStores(longitude: number, latitude: number) {
 
 ```ts
 // edge-rate-limit.ts
-import { ratelimit } from "benni/primitives";
+import { benni } from "benni";
+import { ratelimit } from "benni/schema";
 import { upstash } from "benni/upstash";
 
 const client = upstash({
@@ -337,11 +338,9 @@ const client = upstash({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!
 });
 
-const limiter = ratelimit(client, {
-  prefix: "api:ratelimit",
-  limit: 100,
-  windowMs: 60_000
-});
+const limiter = benni({ client }).store(
+  ratelimit("api:ratelimit", { limit: 100, windowMs: 60_000 })
+);
 
 export async function guardRequest(userId: string) {
   const result = await limiter.check(userId);
@@ -407,7 +406,7 @@ export async function reserveSku(sku: string, quantity: number) {
   return redis.watch(
     stock.key(sku),
     async (session) => {
-      const available = (await session.kv(stock).get(sku)) ?? 0;
+      const available = (await session.query.stock.get(sku)) ?? 0;
       if (available < quantity) return null;
 
       return session
@@ -437,11 +436,11 @@ export const scheduledJobs = zset("scheduled-jobs", json<ScheduledJob>());
 
 ```ts
 // scheduler.ts
-import { lock } from "benni/primitives";
+import { lock } from "benni/schema";
 import type { ScheduledJob } from "./schema";
 import { redis } from "./redis";
 
-const locks = lock({ client: redis, prefix: "scheduled-job-lock", ttlMs: 30_000 });
+const locks = redis.store(lock("scheduled-job-lock", { ttlMs: 30_000 }));
 
 export async function schedule(job: ScheduledJob) {
   await redis.query.scheduledJobs.zadd("default", [{ member: job, score: job.runAt }]);

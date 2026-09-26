@@ -26,7 +26,7 @@ export const sessions = kv("session", json<Session>());
 Create a session:
 
 ```ts
-await redis.kv(sessions).set(
+await redis.query.sessions.set(
   sessionId,
   {
     userId: "42",
@@ -41,19 +41,19 @@ await redis.kv(sessions).set(
 Read a session:
 
 ```ts
-const session = await redis.kv(sessions).get(sessionId);
+const session = await redis.query.sessions.get(sessionId);
 ```
 
 Extend a session:
 
 ```ts
-await redis.kv(sessions).expire(sessionId, 60 * 60 * 24 * 7);
+await redis.query.sessions.expire(sessionId, 60 * 60 * 24 * 7);
 ```
 
 Delete a session:
 
 ```ts
-await redis.kv(sessions).del(sessionId);
+await redis.query.sessions.del(sessionId);
 ```
 
 Raw Redis equivalent:
@@ -80,19 +80,19 @@ export const sessionData = hash("session", {
 
 ```ts
 // Identity lives for a week; the CSRF token for an hour.
-await redis.hash(sessionData).hsetex(
+await redis.query.sessionData.hsetex(
   sessionId,
   { userId: "42", lastSeen: Date.now() },
   { ttlSeconds: 60 * 60 * 24 * 7 }
 );
-await redis.hash(sessionData).hsetex(
+await redis.query.sessionData.hsetex(
   sessionId,
   { csrfToken: token },
   { ttlSeconds: 60 * 60 }
 );
 
 // Read the identity and slide its TTL in one round trip (HGETEX).
-const identity = await redis.hash(sessionData).hgetex(
+const identity = await redis.query.sessionData.hgetex(
   sessionId,
   ["userId", "lastSeen"],
   { ttlSeconds: 60 * 60 * 24 * 7 }

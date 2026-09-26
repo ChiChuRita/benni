@@ -65,7 +65,7 @@ A handle over this client has no `redis.session()` or `redis.watch()` in its typ
 Publishing is the useful half on the edge, and it needs nothing held open. An edge handler can fan an event out to long-lived workers that subscribe over TCP:
 
 ```ts
-await redis.pubsub.channel(userEvents).publish({ id: "42", action: "created" });
+await redis.query.userEvents.publish({ id: "42", action: "created" });
 ```
 
 Binary (`Uint8Array`) command arguments are not supported over REST; use the `bytes()` codec, which stores base64 strings, or a TCP adapter.

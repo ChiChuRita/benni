@@ -3,37 +3,48 @@ title: "Hono"
 description: "Rate limiting, response caching, and sessions as Hono middleware: one stack that runs on Node, Bun, Deno, and Cloudflare Workers."
 ---
 
-`benni/hono` packages the [primitives](/benni/primitives/ratelimit/) as drop-in [Hono](https://hono.dev) middleware: rate limiting, response caching, and sessions. Because they take any `RedisClient`, the same middleware stack runs everywhere Hono does: Node, Bun, Deno, and Cloudflare Workers. On Workers, pair it with [`benni/upstash`](/benni/runtime/edge/).
+`benni/hono` packages rate limiting, response caching, and sessions as drop-in [Hono](https://hono.dev) middleware. They run over any adapter, so the same middleware stack runs everywhere Hono does: Node, Bun, Deno, and Cloudflare Workers. On Workers, pair it with [`benni/upstash`](/benni/runtime/edge/).
 
 ```ts
+// schema.ts
+import { ratelimit } from "benni/schema";
+
+export const apiLimit = ratelimit("api", { limit: 100, windowMs: 60_000 });
+```
+
+```ts
+// app.ts
 import { Hono } from "hono";
+import { benni } from "benni";
 import { upstash } from "benni/upstash";
 import { rateLimitMiddleware } from "benni/hono";
+import * as schema from "./schema";
 
-const client = upstash({
-  url: process.env.UPSTASH_REDIS_REST_URL as string,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN as string
+const redis = benni({
+  client: upstash({
+    url: process.env.UPSTASH_REDIS_REST_URL as string,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN as string
+  }),
+  schema
 });
 
 const app = new Hono();
 app.use(
   "*",
   rateLimitMiddleware({
-    client,
-    limit: 100,
-    windowMs: 60_000,
+    limiter: redis.query.apiLimit,
     key: (c) => c.get("userId")
   })
 );
 ```
 
-Every middleware accepts `client` as an adapter's client or a Benni handle. Adapters connect on the first command, so building the middleware at module scope opens nothing.
+The rate limiter takes the [`ratelimit` primitive](/benni/primitives/ratelimit/) itself, declared in your schema module, so the limit lives in one place. The cache and session middleware keep their own storage and take `client`: an adapter's client or a Benni handle. Adapters connect on the first command, so building any of them at module scope opens nothing.
 
 The exports are named for what they are, `rateLimitMiddleware`, `cacheMiddleware`, and `sessionMiddleware`, so they cannot be confused with the `ratelimit`/`cache` schema builders or with `redis.session()`.
 
 ## Rate limiting
 
-Sliding-window rate limiting, one atomic Lua round trip per request, the [`ratelimit` primitive](/benni/primitives/ratelimit/) behind a middleware. Allowed requests carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds); denied requests get a JSON `429` with `Retry-After`.
+Sliding-window rate limiting, one atomic Lua round trip per request: a [`ratelimit` primitive](/benni/primitives/ratelimit/) from your schema module, behind a middleware. Allowed requests carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds); denied requests get a JSON `429` with `Retry-After`.
 
 ```ts
 import { Hono } from "hono";
@@ -44,9 +55,7 @@ const app = new Hono();
 app.use(
   "/api/*",
   rateLimitMiddleware({
-    client,
-    limit: 100,
-    windowMs: 60_000,
+    limiter: redis.query.apiLimit, // ratelimit("api", { limit: 100, windowMs: 60_000 })
     key: (c) => c.req.header("x-api-key") ?? "anonymous"
   })
 );
@@ -54,9 +63,7 @@ app.use(
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `limit` | - | Maximum requests allowed within the window. |
-| `windowMs` | - | Window length in milliseconds. |
-| `prefix` | `"ratelimit"` | Key namespace; keys are `<prefix>:<id>`. |
+| `limiter` | - | The limiter, e.g. `redis.query.apiLimit`. Its limit, window, and key prefix are the ones declared on the schema. |
 | `key` | - | `(c) => string \| Promise<string>`, the rate-limit subject. Required: see below. |
 | `failOpen` | `false` | Let requests through, unlimited, while Redis is failing. See [When Redis fails](#when-redis-fails). |
 
@@ -176,6 +183,7 @@ Each middleware takes the side of the trade its job calls for:
 
 ```ts
 import { Hono } from "hono";
+import { benni } from "benni";
 import { upstash } from "benni/upstash";
 import {
   cacheMiddleware,
@@ -183,20 +191,20 @@ import {
   rateLimitMiddleware,
   sessionMiddleware
 } from "benni/hono";
+import * as schema from "./schema"; // exports apiLimit = ratelimit("api", …)
 
 const client = upstash({
   url: process.env.UPSTASH_REDIS_REST_URL as string,
   token: process.env.UPSTASH_REDIS_REST_TOKEN as string
 });
+const redis = benni({ client, schema });
 
 const app = new Hono();
 
 app.use(
   "*",
   rateLimitMiddleware({
-    client,
-    limit: 100,
-    windowMs: 60_000,
+    limiter: redis.query.apiLimit,
     key: (c) => c.get("userId")
   })
 );

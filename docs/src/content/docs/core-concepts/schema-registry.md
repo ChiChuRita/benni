@@ -45,35 +45,35 @@ await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);
 
 ## How It Works
 
-Each schema builder stamps a `kind` discriminant: one of the twelve data kinds (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`, `channel`, `pattern`, `script`) or one of the seven primitives (`cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, `budget`). `redis.query.<name>` dispatches on that `kind` and resolves each schema to exactly the store `redis.<kind>(schema)` would return: same methods, same inference.
+Each schema builder stamps a `kind` discriminant: one of the twelve data kinds (`kv`, `hash`, `set`, `list`, `zset`, `stream`, `bitmap`, `geo`, `hll`, `channel`, `pattern`, `script`) or one of the seven primitives (`cache`, `ratelimit`, `queue`, `lock`, `semaphore`, `idempotency`, `budget`). `redis.query.<name>` dispatches on that `kind` and resolves each schema to its typed store.
 
 - Entries in the bound module that are not schemas (a re-exported type, a helper function, a Zod or Valibot validator you pass to `json()`) are dropped from the registry. Being a schema means carrying the store binding a builder attaches, not merely having a `kind` property of your own.
 - `redis.query` is `{}` when no `{ schema }` is bound.
-- Counter and string operations are the exception to "prefer `redis.query`", because they are not kinds. See [The Counter And String Exception](#the-counter-and-string-exception) below before you write your first `incr`.
+- A `kv` store carries the commands its codec supports: a `kv(prefix, number())` has `incr` and the other counter commands next to `get` and `set`, and a `kv(prefix, string())` has `append` and the other string commands. See [Key-Value](/benni/data-structures/key-values/).
 
 ## Kind To Resource
 
-| `kind` | Resource | Access |
-| --- | --- | --- |
-| `kv` | `redis.kv(schema)` | `redis.query.<name>.get` / `.set` |
-| `hash` | `redis.hash(schema)` | `redis.query.<name>.hget` / `.hset` |
-| `set` | `redis.set(schema)` | `redis.query.<name>.sadd` / `.smembers` |
-| `list` | `redis.list(schema)` | `redis.query.<name>.rpush` / `.lrange` |
-| `zset` | `redis.zset(schema)` | `redis.query.<name>.zadd` / `.zrange` |
-| `stream` | `redis.stream(schema)` | `redis.query.<name>.xadd` / `.group` |
-| `bitmap` | `redis.bitmap(schema)` | `redis.query.<name>.setbit` / `.bitcount` |
-| `geo` | `redis.geo(schema)` | `redis.query.<name>.geoadd` / `.geosearch` |
-| `hll` | `redis.hll(schema)` | `redis.query.<name>.pfadd` / `.pfcount` |
-| `channel` | `redis.pubsub.channel(schema)` | `redis.query.<name>.publish` / `.subscribe` |
-| `pattern` | `redis.pubsub.pattern(schema)` | `redis.query.<name>.subscribe` |
-| `script` | `redis.script(schema)` | `redis.query.<name>.run({ keys, args })` |
-| `cache` | `cache(client, options)` | `redis.query.<name>.get` / `.peek` / `.del` |
-| `ratelimit` | `ratelimit(client, options)` | `redis.query.<name>.check` |
-| `queue` | `queue(client, options)` | `redis.query.<name>.enqueue` / `.worker` / `.watch` |
-| `lock` | `lock(client, options)` | `redis.query.<name>.run` / `.acquire` |
-| `semaphore` | `semaphore(client, options)` | `redis.query.<name>.run` / `.acquire` |
-| `idempotency` | `idempotency(client, options)` | `redis.query.<name>.run` |
-| `budget` | `budget(client, options)` | `redis.query.<name>.reserve` / `.spend` |
+| `kind` | Access |
+| --- | --- |
+| `kv` | `redis.query.<name>.get` / `.set` / `.getex`; `.incr` for `number()`, `.append` for `string()` |
+| `hash` | `redis.query.<name>.hget` / `.hset` |
+| `set` | `redis.query.<name>.sadd` / `.smembers` |
+| `list` | `redis.query.<name>.rpush` / `.lrange` |
+| `zset` | `redis.query.<name>.zadd` / `.zrange` |
+| `stream` | `redis.query.<name>.xadd` / `.group` |
+| `bitmap` | `redis.query.<name>.setbit` / `.bitcount` |
+| `geo` | `redis.query.<name>.geoadd` / `.geosearch` |
+| `hll` | `redis.query.<name>.pfadd` / `.pfcount` |
+| `channel` | `redis.query.<name>.publish` / `.subscribe` / `.at(id)` |
+| `pattern` | `redis.query.<name>.subscribe` |
+| `script` | `redis.query.<name>.run({ keys, args })` |
+| `cache` | `redis.query.<name>.get` / `.peek` / `.del` |
+| `ratelimit` | `redis.query.<name>.check` |
+| `queue` | `redis.query.<name>.enqueue` / `.worker` / `.watch` |
+| `lock` | `redis.query.<name>.run` / `.acquire` |
+| `semaphore` | `redis.query.<name>.run` / `.acquire` |
+| `idempotency` | `redis.query.<name>.run` |
+| `budget` | `redis.query.<name>.reserve` / `.charge` |
 
 ## Primitives In The Registry
 
@@ -102,52 +102,34 @@ const { success } = await redis.query.apiLimit.check(userId);
 const { id } = await redis.query.generate.enqueue({ prompt });
 ```
 
-The first argument is the key prefix, exactly as it is for `hash` or `kv`; everything else is the same options bag the client-taking form takes. Nothing is imported that you do not declare: each schema carries its own store binding, so a bundle only pulls in the primitives that appear in the module.
+The first argument is the key prefix, exactly as it is for `hash` or `kv`; the second is the primitive's options. Nothing is imported that you do not declare: each schema carries its own store binding, so a bundle only pulls in the primitives that appear in the module.
 
-`benni/primitives` keeps the client-taking form (`cache(client, options)`) for code that holds a client but no handle, such as a middleware factory. The two produce the same store over the same keys.
+## Schemas Outside The Module: `redis.store()`
 
-## The Counter And String Exception
-
-`redis.query` covers those kinds and nothing else, and there is one gap worth knowing before you meet it. Counters and strings are not kinds of their own: they are alternate views over a plain `kv` keyspace, so a `kv` schema always resolves to the `kv` resource in the registry, whatever its codec.
-
-That means `redis.query.<name>` gives you `get` / `set` / `del` but **no `incr`**, even when the schema is a `kv(prefix, number())` that exists only to be incremented:
+A schema that is not in the bound module (one a library declares for itself, or any schema on a handle built without `schema`) goes through `redis.store(schema)`, which returns the same resource `redis.query` would. For a schema that is in the module, it is the very object `redis.query` holds, so there is never a second copy of a primitive's in-process state.
 
 ```ts
-// schema.ts
-export const clicks = kv("clicks", number());
+import { benni } from "benni";
+import { kv, lock, number } from "benni/schema";
+
+// A store the bound module does not declare.
+const flags = redis.store(kv("flag", number()));
+
+// A middleware factory that holds a client, not a handle.
+const locks = benni({ client }).store(lock("order", { ttlMs: 10_000 }));
 ```
+
+## Inside Sessions
+
+`redis.session()` and `redis.watch()` bodies get the same registry on the session: `s.query.<name>` for the bound module's data stores and `s.store(schema)` for others, bound to the session's own connection. Lists, sorted sets, and streams add their blocking commands there. Primitives, channels, and scripts are reached from the handle, since a dedicated connection gives them nothing.
 
 ```ts
-// app.ts
-await redis.query.clicks.set("home", 0); // fine: the kv resource
-await redis.query.clicks.incr("home");   // does not compile: kv has no incr
-
-const total = await redis.counter(clicks).incr("home"); // reach for the counter view
+await redis.watch(users.key("42"), async (s) => {
+  const user = await s.query.users.hget("42");
+  if (!user) return null;
+  return s.multi().add(["HSET", users.key("42"), "score", user.score + 1], numberReply);
+});
 ```
-
-The same holds for the string view: `append`, `getrange`, `strlen`, and friends live on `redis.string(schema)`, not on `redis.query.<name>`.
-
-So the "prefer `redis.query`" rule has exactly two exceptions, and they are both on `kv`:
-
-| Want | Use |
-| --- | --- |
-| `get`, `set`, `del`, `expire`, … | `redis.query.<name>` (the `kv` resource) |
-| `incr`, `incrby`, `incrbyfloat`, `decr`, `decrby` | `redis.counter(schema)` |
-| `append`, `getrange`, `setrange`, `strlen` | `redis.string(schema)` |
-
-Both accessors take the schema value, so a counter-heavy module tends to import its schemas directly rather than going through the registry for those calls. They read and write the same keys as the `kv` resource, so mixing them on one schema is normal: `redis.query.clicks.set("home", 0)` to seed and `redis.counter(clicks).incr("home")` to bump.
-
-## Relationship To Explicit Accessors
-
-The registry is sugar over the explicit accessors. `redis.query.users` returns the same resource as `redis.hash(users)`, so you can mix the two styles freely:
-
-```ts
-// These are equivalent
-await redis.query.users.hset("42", { name: "Ada", score: 10 });
-await redis.hash(users).hset("42", { name: "Ada", score: 10 });
-```
-
-The explicit `redis.kv(schema)` / `redis.hash(schema)` accessors still exist unchanged. Use them when a schema is not part of a bound module, or when you prefer passing the schema value directly.
 
 ## A Multi-Kind Module
 

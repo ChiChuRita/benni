@@ -10,7 +10,7 @@ Benni is built on a small set of opinions. They explain most of the API, includi
 Benni adds a type layer, not a query language. Methods are named after the Redis commands they run, so `hgetall` runs `HGETALL` and `zincrby` runs `ZINCRBY`. Every Redis doc page, every StackOverflow answer, and every `MONITOR` line still applies.
 
 ```ts
-await redis.hash(users).hincrby("42", "score", 1); // HINCRBY user:42 score 1
+await redis.query.users.hincrby("42", "score", 1); // HINCRBY user:42 score 1
 ```
 
 Where Redis itself has folded old commands into a newer one, Benni follows Redis rather than the history: `zrange(id, { byScore: true, min, max })` mirrors modern `ZRANGE ... BYSCORE` instead of reviving the deprecated `ZRANGEBYSCORE`.
@@ -18,14 +18,14 @@ Where Redis itself has folded old commands into a newer one, Benni follows Redis
 The argument list follows from the same rule, which is worth knowing before you reach for the docs on a method you have not called yet. A command with one fixed form takes its arguments positionally, in the command's own order:
 
 ```ts
-await redis.zset(board).zremrangebyscore("daily", "-inf", cutoff); // ZREMRANGEBYSCORE board:daily -inf <cutoff>
-await redis.zset(board).zincrby("daily", 5, "alice");              // ZINCRBY board:daily 5 alice
+await redis.query.board.zremrangebyscore("daily", "-inf", cutoff); // ZREMRANGEBYSCORE board:daily -inf <cutoff>
+await redis.query.board.zincrby("daily", 5, "alice");              // ZINCRBY board:daily 5 alice
 ```
 
 A command with modifiers, or with several forms that give the same slot different meanings, takes one options object instead, so the call site reads like the modifiers it is choosing:
 
 ```ts
-await redis.zset(board).zrange("daily", { start: 0, stop: 9, rev: true, withScores: true });
+await redis.query.board.zrange("daily", { start: 0, stop: 9, rev: true, withScores: true });
 ```
 
 That is why `zrange` puts even its bounds in the object while `zremrangebyscore` does not: `ZRANGE`'s bounds are indexes, scores, or lex bounds depending on the modifier chosen alongside them, and `ZREMRANGEBYSCORE` only ever takes a score range.

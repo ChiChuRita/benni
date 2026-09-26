@@ -14,7 +14,7 @@ export const userEvents = channel(
 );
 ```
 
-There is nothing to configure. Bind a client the usual way and reach the channel through `redis.pubsub`:
+There is nothing to configure. Bind a client the usual way and reach the channel by name through `redis.query`:
 
 ```ts
 import { benni } from "benni";
@@ -29,7 +29,7 @@ export const redis = benni({ client: node(), schema });
 `PUBLISH` is one stateless command, so publishing rides the bound client and works on every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge:
 
 ```ts
-const receivers = await redis.pubsub.channel(userEvents).publish({
+const receivers = await redis.query.userEvents.publish({
   id: "42",
   action: "created"
 });
@@ -41,7 +41,7 @@ const receivers = await redis.pubsub.channel(userEvents).publish({
 `subscribe` takes only a handler. The first subscription lazily leases one subscriber connection from the bound client; every later channel and pattern is multiplexed onto that same connection, and it closes again when the last subscription goes away. So there are no idle connections to manage, and no second object to pass around:
 
 ```ts
-const subscription = await redis.pubsub.channel(userEvents).subscribe((message) => {
+const subscription = await redis.query.userEvents.subscribe((message) => {
   // message is { id: string; action: "created" | "deleted" }
   console.log(message.action);
 });
@@ -71,8 +71,7 @@ export const userEventPattern = pattern(
   json<{ id: string; action: string }>()
 );
 
-const subscription = await redis.pubsub
-  .pattern(userEventPattern)
+const subscription = await redis.query.userEventPattern
   .subscribe((message, channelName) => {
     console.log(channelName, message.action);
   });
@@ -97,19 +96,19 @@ export const roomEvents = channel(
 
 ```ts
 // PUBLISH chat:room:42
-await redis.pubsub
-  .channel(roomEvents, "42")
+await redis.query.roomEvents
+  .at("42")
   .publish({ from: "ada", text: "hi" });
 
 // SUBSCRIBE chat:room:42
-const subscription = await redis.pubsub
-  .channel(roomEvents, "42")
+const subscription = await redis.query.roomEvents
+  .at("42")
   .subscribe((message) => {
     console.log(message.text);
   });
 ```
 
-The id is optional, and leaving it off is unchanged: `redis.pubsub.channel(roomEvents)` still addresses `chat:room` itself and nothing else. So one schema can carry both a per-room feed and a channel for everyone.
+The id is optional, and leaving it off is unchanged: `redis.query.roomEvents` still addresses `chat:room` itself and nothing else. So one schema can carry both a per-room feed and a channel for everyone.
 
 Ids are typed like keyspace ids (a string, a number, or a bigint), and `ids` narrows them to a known set for autocomplete and a compile-time check:
 
@@ -120,8 +119,8 @@ export const jobEvents = channel(
   { ids: ["import", "export"] }
 );
 
-await redis.pubsub.channel(jobEvents, "import").publish({ state: "done" });
-// redis.pubsub.channel(jobEvents, "nope") does not compile
+await redis.query.jobEvents.at("import").publish({ state: "done" });
+// redis.query.jobEvents.at("nope") does not compile
 ```
 
 You never have to build the channel string yourself. `channelName` resolves it, on the schema and on the resource, the way `key` does for a keyspace:
@@ -129,10 +128,10 @@ You never have to build the channel string yourself. `channelName` resolves it, 
 ```ts
 roomEvents.channelName("42"); // "chat:room:42"
 roomEvents.channelName(); // "chat:room"
-redis.pubsub.channel(roomEvents, "42").channelName(); // "chat:room:42"
+redis.query.roomEvents.at("42").channelName(); // "chat:room:42"
 ```
 
-A schema reached through the [registry](/benni/core-concepts/schema-registry/) scopes with `at(id)`, which is what `redis.pubsub.channel(schema, id)` calls underneath:
+The per-entity channel is `at(id)` on the channel resource in the [registry](/benni/core-concepts/schema-registry/):
 
 ```ts
 await redis.query.roomEvents.at("42").publish({ from: "ada", text: "hi" });
@@ -152,12 +151,12 @@ export const anyRoom = pattern(
   json<{ from: string; text: string }>()
 );
 
-await redis.pubsub.pattern(anyRoom).subscribe((message, channelName) => {
+await redis.query.anyRoom.subscribe((message, channelName) => {
   console.log(channelName, message.text); // "chat:room:42 hi"
 });
 
-await redis.pubsub
-  .channel(roomEvents, "42")
+await redis.query.roomEvents
+  .at("42")
   .publish({ from: "ada", text: "hi" });
 ```
 
@@ -170,8 +169,7 @@ Callbacks are awkward when the consumer is a loop: an SSE response, a worker tha
 ```ts
 const controller = new AbortController();
 
-for await (const message of redis.pubsub
-  .channel(userEvents)
+for await (const message of redis.query.userEvents
   .stream({ signal: controller.signal })) {
   console.log(message.action);
 }
@@ -182,8 +180,7 @@ Aborting the signal ends the loop; so does `break`ing out of it or `return`ing f
 The pattern form yields the channel alongside the message, because with a pattern you usually need to know which channel matched:
 
 ```ts
-for await (const { message, channel: channelName } of redis.pubsub
-  .pattern(userEventPattern)
+for await (const { message, channel: channelName } of redis.query.userEventPattern
   .stream({ signal: controller.signal })) {
   console.log(channelName, message.action);
 }
@@ -230,4 +227,4 @@ Subscribing needs a connection the adapter can hold open, which is the one thing
 | [`benni/bun`](/benni/runtime/bun-and-deno/) | Yes | Yes | No (`psubscribe` is broken upstream in Bun 1.3.14) |
 | [`benni/upstash`](/benni/runtime/edge/) | Yes | No (HTTP is stateless) | No |
 
-Both gaps show up at compile time. A handle over an adapter that cannot lease a connection has channels with `publish` but no `subscribe` or `stream`, and a handle over Bun has no `redis.pubsub.pattern()` (and no pattern entries in `redis.query`). Code that forces the call anyway fails loudly with `UnsupportedCapabilityError` rather than hanging. An adapter advertises the capability by implementing the optional `subscriber?()` method on the [client contract](/benni/api/benni-client/#redispubsub), the same way `session?()` advertises sessions.
+Both gaps show up at compile time. A handle over an adapter that cannot lease a connection has channels with `publish` but no `subscribe` or `stream`, and a handle over Bun has no pattern entries in `redis.query` (and `redis.store()` refuses a pattern schema). Code that forces the call anyway fails loudly with `UnsupportedCapabilityError` rather than hanging. An adapter advertises the capability by implementing the optional `subscriber?()` method on the [client contract](/benni/api/benni-client/#redispubsub), the same way `session?()` advertises sessions.

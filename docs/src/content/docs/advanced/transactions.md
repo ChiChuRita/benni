@@ -30,7 +30,7 @@ Note the argument encoding: values go through the schema's own codec (`names.enc
 
 ## Encode Values With The Schema's Codec
 
-`.add()` takes a raw command tuple, so Benni cannot encode arguments for you the way `redis.kv(schema).set()` does. It does not follow that you have to hand-encode them. Every schema exposes the codec its own store uses:
+`.add()` takes a raw command tuple, so Benni cannot encode arguments for you the way `redis.query.<name>.set()` does. It does not follow that you have to hand-encode them. Every schema exposes the codec its own store uses:
 
 - Value-carrying keyspaces (`kv`, `set`, `list`, `zset`, `geo`) expose `encode(value)` and `decode(stored)` directly on the schema. A `hll` schema exposes `encode` only, since a HyperLogLog cannot be read back.
 - `hash` and `stream` schemas expose `fields`, where each entry is a `Codec` with its own `.encode()` and `.decode()`.

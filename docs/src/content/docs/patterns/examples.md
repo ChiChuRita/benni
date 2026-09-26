@@ -23,12 +23,12 @@ export const profiles = kv(
   }>()
 );
 
-await redis.hash(users).hset("42", {
+await redis.query.users.hset("42", {
   name: "Ada",
   score: 10
 });
 
-await redis.kv(profiles).set("42", {
+await redis.query.profiles.set("42", {
   bio: "First programmer",
   links: ["https://example.com"]
 });
@@ -41,9 +41,9 @@ import { boolean, kv } from "benni/schema";
 
 export const flags = kv("feature-flag", boolean());
 
-await redis.kv(flags).set("new-dashboard", true);
+await redis.query.flags.set("new-dashboard", true);
 
-if (await redis.kv(flags).get("new-dashboard")) {
+if (await redis.query.flags.get("new-dashboard")) {
   // enable the feature
 }
 ```
@@ -51,7 +51,7 @@ if (await redis.kv(flags).get("new-dashboard")) {
 ## Raw Escape Hatch
 
 ```ts
-const key = redis.hash(users).key("42");
+const key = redis.query.users.key("42");
 const exists = await redis.raw.send(["EXISTS", key]);
 ```
 

@@ -56,7 +56,7 @@ await once.run(key, async ({ signal }) => {
 
 A handler that rejects with the abort reason releases the key like any other throw, so the retry is clean.
 
-Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. `benni/primitives` exports the same runner in its client-taking form for code that holds a client but no handle: `idempotency<Receipt>({ client })`.
+Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Code that holds a client but no schema module reaches the same runner with `benni({ client }).store(idempotency("charge", { codec: json<Receipt>() }))`.
 
 ## Not A Cache
 

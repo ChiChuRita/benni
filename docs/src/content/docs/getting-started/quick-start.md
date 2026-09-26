@@ -81,7 +81,7 @@ import type { Benni } from "benni";
 export function makeHandlers(redis: Benni) { /* ... */ }
 ```
 
-Without the registration nothing breaks: `Benni` stays generic and `Benni<typeof schema>` still names the handle. Every accessor it exposes is listed in the [Benni Client reference](/benni/api/benni-client/).
+Without the registration nothing breaks: `Benni` stays generic and `Benni<typeof schema>` still names the handle. Every member it exposes is listed in the [Benni Client reference](/benni/api/benni-client/).
 
 The handle owns a connection, so close it when your process or test finishes, otherwise Node never exits. `close()` also stops Pub/Sub subscriptions, queue workers, and sessions opened through the handle:
 
@@ -112,7 +112,7 @@ await redis.query.profiles.set(
 );
 ```
 
-The explicit `redis.hash(schema)` accessors remain available and return the same store; see the [Schema Registry](/benni/core-concepts/schema-registry/).
+`redis.query` is the one way to reach a store. A schema the bound module does not declare goes through `redis.store(schema)`, which returns the same resource; see the [Schema Registry](/benni/core-concepts/schema-registry/).
 
 ## Drop To Redis
 
