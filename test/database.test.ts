@@ -235,12 +235,15 @@ describe("benni", () => {
     ]);
   });
 
-  it("binds counter keyspaces to a client and deletes with DEL", async () => {
+  it("gives a number() kv the counter commands", async () => {
     const commands: RedisCommand[] = [];
-    const db = benni({ client: fakeClient(commands, [1, 1]) });
     const hits = kv("hits", number());
+    const db = benni({
+      client: fakeClient(commands, [1, 1]),
+      schema: { hits }
+    });
 
-    const store = db.counter(hits);
+    const store = db.query.hits;
 
     await expect(store.incr("page")).resolves.toBe(1);
     await expect(store.del("page")).resolves.toBe(1);
@@ -252,12 +255,15 @@ describe("benni", () => {
     ]);
   });
 
-  it("binds string keyspaces to a client and deletes with DEL", async () => {
+  it("gives a string() kv the string commands", async () => {
     const commands: RedisCommand[] = [];
-    const db = benni({ client: fakeClient(commands, [2, "hi", 1]) });
     const notes = kv("note", string());
+    const db = benni({
+      client: fakeClient(commands, [2, "hi", 1]),
+      schema: { notes }
+    });
 
-    const store = db.string(notes);
+    const store = db.query.notes;
 
     await expect(store.append("42", "hi")).resolves.toBe(2);
     await expect(store.getex("42", 60)).resolves.toBe("hi");

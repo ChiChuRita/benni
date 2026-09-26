@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createBitmapStore, defineBitmap } from "../src/core/bitmap.js";
 import { codecs } from "../src/core/codecs.js";
-import { createCounterStore } from "../src/core/counter.js";
 import { createGeoStore, defineGeoSet } from "../src/core/geo.js";
 import { createHashStore, defineHash } from "../src/core/hash.js";
 import {
@@ -25,7 +24,6 @@ import {
 } from "../src/core/sorted-set.js";
 import { createStreamStore } from "../src/core/stream.js";
 import { defineStream } from "../src/core/stream-resource.js";
-import { createStringStore } from "../src/core/string.js";
 import {
   booleanNumberReply,
   createTransaction,
@@ -43,6 +41,7 @@ import {
 } from "../src/database.js";
 import { WatchRetriesExceededError } from "../src/index.js";
 import { node } from "../src/node/index.js";
+import { kvResource } from "./fake-client.js";
 import { serverCommands } from "./server-commands.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
@@ -360,7 +359,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("supports every GETEX expiry mode", async () => {
-      const strings = createStringStore(client, texts);
+      const strings = kvResource(client, texts);
       const key = texts.key("greeting");
       await client.send(["SET", key, "hello"]);
 
@@ -412,7 +411,7 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("computes the longest common subsequence", async () => {
-      const strings = createStringStore(client, texts);
+      const strings = kvResource(client, texts);
       await client.send(["SET", texts.key("lcs:a"), "ohmytext"]);
       await client.send(["SET", texts.key("lcs:b"), "mynewtext"]);
 
@@ -431,11 +430,51 @@ describeRedis("node feature modules against real Redis", () => {
     });
 
     it("increments counters by float amounts", async () => {
-      const counterStore = createCounterStore(client, counters);
+      const counterStore = kvResource(client, counters);
 
       await expect(counterStore.incrbyfloat("float", 1.5)).resolves.toBe(1.5);
       await expect(counterStore.incrbyfloat("float", 2.25)).resolves.toBe(3.75);
       await expect(counterStore.incrbyfloat("float", -0.75)).resolves.toBe(3);
+    });
+
+    it("sets a counter's expiry with the increment that creates it", async () => {
+      const counterStore = kvResource(client, counters);
+      const key = counters.key("windowed");
+
+      await expect(
+        counterStore.incr("windowed", { ttlMs: 60_000 })
+      ).resolves.toBe(1);
+      const first = await client.send(["PTTL", key]);
+      expect(first).toBeGreaterThan(55_000);
+      expect(first).toBeLessThanOrEqual(60_000);
+
+      // A later increment leaves the running window alone, even with a longer
+      // ttlMs: the expiry only lands on a key that has none.
+      await expect(
+        counterStore.incr("windowed", { ttlMs: 600_000 })
+      ).resolves.toBe(2);
+      expect(await client.send(["PTTL", key])).toBeLessThanOrEqual(60_000);
+
+      // A counter created without one gets it from the next ttl increment.
+      await counterStore.incr("immortal");
+      expect(await client.send(["PTTL", counters.key("immortal")])).toBe(-1);
+      await counterStore.incr("immortal", { ttlMs: 5_000 });
+      expect(
+        await client.send(["PTTL", counters.key("immortal")])
+      ).toBeGreaterThan(0);
+    });
+
+    it("rejects an integer increment of a stored fraction", async () => {
+      const counterStore = kvResource(client, counters);
+      await counterStore.set("fraction", 1.5);
+
+      await expect(counterStore.incr("fraction")).rejects.toThrow(
+        /not an integer/
+      );
+      await expect(
+        counterStore.incr("fraction", { ttlMs: 1_000 })
+      ).rejects.toThrow(/not an integer/);
+      await expect(counterStore.incrbyfloat("fraction", 1)).resolves.toBe(2.5);
     });
   });
 
@@ -1625,7 +1664,7 @@ describeRedis("node feature modules against real Redis", () => {
           const current = (await s.kv(views).get("home")) ?? 0;
           if (!clobbered) {
             clobbered = true;
-            await db.counter(views).incr("home");
+            await db.kv(views).incr("home");
           }
           return s
             .multi()
@@ -1672,7 +1711,7 @@ describeRedis("node feature modules against real Redis", () => {
             const current = (await s.kv(views).get("home")) ?? 0;
             // Clobber the watched key from the shared client after the read but
             // before exec, guaranteeing every attempt aborts.
-            await db.counter(views).incr("home");
+            await db.kv(views).incr("home");
             return s.multi().add(["SET", key, current + 1], okReply);
           },
           {

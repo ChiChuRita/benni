@@ -24,12 +24,21 @@ export type {
   InferHashOutput,
   InferInput,
   InferOutput,
-  OptionalCodec
+  NumberCodec,
+  OptionalCodec,
+  StringCodec
 } from "./core/types.js";
 
-/** Codec: store and read a value as a UTF-8 string. */
+/**
+ * Codec: store and read a value as a UTF-8 string. A kv over it carries the
+ * string commands (`append`, `getrange`, `setrange`, `strlen`, `lcs`).
+ */
 export const string = codecs.string;
-/** Codec: store a JS number as its decimal string (rejects NaN/Infinity on write). */
+/**
+ * Codec: store a JS number as its decimal string (rejects NaN/Infinity on
+ * write). A kv over it carries the counter commands (`incr`, `incrby`,
+ * `decr`, `decrby`, `incrbyfloat`).
+ */
 export const number = codecs.number;
 /** Codec: store a boolean as `"1"` / `"0"` (also decodes `"true"` / `"false"`). */
 export const boolean = codecs.boolean;
@@ -90,7 +99,11 @@ export function bytes(): Codec<Uint8Array, Uint8Array> {
  * @example
  * ```ts
  * const profiles = kv("profile", json<Profile>());
- * await redis.kv(profiles).set("42", profile);
+ * await redis.query.profiles.set("42", profile);
+ *
+ * // The codec decides the extra commands: number() brings the counters.
+ * const views = kv("views", number());
+ * await redis.query.views.incr("post-1");
  * ```
  */
 export const kv = defineKeyspace;

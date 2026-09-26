@@ -10,7 +10,6 @@ import {
   resolveClient,
   SESSION_UNSUPPORTED
 } from "./core/client-source.js";
-import { createCounterStore } from "./core/counter.js";
 // A value import, but errors.js is a leaf the root entry already pulls in for
 // the exported error classes, so this pins nothing new into the bundle.
 import { UnsupportedCapabilityError } from "./core/errors.js";
@@ -20,7 +19,7 @@ import type {
   createHllResource,
   HyperLogLogSchema
 } from "./core/hyperloglog.js";
-import type { createKvResource } from "./core/key-value.js";
+import type { KvResource } from "./core/key-value.js";
 import type { HashTagLayout, SameSlotArg, SameSlotList } from "./core/keys.js";
 import type {
   createListResource,
@@ -62,15 +61,13 @@ import {
   resolveSessionStore,
   resolveStore,
   STORE,
-  type StoreContext,
-  withKey
+  type StoreContext
 } from "./core/store.js";
 import type { StreamSchema } from "./core/stream.js";
 import type {
   createStreamResource,
   createStreamSessionAccessor
 } from "./core/stream-resource.js";
-import { createStringStore } from "./core/string.js";
 import {
   createTransaction,
   type RedisTransaction,
@@ -193,10 +190,6 @@ export type BenniOptions = {
  * store factory, so this module pulls in no store code. The casts restore the
  * precise resource type the binding is known to produce — the accessor
  * signatures, and therefore the public API, are unchanged.
- *
- * `counter` and `string` are the exceptions: they are alternate views over a
- * plain kv keyspace rather than a kind of their own, so they cannot dispatch
- * through the schema and stay bound directly.
  */
 function createStoreAccessors(ctx: StoreContext) {
   return {
@@ -205,12 +198,18 @@ function createStoreAccessors(ctx: StoreContext) {
       TOutput,
       TPrefix extends string,
       TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
+      THashTag extends HashTagLayout | undefined,
+      TFormat
     >(
-      schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag>
+      schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag, TFormat>
     ) =>
-      resolveStore(schema, ctx, "kv schema") as ReturnType<
-        typeof createKvResource<TInput, TOutput, TPrefix, TId, THashTag>
+      resolveStore(schema, ctx, "kv schema") as KvResource<
+        TInput,
+        TOutput,
+        TPrefix,
+        TId,
+        THashTag,
+        TFormat
       >,
     hash: <
       TFields extends FieldCodecs,
@@ -302,22 +301,7 @@ function createStoreAccessors(ctx: StoreContext) {
     ) =>
       resolveStore(schema, ctx, "geo schema") as ReturnType<
         typeof createGeoResource<TInput, TOutput, TPrefix, TId, THashTag>
-      >,
-    counter: <
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: Keyspace<number, number, TPrefix, TId, THashTag>
-    ) => withKey(schema, createCounterStore(ctx.client, schema)),
-    string: <
-      TPrefix extends string,
-      TId extends RedisKeyPart,
-      THashTag extends HashTagLayout | undefined
-    >(
-      schema: Keyspace<string, string, TPrefix, TId, THashTag>
-    ) =>
-      withKey(schema, createStringStore(ctx.client, schema, ctx.assertSameSlot))
+      >
   };
 }
 
@@ -458,11 +442,10 @@ export type QueryResource<
           infer TOutput,
           infer TPrefix extends string,
           infer TId,
-          infer THashTag extends HashTagLayout | undefined
+          infer THashTag extends HashTagLayout | undefined,
+          infer TFormat
         >
-        ? ReturnType<
-            typeof createKvResource<TInput, TOutput, TPrefix, TId, THashTag>
-          >
+        ? KvResource<TInput, TOutput, TPrefix, TId, THashTag, TFormat>
         : never
       : T extends { readonly kind: "set" }
         ? T extends SetSchema<
@@ -732,8 +715,6 @@ function createBenniSessionFacade(
     hll: base.hll,
     bitmap: base.bitmap,
     geo: base.geo,
-    counter: base.counter,
-    string: base.string,
     list<
       TInput,
       TOutput,

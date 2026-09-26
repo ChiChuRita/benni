@@ -1,22 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { codecs } from "../src/core/codecs.js";
-import { createCounterStore } from "../src/core/counter.js";
 import {
   createKeyValueStore,
   defineKeyspace,
-  type KeyValueSetOptions
+  type KeyValueGetExOptions
 } from "../src/core/key-value.js";
-import {
-  createStringStore,
-  type LcsIdxResult,
-  type StringGetExOptions
-} from "../src/core/string.js";
+import type { LcsIdxResult } from "../src/core/string.js";
 import type {
   RedisClient,
   RedisCommand,
   RedisReply
 } from "../src/core/types.js";
-import { fakeClient } from "./fake-client.js";
+import { fakeClient, kvResource } from "./fake-client.js";
 
 const users = defineKeyspace("user", codecs.string());
 const texts = defineKeyspace("text", codecs.string());
@@ -132,7 +127,7 @@ describe("createKeyValueStore conditional writes", () => {
 describe("createStringStore getEx modes", () => {
   it("keeps accepting plain seconds", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(fakeClient(commands, ["hello"]), texts);
+    const strings = kvResource(fakeClient(commands, ["hello"]), texts);
 
     await expect(strings.getex("greeting", 60)).resolves.toBe("hello");
 
@@ -141,7 +136,7 @@ describe("createStringStore getEx modes", () => {
 
   it("emits EX, PX, EXAT, PXAT, and PERSIST from option objects", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(
+    const strings = kvResource(
       fakeClient(commands, ["a", "b", "c", "d", "e"]),
       texts
     );
@@ -172,7 +167,7 @@ describe("createStringStore getEx modes", () => {
   });
 
   it("returns null for missing keys in every mode", async () => {
-    const strings = createStringStore(fakeClient([], [null, null]), texts);
+    const strings = kvResource(fakeClient([], [null, null]), texts);
 
     await expect(strings.getex("missing", 60)).resolves.toBeNull();
     await expect(
@@ -182,7 +177,7 @@ describe("createStringStore getEx modes", () => {
 
   it("throws TypeError on unexpected GETEX replies", async () => {
     await expect(
-      createStringStore(fakeClient([], [1]), texts).getex("greeting", {
+      kvResource(fakeClient([], [1]), texts).getex("greeting", {
         persist: true
       })
     ).rejects.toThrow(TypeError);
@@ -190,7 +185,7 @@ describe("createStringStore getEx modes", () => {
 
   it("validates every numeric getEx mode before sending", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(fakeClient(commands, []), texts);
+    const strings = kvResource(fakeClient(commands, []), texts);
 
     await expect(strings.getex("greeting", 0)).rejects.toThrow(TypeError);
     await expect(strings.getex("greeting", { ttlSeconds: 0 })).rejects.toThrow(
@@ -211,21 +206,21 @@ describe("createStringStore getEx modes", () => {
 
   it("requires exactly one getEx mode", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(fakeClient(commands, []), texts);
+    const strings = kvResource(fakeClient(commands, []), texts);
 
     await expect(
-      strings.getex("greeting", {} as StringGetExOptions)
+      strings.getex("greeting", {} as KeyValueGetExOptions)
     ).rejects.toThrow(TypeError);
     await expect(
       strings.getex("greeting", {
         ttlSeconds: 1,
         ttlMilliseconds: 1
-      } as StringGetExOptions)
+      } as KeyValueGetExOptions)
     ).rejects.toThrow(TypeError);
     await expect(
       strings.getex("greeting", {
         persist: false
-      } as unknown as StringGetExOptions)
+      } as unknown as KeyValueGetExOptions)
     ).rejects.toThrow(TypeError);
 
     expect(commands).toEqual([]);
@@ -235,7 +230,7 @@ describe("createStringStore getEx modes", () => {
 describe("createStringStore lcs", () => {
   it("returns the subsequence string by default", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(fakeClient(commands, ["mytext"]), texts);
+    const strings = kvResource(fakeClient(commands, ["mytext"]), texts);
 
     await expect(strings.lcs("k1", "k2")).resolves.toBe("mytext");
     expect(commands).toEqual([["LCS", "text:k1", "text:k2"]]);
@@ -243,7 +238,7 @@ describe("createStringStore lcs", () => {
 
   it("returns the length with LEN", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(fakeClient(commands, [6]), texts);
+    const strings = kvResource(fakeClient(commands, [6]), texts);
 
     await expect(strings.lcs("k1", "k2", { len: true })).resolves.toBe(6);
     expect(commands).toEqual([["LCS", "text:k1", "text:k2", "LEN"]]);
@@ -251,7 +246,7 @@ describe("createStringStore lcs", () => {
 
   it("decodes IDX match ranges from a flat-array reply (RESP2)", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(
+    const strings = kvResource(
       fakeClient(commands, [
         [
           "matches",
@@ -284,7 +279,7 @@ describe("createStringStore lcs", () => {
 
   it("decodes IDX from a RESP3 map and passes MINMATCHLEN + WITHMATCHLEN", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(
+    const strings = kvResource(
       fakeClient(commands, [
         new Map<RedisReply, RedisReply>([
           ["matches", [[[4, 7], [5, 8], 4]]],
@@ -307,10 +302,7 @@ describe("createStringStore lcs", () => {
 
   it("validates minMatchLen and rejects malformed replies", async () => {
     const commands: RedisCommand[] = [];
-    const strings = createStringStore(
-      fakeClient(commands, [1, [1, 2, 3]]),
-      texts
-    );
+    const strings = kvResource(fakeClient(commands, [1, [1, 2, 3]]), texts);
 
     await expect(
       strings.lcs("k1", "k2", { idx: true, minMatchLen: -1 })
@@ -328,7 +320,7 @@ describe("createStringStore lcs", () => {
   });
 
   it("rejects malformed IDX matches, matches items, and ranges", async () => {
-    const strings = createStringStore(
+    const strings = kvResource(
       fakeClient(
         [],
         [
@@ -355,7 +347,7 @@ describe("createStringStore lcs", () => {
 describe("createCounterStore incrByFloat", () => {
   it("emits INCRBYFLOAT and parses the bulk string reply", async () => {
     const commands: RedisCommand[] = [];
-    const store = createCounterStore(fakeClient(commands, ["3.7"]), counters);
+    const store = kvResource(fakeClient(commands, ["3.7"]), counters);
 
     await expect(store.incrbyfloat("hits", 2.5)).resolves.toBe(3.7);
 
@@ -364,10 +356,7 @@ describe("createCounterStore incrByFloat", () => {
 
   it("accepts negative and integer amounts", async () => {
     const commands: RedisCommand[] = [];
-    const store = createCounterStore(
-      fakeClient(commands, ["-0.5", "2"]),
-      counters
-    );
+    const store = kvResource(fakeClient(commands, ["-0.5", "2"]), counters);
 
     await expect(store.incrbyfloat("hits", -3)).resolves.toBe(-0.5);
     await expect(store.incrbyfloat("hits", 0.25)).resolves.toBe(2);
@@ -380,7 +369,7 @@ describe("createCounterStore incrByFloat", () => {
 
   it("validates the amount before sending", async () => {
     const commands: RedisCommand[] = [];
-    const store = createCounterStore(fakeClient(commands, []), counters);
+    const store = kvResource(fakeClient(commands, []), counters);
 
     await expect(store.incrbyfloat("hits", Number.NaN)).rejects.toThrow(
       TypeError
@@ -406,28 +395,24 @@ const profileStore = createKeyValueStore(
   typeClient,
   defineKeyspace("profile", codecs.json<{ name: string }>())
 );
-const stringStore = createStringStore(
+const stringStore = kvResource(
   typeClient,
   defineKeyspace("text", codecs.string())
 );
-const counterStore = createCounterStore(
+const counterStore = kvResource(
   typeClient,
   defineKeyspace("counter", codecs.number())
 );
 
-type SetOptionsParam = Parameters<typeof profileStore.set>[2];
 type SetValue = Parameters<typeof profileStore.set>[1];
 type MSetIfAbsentResult = Awaited<ReturnType<typeof profileStore.msetnx>>;
 type GetExParam = Parameters<typeof stringStore.getex>[1];
 type GetExResult = Awaited<ReturnType<typeof stringStore.getex>>;
 type IncrByFloatResult = Awaited<ReturnType<typeof counterStore.incrbyfloat>>;
 
-type _SetOptionsParam = Expect<
-  Equal<SetOptionsParam, KeyValueSetOptions | undefined>
->;
 type _SetValue = Expect<Equal<SetValue, { name: string }>>;
 type _MSetIfAbsentResult = Expect<Equal<MSetIfAbsentResult, boolean>>;
-type _GetExParam = Expect<Equal<GetExParam, number | StringGetExOptions>>;
+type _GetExParam = Expect<Equal<GetExParam, number | KeyValueGetExOptions>>;
 type _GetExResult = Expect<Equal<GetExResult, string | null>>;
 type _IncrByFloatResult = Expect<Equal<IncrByFloatResult, number>>;
 
@@ -440,6 +425,12 @@ async function conditionalSetTypeProbes() {
   // plain set resolves to void.
   const plain = await profileStore.set("42", { name: "benni" });
   type _Plain = Expect<Equal<typeof plain, void>>;
+  const ttlOnly = await profileStore.set(
+    "42",
+    { name: "b" },
+    { ttlSeconds: 5 }
+  );
+  type _TtlOnly = Expect<Equal<typeof ttlOnly, void>>;
 }
 void conditionalSetTypeProbes;
 

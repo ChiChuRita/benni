@@ -9,14 +9,12 @@ import { defineHash } from "../src/core/hash.js";
 import type { RedisClient } from "../src/core/index.js";
 import {
   codecs,
-  createCounterStore,
   createHashStore,
   createKeyValueStore,
   createListStore,
   createPubSubPublisher,
   createSetStore,
   createSortedSetStore,
-  createStringStore,
   type InferHashInput,
   type InferHashOutput,
   type PendingStreamEntry,
@@ -39,6 +37,7 @@ import {
   script as schemaScript,
   string as schemaString
 } from "../src/schema.js";
+import { kvResource } from "./fake-client.js";
 
 type Equal<TLeft, TRight> =
   (<T>() => T extends TLeft ? 1 : 2) extends <T>() => T extends TRight ? 1 : 2
@@ -196,23 +195,17 @@ type _DemoAutocompleteKey = Expect<
 >;
 type _DemoStoreId = Expect<Equal<DemoStoreId, "test1" | "test2">>;
 
-const counters = createCounterStore(
-  client,
-  defineKeyspace("counter", codecs.number())
-);
+const counters = kvResource(client, defineKeyspace("counter", codecs.number()));
 type CounterValue = Awaited<ReturnType<typeof counters.incrby>>;
 type _CounterValue = Expect<Equal<CounterValue, number>>;
 
-const strings = createStringStore(
-  client,
-  defineKeyspace("text", codecs.string())
-);
+const strings = kvResource(client, defineKeyspace("text", codecs.string()));
 type StringAppendValue = Parameters<typeof strings.append>[1];
 type StringGetRangeValue = Awaited<ReturnType<typeof strings.getrange>>;
 type _StringAppendValue = Expect<Equal<StringAppendValue, string>>;
 type _StringGetRangeValue = Expect<Equal<StringGetRangeValue, string>>;
 
-const knownStrings = createStringStore(
+const knownStrings = kvResource(
   client,
   defineKeyspace("known", codecs.string(), { ids: ["one", "two"] })
 );
@@ -342,9 +335,31 @@ function expectTypeErrorsOnly() {
   // @ts-expect-error counter amounts must be numbers.
   void counters.incrby("hits", "1");
 
-  const jsonKeyspace = defineKeyspace("json", codecs.json<{ name: string }>());
-  // @ts-expect-error string store requires a string keyspace.
-  void createStringStore(client, jsonKeyspace);
+  const jsonStrings = kvResource(
+    client,
+    defineKeyspace("json", codecs.json<string>())
+  );
+  // @ts-expect-error only a string() kv carries the string commands.
+  void jsonStrings.append("a", "b");
+
+  const jsonNumbers = kvResource(
+    client,
+    defineKeyspace("jsonnum", codecs.json<number>())
+  );
+  // @ts-expect-error only a number() kv carries the counter commands.
+  void jsonNumbers.incr("a");
+
+  // @ts-expect-error a number() kv carries no string commands.
+  void counters.append("a", "b");
+
+  // @ts-expect-error a string() kv carries no counter commands.
+  void strings.incr("a");
+
+  // @ts-expect-error enumOf() stores plain strings, but an APPEND would leave the set.
+  void kvResource(client, defineKeyspace("e", codecs.enumOf(["a"]))).append(
+    "x",
+    "y"
+  );
 
   // @ts-expect-error string store values must be strings.
   void strings.append("a", 1);

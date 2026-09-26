@@ -5,7 +5,6 @@ import {
   createHashStore,
   createSortedSetStore,
   createStreamStore,
-  createStringStore,
   ValidationError
 } from "../src/core/index.js";
 import { defineKeyspace } from "../src/core/key-value.js";
@@ -28,7 +27,7 @@ import type {
 } from "../src/core/types.js";
 import { node } from "../src/node/index.js";
 import { upstash } from "../src/upstash/index.js";
-import { fakeClient } from "./fake-client.js";
+import { fakeClient, kvResource } from "./fake-client.js";
 
 /** A client whose queued replies may be Errors, so a rejection can be scripted. */
 function rejecting(
@@ -91,7 +90,7 @@ describe("infinite sorted-set scores (review #1)", () => {
 
 describe("getrange validation (review #3)", () => {
   it("rejects non-integer bounds before sending", async () => {
-    const store = createStringStore(
+    const store = kvResource(
       fakeClient([], []),
       defineKeyspace("text", codecs.string())
     );
@@ -189,7 +188,7 @@ describe("LCS is a multi-key command (review #8)", () => {
     // command in the string store — was sent unchecked even with the cluster
     // guard installed. On a single node it just works; on a real cluster the
     // server rejects it with a raw CROSSSLOT.
-    const store = createStringStore(
+    const store = kvResource(
       fakeClient([], ["mytext"]),
       defineKeyspace("doc", codecs.string()),
       assertSameSlot
@@ -199,7 +198,7 @@ describe("LCS is a multi-key command (review #8)", () => {
 
   it("allows LCS when a hash tag co-locates the two keys", async () => {
     const commands: RedisCommand[] = [];
-    const store = createStringStore(
+    const store = kvResource(
       fakeClient(commands, ["mytext"]),
       defineKeyspace("doc", codecs.string(), { hashTag: "prefix" }),
       assertSameSlot

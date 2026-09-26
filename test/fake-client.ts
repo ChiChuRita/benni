@@ -1,6 +1,12 @@
+import { createKvResource } from "../src/core/key-value.js";
+import type { HashTagLayout } from "../src/core/keys.js";
+import type { SlotGuard } from "../src/core/slot.js";
+import { createStoreContext } from "../src/core/store.js";
 import type {
+  Keyspace,
   RedisClient,
   RedisCommand,
+  RedisKeyPart,
   RedisReply,
   RedisSession
 } from "../src/core/types.js";
@@ -67,4 +73,26 @@ export function fakeSession(
       closed = true;
     }
   };
+}
+
+/**
+ * A kv store over `client` the way `redis.query` builds one, with the counter
+ * or string commands its codec's `format` brings.
+ */
+export function kvResource<
+  TInput,
+  TOutput,
+  TPrefix extends string,
+  TId extends RedisKeyPart,
+  THashTag extends HashTagLayout | undefined,
+  TFormat
+>(
+  client: RedisClient,
+  schema: Keyspace<TInput, TOutput, TPrefix, TId, THashTag, TFormat>,
+  assertSameSlot?: SlotGuard
+) {
+  return createKvResource(
+    createStoreContext(client, undefined, assertSameSlot),
+    schema
+  );
 }

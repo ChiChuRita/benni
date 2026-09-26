@@ -2,13 +2,11 @@ import { expect } from "vitest";
 import { defineHash } from "../src/core/hash.js";
 import {
   codecs,
-  createCounterStore,
   createHashStore,
   createKeyValueStore,
   createListStore,
   createSetStore,
   createSortedSetStore,
-  createStringStore,
   type FullRedisClient,
   type RedisClient,
   RedisServerError
@@ -29,6 +27,7 @@ import {
   stringOrNullReply
 } from "../src/core/transaction.js";
 import { benni } from "../src/index.js";
+import { kvResource } from "./fake-client.js";
 
 export type RedisClientFactory = () => RedisClient;
 
@@ -233,9 +232,9 @@ export async function expectRedisClientContract(
   });
   const profileStore = createKeyValueStore(client, profiles);
   const texts = defineKeyspace("benni:text", codecs.string());
-  const textStore = createStringStore(client, texts);
+  const textStore = kvResource(client, texts);
   const counters = defineKeyspace("benni:counter", codecs.number());
-  const counterStore = createCounterStore(client, counters);
+  const counterStore = kvResource(client, counters);
   const roles = defineSet("benni:roles", codecs.string());
   const roleStore = createSetStore(client, roles);
   const userStore = createHashStore(client, users);
