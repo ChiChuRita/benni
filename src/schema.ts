@@ -153,6 +153,11 @@ export type { ScriptOptions, ScriptSchema } from "./core/script.js";
  * script once and executes cached `EVALSHA`.
  */
 export { script } from "./core/script.js";
+// The primitives declare themselves the same way the data structures do, so a
+// cache or a queue is reachable by name through `redis.query` and needs no
+// client of its own. Code that holds a client but no bound schema module
+// reaches one with `benni({ client }).store(lock("order", { ... }))`.
+export type { BudgetSchema } from "./primitives/budget.js";
 /**
  * A spend budget schema: units per sliding window, with reservations.
  * @example
@@ -161,6 +166,7 @@ export { script } from "./core/script.js";
  * ```
  */
 export { defineBudget as budget } from "./primitives/budget.js";
+export type { CacheSchema } from "./primitives/cache.js";
 /**
  * A read-through cache schema with stampede protection.
  * @example
@@ -169,25 +175,16 @@ export { defineBudget as budget } from "./primitives/budget.js";
  * ```
  */
 export { defineCache as cache } from "./primitives/cache.js";
+export type { IdempotencySchema } from "./primitives/idempotency.js";
 /** An idempotency schema: run an effect once per key, replay its result. */
 export { defineIdempotency as idempotency } from "./primitives/idempotency.js";
-// The primitives declare themselves the same way the data structures do, so a
-// cache or a queue is reachable by name through `redis.query` and needs no
-// client of its own. `benni/primitives` keeps the client-taking form
-// (`cache(client, options)`) for code that holds no handle.
-export type {
-  BudgetSchema,
-  CacheSchema,
-  IdempotencySchema,
-  LockSchema,
-  QueueSchema,
-  RatelimitSchema,
-  SemaphoreSchema
-} from "./primitives/index.js";
+export type { LockSchema } from "./primitives/lock.js";
 /** A distributed lock schema: one holder per id, with lease renewal. */
 export { defineLock as lock } from "./primitives/lock.js";
+export type { QueueSchema } from "./primitives/queue.js";
 /** A job queue schema: typed payloads, leases, and a resumable output stream. */
 export { defineQueue as queue } from "./primitives/queue.js";
+export type { RatelimitSchema } from "./primitives/ratelimit.js";
 /**
  * A sliding-window rate-limit schema.
  * @example
@@ -196,6 +193,7 @@ export { defineQueue as queue } from "./primitives/queue.js";
  * ```
  */
 export { defineRatelimit as ratelimit } from "./primitives/ratelimit.js";
+export type { SemaphoreSchema } from "./primitives/semaphore.js";
 /** A semaphore schema: `lock` with a number, for N concurrent holders. */
 export { defineSemaphore as semaphore } from "./primitives/semaphore.js";
 

@@ -1,8 +1,8 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
+import { BudgetWindowRolledError } from "./errors.js";
 
 const DEFAULT_PREFIX = "budget";
 const DEFAULT_HOLD_TTL_MS = 120_000;
@@ -335,25 +335,6 @@ export type BudgetResult = {
   readonly retryAfterMs: number;
 };
 
-/**
- * Thrown when the window rolled over under every attempt, which takes a
- * process stalled for longer than `windowMs` between building the keys and the
- * script running. Nothing was applied, so the call is safe to retry, and a
- * hold whose `settle` throws this is still usable.
- */
-export class BudgetWindowRolledError extends Error {
-  readonly id: string;
-  constructor(id: string, windowMs: number) {
-    super(
-      `The budget window rolled over on every attempt for "${id}". This ` +
-        `process was stalled for longer than windowMs (${windowMs}) between ` +
-        "building the keys and the script running; nothing was applied."
-    );
-    this.name = "BudgetWindowRolledError";
-    this.id = id;
-  }
-}
-
 /** A held share of the budget. Settle it with the real cost, or release it. */
 export type BudgetHold = {
   readonly id: string;
@@ -389,7 +370,8 @@ export type BudgetHold = {
  * "100 requests/minute" caps nothing you actually care about.
  *
  * ```ts
- * const budgets = budget(client, { limit: 2_000_000, windowMs: 86_400_000 });
+ * // budget("tokens", { limit: 2_000_000, windowMs: 86_400_000 })
+ * const budgets = redis.query.tokens;
  *
  * // Cost known up front.
  * const { ok } = await budgets.charge(userId, promptTokens);
@@ -427,7 +409,7 @@ export type BudgetHold = {
  *
  * @experimental
  */
-function createBudget(client: RedisClient, options: BudgetOptions) {
+export function createBudget(client: RedisClient, options: BudgetOptions) {
   const limit = positiveInt(options.limit, "limit");
   const windowMs = positiveInt(options.windowMs, "windowMs");
   const prefix = options.prefix ?? DEFAULT_PREFIX;
@@ -663,39 +645,11 @@ function positiveInt(value: number, name: string): number {
 }
 
 /**
- * The budget {@link budget} returns.
+ * A budget, as `redis.query.<name>` returns it for a {@link BudgetSchema}.
  *
  * @experimental
  */
 export type BudgetStore = ReturnType<typeof createBudget>;
-
-/** {@link BudgetOptions} plus the client, for the single-argument form. */
-export type BudgetConfig = BudgetOptions & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-/**
- * A cost-weighted spend limit: tokens, cents, or credits per window.
- *
- * Experimental and approximate: up to about twice the limit can land inside
- * one sliding window, buckets turn over on Unix-epoch (UTC) boundaries, and
- * every call walks the id's live holds (up to `maxHolds`).
- *
- * @experimental
- */
-export function budget(config: BudgetConfig): BudgetStore;
-export function budget(
-  client: ClientSource,
-  options: BudgetOptions
-): BudgetStore;
-export function budget(
-  source: ClientSource | BudgetConfig,
-  options?: BudgetOptions
-): BudgetStore {
-  const args = clientArgs<BudgetOptions>(source, options);
-  return createBudget(args.client, args.options);
-}
 
 /**
  * A budget declared as a schema value, so it lands in `redis.query` next to
@@ -725,7 +679,7 @@ const budgetBinding: StoreBinding = {
  */
 export function defineBudget(
   prefix: string,
-  options: BudgetOptions
+  options: Omit<BudgetOptions, "prefix">
 ): BudgetSchema {
   return withStore(
     { ...options, kind: "budget", prefix } as BudgetSchema,

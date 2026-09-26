@@ -10,7 +10,6 @@ export default defineConfig({
     "ioredis/index": "src/ioredis/index.ts",
     "bun/index": "src/bun/index.ts",
     "upstash/index": "src/upstash/index.ts",
-    "primitives/index": "src/primitives/index.ts",
     "next/index": "src/next/index.ts",
     "hono/index": "src/hono/index.ts",
     "zod/index": "src/zod/index.ts"

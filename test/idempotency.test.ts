@@ -18,9 +18,9 @@ import { node } from "../src/node/index.js";
 import {
   IdempotencyFingerprintMismatchError,
   IdempotencyLeaseLostError,
-  IdempotencyNotRecordedError,
-  idempotency
-} from "../src/primitives/index.js";
+  IdempotencyNotRecordedError
+} from "../src/primitives/errors.js";
+import { createIdempotency } from "../src/primitives/idempotency.js";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const TOKEN = "00000000-0000-4000-8000-000000000000"; // 36 characters
@@ -81,7 +81,7 @@ describe("idempotency claim renewal", () => {
     // the key free and charged the card a second time.
     const commands: RedisCommand[] = [];
     const client = idemFake({ commands });
-    const once = idempotency<string>(client);
+    const once = createIdempotency<string>(client);
 
     const charge = once.run("k", () => pause(35_000).then(() => "rcpt"));
     await vi.advanceTimersByTimeAsync(35_000);
@@ -100,7 +100,7 @@ describe("idempotency claim renewal", () => {
     // Renewal finds another caller's marker in place of ours; the complete
     // script, checking the same thing, declines to write.
     const client = idemFake({ commands, extend: () => 0, complete: () => 0 });
-    const once = idempotency<string>(client, { runningTtlMs: 1_000 });
+    const once = createIdempotency<string>(client, { runningTtlMs: 1_000 });
 
     let reason: unknown;
     const charge = once
@@ -124,7 +124,7 @@ describe("idempotency claim renewal", () => {
   it("releases the marker when a handler stopped by the signal throws", async () => {
     const commands: RedisCommand[] = [];
     const client = idemFake({ commands, extend: () => 0 });
-    const once = idempotency<string>(client, { runningTtlMs: 1_000 });
+    const once = createIdempotency<string>(client, { runningTtlMs: 1_000 });
 
     const charge = once
       .run(
@@ -146,7 +146,7 @@ describe("idempotency claim renewal", () => {
 describe("idempotency fingerprints", () => {
   it("records the fingerprint with the marker and with the result", async () => {
     const commands: RedisCommand[] = [];
-    const once = idempotency<string>(idemFake({ commands }));
+    const once = createIdempotency<string>(idemFake({ commands }));
 
     await once.run("k", () => "rcpt", { fingerprint: "sha256:abc" });
 
@@ -163,7 +163,7 @@ describe("idempotency fingerprints", () => {
 
   it("refuses to replay a result recorded for a different request", async () => {
     const handler = vi.fn(() => "second");
-    const once = idempotency<string>(
+    const once = createIdempotency<string>(
       idemFake({
         commands: [],
         claim: () => null,
@@ -179,7 +179,7 @@ describe("idempotency fingerprints", () => {
 
   it("refuses at once while a different request holds the key", async () => {
     // No point waiting for a result the fingerprint would reject anyway.
-    const once = idempotency<string>(
+    const once = createIdempotency<string>(
       idemFake({
         commands: [],
         claim: () => null,
@@ -193,7 +193,7 @@ describe("idempotency fingerprints", () => {
   });
 
   it("replays when the fingerprints match", async () => {
-    const once = idempotency<string>(
+    const once = createIdempotency<string>(
       idemFake({
         commands: [],
         claim: () => null,
@@ -211,14 +211,14 @@ describe("idempotency fingerprints", () => {
   it("compares only when both calls supplied one", async () => {
     // A record written without a fingerprint, by this call or by code that
     // predates the option, is still replayed; so is one read without it.
-    const plain = idempotency<string>(
+    const plain = createIdempotency<string>(
       idemFake({ commands: [], claim: () => null, get: () => 'D"first"' })
     );
     await expect(
       plain.run("k", () => "x", { fingerprint: "body2" })
     ).resolves.toEqual({ value: "first", replayed: true });
 
-    const fingerprinted = idempotency<string>(
+    const fingerprinted = createIdempotency<string>(
       idemFake({
         commands: [],
         claim: () => null,
@@ -233,7 +233,7 @@ describe("idempotency fingerprints", () => {
 
   it("rejects an empty fingerprint before touching Redis", async () => {
     const commands: RedisCommand[] = [];
-    const once = idempotency<string>(idemFake({ commands }));
+    const once = createIdempotency<string>(idemFake({ commands }));
     await expect(
       once.run("k", () => "x", { fingerprint: "" })
     ).rejects.toBeInstanceOf(ValidationError);
@@ -259,7 +259,7 @@ describeRedis("idempotency (live)", () => {
     // The 35s charge under a 30s marker, scaled down. A retry arriving after
     // the marker's first TTL used to find the key free and run the handler
     // again; it now waits for the first result and replays it.
-    const once = idempotency<string>(client, {
+    const once = createIdempotency<string>(client, {
       prefix: run,
       runningTtlMs: 200,
       waitTimeoutMs: 5_000,
@@ -300,8 +300,8 @@ describeRedis("idempotency (live)", () => {
       }
     };
     const options = { prefix: `${run}:lost`, runningTtlMs: 200, pollMs: 20 };
-    const holder = idempotency<string>(partitioned, options);
-    const other = idempotency<string>(client, options);
+    const holder = createIdempotency<string>(partitioned, options);
+    const other = createIdempotency<string>(client, options);
 
     let aborted = false;
     const first = holder
@@ -328,7 +328,7 @@ describeRedis("idempotency (live)", () => {
   });
 
   it("refuses a reused key with a different fingerprint", async () => {
-    const once = idempotency<string>(client, { prefix: `${run}:fp` });
+    const once = createIdempotency<string>(client, { prefix: `${run}:fp` });
     await once.run("k", () => "first", { fingerprint: "body1" });
 
     await expect(

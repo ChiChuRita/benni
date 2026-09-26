@@ -3,15 +3,15 @@ import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
 import {
   SemaphoreLeaseLostError,
-  SemaphoreNotAcquiredError,
-  semaphore
-} from "../src/primitives/index.js";
+  SemaphoreNotAcquiredError
+} from "../src/primitives/errors.js";
+import { createSemaphore } from "../src/primitives/semaphore.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 /**
- * The lease behaviour of `semaphore().run()`, against a real server: renewal has
+ * The lease behaviour of `createSemaphore().run()`, against a real server: renewal has
  * to beat a real expiry-and-prune, and a lost slot has to be reported rather
  * than let a body keep running over the limit. Short leases throughout so the
  * suite stays quick.
@@ -31,7 +31,7 @@ describeRedis("semaphore lease (live)", () => {
 
   it("holds the slot through a critical section far longer than leaseMs", async () => {
     const prefix = `${run}:renew`;
-    const slots = semaphore(client, { prefix, limit: 1, leaseMs: 200 }); // 50ms.
+    const slots = createSemaphore(client, { prefix, limit: 1, leaseMs: 200 }); // 50ms.
     const key = `${prefix}:openai`;
 
     const result = await slots.run("openai", async (held) => {
@@ -53,7 +53,7 @@ describeRedis("semaphore lease (live)", () => {
 
   it("reports a lost slot instead of resolving as if the body was inside the limit", async () => {
     const prefix = `${run}:lost`;
-    const slots = semaphore(client, { prefix, limit: 3, leaseMs: 200 });
+    const slots = createSemaphore(client, { prefix, limit: 3, leaseMs: 200 });
     const key = `${prefix}:openai`;
 
     let abortReason: unknown;
@@ -84,7 +84,7 @@ describeRedis("semaphore lease (live)", () => {
     // Bodies run for roughly three leases each, so only renewal keeps the count
     // honest. Without it every holder would lose its slot mid-body and the next
     // waiting caller would be let in on top of it.
-    const slots = semaphore(client, { prefix, limit: 3, leaseMs: 150 });
+    const slots = createSemaphore(client, { prefix, limit: 3, leaseMs: 150 });
     let inside = 0;
     let maxInside = 0;
     let maxCounted = 0;
@@ -113,7 +113,7 @@ describeRedis("semaphore lease (live)", () => {
 
   it("lets the slot lapse when renewal is switched off (the documented opt-out)", async () => {
     const prefix = `${run}:optout`;
-    const slots = semaphore(client, { prefix, limit: 1, leaseMs: 150 });
+    const slots = createSemaphore(client, { prefix, limit: 1, leaseMs: 150 });
 
     const result = await slots.run(
       "openai",
@@ -136,7 +136,7 @@ describeRedis("semaphore lease (live)", () => {
 
   it("still fails fast under contention with the default retries", async () => {
     const prefix = `${run}:failfast`;
-    const slots = semaphore(client, { prefix, limit: 1, leaseMs: 1_000 });
+    const slots = createSemaphore(client, { prefix, limit: 1, leaseMs: 1_000 });
 
     const outcomes = await Promise.allSettled(
       Array.from({ length: 6 }, () => slots.run("openai", () => pause(100)))

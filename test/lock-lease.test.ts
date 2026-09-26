@@ -8,9 +8,9 @@ import type {
 } from "../src/core/types.js";
 import {
   LockLeaseLostError,
-  LockNotAcquiredError,
-  lock
-} from "../src/primitives/index.js";
+  LockNotAcquiredError
+} from "../src/primitives/errors.js";
+import { createLock } from "../src/primitives/lock.js";
 import { fakeClient } from "./fake-client.js";
 
 // Every test here runs on vitest's fake clock, `performance.now()` included,
@@ -104,7 +104,7 @@ function lockFake(behavior?: {
 }
 
 /**
- * `lock().run()` used to acquire with a TTL and never renew it, so a critical
+ * `createLock().run()` used to acquire with a TTL and never renew it, so a critical
  * section that outlived `ttlMs` silently lost the lock: the key expired, another
  * caller took it, and the body kept running as though it were still exclusive.
  * These pin the renewal, the loss report, and the timer hygiene that fixes it.
@@ -112,7 +112,7 @@ function lockFake(behavior?: {
 describe("lock.run lease renewal", () => {
   it("keeps the lock while a critical section outlives ttlMs", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 60 });
+    const locks = createLock(fake.client, { ttlMs: 60 });
 
     const result = await settle(
       locks.run(
@@ -145,7 +145,7 @@ describe("lock.run lease renewal", () => {
 
   it("defaults the renewal interval to a quarter of ttlMs", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 100 }); // 25ms heartbeat.
+    const locks = createLock(fake.client, { ttlMs: 100 }); // 25ms heartbeat.
 
     await settle(locks.run("res", () => sleep(120)));
 
@@ -158,7 +158,7 @@ describe("lock.run lease renewal", () => {
 
   it("adds no round trips when the body finishes inside one interval", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     await expect(settle(locks.run("res", async () => 7))).resolves.toBe(7);
 
@@ -174,7 +174,7 @@ describe("lock.run lease renewal", () => {
 
   it("does not renew when renewal is switched off", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 20 });
+    const locks = createLock(fake.client, { ttlMs: 20 });
 
     await expect(
       settle(
@@ -188,7 +188,7 @@ describe("lock.run lease renewal", () => {
 
   it("validates heartbeatMs before taking the lock", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     await expect(
       locks.run("res", async () => 1, { heartbeatMs: 0 })
@@ -202,7 +202,7 @@ describe("lock.run lease renewal", () => {
     // into failing healthy work. The deadline moves forward with each successful
     // renewal, so five TTLs of body is unremarkable.
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 100 }); // 25ms heartbeat.
+    const locks = createLock(fake.client, { ttlMs: 100 }); // 25ms heartbeat.
 
     await expect(
       settle(locks.run("res", () => sleep(500).then(() => "ok")))
@@ -221,7 +221,7 @@ describe("lock.run lease renewal", () => {
 describe("lock.run heartbeat bounds", () => {
   it("rejects an explicit heartbeatMs that is not meaningfully below ttlMs", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 300 });
+    const locks = createLock(fake.client, { ttlMs: 300 });
 
     for (const heartbeatMs of [151, 300, 600]) {
       await expect(
@@ -239,7 +239,7 @@ describe("lock.run heartbeat bounds", () => {
 
   it("accepts a heartbeatMs at exactly half of ttlMs", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 300 });
+    const locks = createLock(fake.client, { ttlMs: 300 });
 
     // Half still leaves room for one renewal and one retry before expiry.
     await expect(
@@ -249,7 +249,7 @@ describe("lock.run heartbeat bounds", () => {
 
   it("checks the heartbeat against this run's ttlMs, not the store default", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 10_000 });
+    const locks = createLock(fake.client, { ttlMs: 10_000 });
 
     await expect(
       locks.run("res", async () => 1, { ttlMs: 100, heartbeatMs: 80 })
@@ -261,7 +261,7 @@ describe("lock.run heartbeat bounds", () => {
     // explicitly passed value is checked, so an absurd but working TTL keeps
     // working rather than being rejected by a rule about the caller's intent.
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 1 });
+    const locks = createLock(fake.client, { ttlMs: 1 });
 
     const outcome = await settle(locks.run("res", async () => "ok")).catch(
       (error: unknown) => error
@@ -276,7 +276,7 @@ describe("lock.run heartbeat bounds", () => {
 describe("lock.run lost lease", () => {
   it("rejects with LockLeaseLostError even when the body resolves", async () => {
     const fake = lockFake({ extend: () => 0 });
-    const locks = lock(fake.client, { ttlMs: 60 });
+    const locks = createLock(fake.client, { ttlMs: 60 });
 
     let abortReason: unknown;
     const promise = settle(
@@ -300,7 +300,7 @@ describe("lock.run lost lease", () => {
 
   it("aborts the handle's signal so the body can stop early", async () => {
     const fake = lockFake({ extend: () => 0 });
-    const locks = lock(fake.client, { ttlMs: 10_000 });
+    const locks = createLock(fake.client, { ttlMs: 10_000 });
 
     await expect(
       settle(
@@ -322,7 +322,7 @@ describe("lock.run lost lease", () => {
 
   it("aborts the signal when a manual extend finds the lock gone", async () => {
     const fake = lockFake({ extend: () => 0 });
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     const handle = await locks.acquire("res");
     expect(handle?.signal.aborted).toBe(false);
@@ -338,7 +338,7 @@ describe("lock.run lost lease", () => {
         return 1;
       }
     });
-    const locks = lock(fake.client, { ttlMs: 200 });
+    const locks = createLock(fake.client, { ttlMs: 200 });
     const errors: unknown[] = [];
 
     await expect(
@@ -360,7 +360,7 @@ describe("lock.run lost lease", () => {
         throw new Error("unreachable");
       }
     });
-    const locks = lock(fake.client, { ttlMs: 40 });
+    const locks = createLock(fake.client, { ttlMs: 40 });
     const errors: unknown[] = [];
 
     await expect(
@@ -379,7 +379,7 @@ describe("lock.run lost lease", () => {
     // hides: no further renewal is even attempted, so only the deadline can
     // notice the lock has lapsed.
     const fake = lockFake({ extend: () => new Promise<RedisReply>(() => {}) });
-    const locks = lock(fake.client, { ttlMs: 40 });
+    const locks = createLock(fake.client, { ttlMs: 40 });
 
     await expect(
       settle(
@@ -391,7 +391,7 @@ describe("lock.run lost lease", () => {
 
   it("does not report a deliberate release as a lost lease", async () => {
     const fake = lockFake({ extend: () => 0 });
-    const locks = lock(fake.client, { ttlMs: 60 });
+    const locks = createLock(fake.client, { ttlMs: 60 });
 
     await expect(
       settle(
@@ -417,7 +417,7 @@ describe("lock.run lost lease", () => {
     // there first with `lease.lost` still false. The deadline has to be read at
     // completion too, or `run()` reports a success for an expired lock.
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 60 });
+    const locks = createLock(fake.client, { ttlMs: 60 });
 
     await expect(
       settle(
@@ -439,7 +439,7 @@ describe("lock.run lost lease", () => {
     // knows, because it runs the same token check `extend` does. Its answer used
     // to be discarded.
     const fake = lockFake({ release: () => 0 });
-    const locks = lock(fake.client, { ttlMs: 10_000 });
+    const locks = createLock(fake.client, { ttlMs: 10_000 });
 
     await expect(
       settle(locks.run("res", async () => "ok"))
@@ -460,7 +460,7 @@ describe("lock.run lost lease", () => {
           throw new Error("connection reset");
         }
       });
-      const locks = lock(fake.client, { ttlMs: 200 });
+      const locks = createLock(fake.client, { ttlMs: 200 });
       let hookCalls = 0;
 
       await expect(
@@ -494,7 +494,7 @@ describe("lock.run lost lease", () => {
           setTimeout(() => reject(new Error("late")), 80);
         })
     });
-    const locks = lock(fake.client, { ttlMs: 200 });
+    const locks = createLock(fake.client, { ttlMs: 200 });
     const errors: unknown[] = [];
 
     await expect(
@@ -516,7 +516,7 @@ describe("lock.run lost lease", () => {
     // Only the acquire's load and run are queued; the release's SCRIPT LOAD
     // hits an empty queue and rejects — run() must still resolve with fn's
     // result.
-    const locks = lock(fakeClient([], ["sha-acquire", 1]));
+    const locks = createLock(fakeClient([], ["sha-acquire", 1]));
     await expect(locks.run("r", async () => 7)).resolves.toBe(7);
   });
 });
@@ -542,7 +542,7 @@ describe("lock.run timer hygiene", () => {
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 80 });
+    const locks = createLock(fake.client, { ttlMs: 80 });
 
     let refDuringBody: boolean | undefined;
     await settle(
@@ -567,7 +567,7 @@ describe("lock.run timer hygiene", () => {
   it("starts no timer at all when renewal is switched off", async () => {
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const fake = lockFake();
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     await settle(locks.run("res", async () => 1, { heartbeatMs: false }));
 
@@ -592,7 +592,7 @@ describe("lock.run timer hygiene", () => {
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 
     const fake = lockFake({ extend: () => 0 });
-    const locks = lock(fake.client, { ttlMs: 10_000 });
+    const locks = createLock(fake.client, { ttlMs: 10_000 });
 
     let lostReason: unknown;
     // Never settles and never checks the signal, so `run()` stays pending.
@@ -622,7 +622,7 @@ describe("lock lease deadlines use a monotonic clock", () => {
     // used to put every deadline in the past, so a healthy, renewed lock was
     // reported lost and its body's result thrown away.
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 100 });
+    const locks = createLock(fake.client, { ttlMs: 100 });
 
     await expect(
       settle(
@@ -641,7 +641,7 @@ describe("lock lease deadlines use a monotonic clock", () => {
     // lease look live for the size of the step. Renewals hang, so only the
     // deadline can notice, and it must read time that only moves forward.
     const fake = lockFake({ extend: () => new Promise<RedisReply>(() => {}) });
-    const locks = lock(fake.client, { ttlMs: 40 });
+    const locks = createLock(fake.client, { ttlMs: 40 });
 
     await expect(
       settle(
@@ -662,7 +662,7 @@ describe("lock lease deadlines use a monotonic clock", () => {
 describe("lock contention defaults", () => {
   it("still fails fast when the lock is held and retries are default", async () => {
     const fake = lockFake({ acquire: () => 0 });
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     await expect(locks.run("held", async () => 1)).rejects.toBeInstanceOf(
       LockNotAcquiredError
@@ -675,7 +675,7 @@ describe("lock contention defaults", () => {
     // Fixed delays kept contenders that collided once waking in lockstep and
     // colliding again. Each wait is spread over [0.5, 1.5) × retryDelayMs.
     const fake = lockFake({ acquire: () => 0 });
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
     // The first wait draws the bottom of the range, the second the top.
     vi.spyOn(Math, "random").mockReturnValueOnce(0).mockReturnValueOnce(0.999);
 
@@ -693,7 +693,7 @@ describe("lock contention defaults", () => {
 
   it("bounds the whole wait with waitTimeoutMs, trying once more at the deadline", async () => {
     const fake = lockFake({ acquire: () => 0 });
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
     vi.spyOn(Math, "random").mockReturnValue(0.5); // Exactly retryDelayMs.
 
     let outcome: unknown = "pending";
@@ -712,7 +712,7 @@ describe("lock contention defaults", () => {
 
   it("lets retries stop the wait before waitTimeoutMs does", async () => {
     const fake = lockFake({ acquire: () => 0 });
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     await expect(
       settle(
@@ -728,7 +728,7 @@ describe("lock contention defaults", () => {
 
   it("rejects a negative waitTimeoutMs before taking anything", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client);
+    const locks = createLock(fake.client);
 
     await expect(
       locks.run("res", async () => 1, { waitTimeoutMs: -1 })
@@ -740,7 +740,7 @@ describe("lock contention defaults", () => {
 describe("lock extend", () => {
   it("re-applies this acquisition's ttlMs, not the store default", async () => {
     const fake = lockFake();
-    const locks = lock(fake.client, { ttlMs: 30_000 });
+    const locks = createLock(fake.client, { ttlMs: 30_000 });
 
     const handle = await locks.acquire("res", { ttlMs: 5_000 });
     await expect(handle?.extend()).resolves.toBe(true);
@@ -752,7 +752,7 @@ describe("lock fencing token", () => {
   it("draws the fence in the acquiring script and exposes it on the handle", async () => {
     let fence = 41;
     const fake = lockFake({ acquire: () => ++fence });
-    const locks = lock(fake.client, { ttlMs: 10_000 });
+    const locks = createLock(fake.client, { ttlMs: 10_000 });
 
     const first = await locks.acquire("order:42");
     expect(first?.fence).toBe(42);
@@ -778,7 +778,7 @@ describe("lock fencing token", () => {
       ["{tenant}:lock", "x"]
     ] as const) {
       const fake = lockFake();
-      await lock(fake.client, { prefix }).acquire(id);
+      await createLock(fake.client, { prefix }).acquire(id);
       const [, , , key, fenceKey] = fake.acquires()[0] ?? [];
       expect(slotOf(String(fenceKey))).toBe(slotOf(String(key)));
     }
@@ -789,7 +789,7 @@ describe("lock fencing token", () => {
     // would end the tag at that "}". Rejected before any round trip instead of
     // failing with CROSSSLOT on a cluster only.
     const fake = lockFake();
-    await expect(lock(fake.client).acquire("a}b")).rejects.toBeInstanceOf(
+    await expect(createLock(fake.client).acquire("a}b")).rejects.toBeInstanceOf(
       ValidationError
     );
     expect(fake.commands).toHaveLength(0);

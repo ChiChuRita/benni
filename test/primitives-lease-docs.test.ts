@@ -1,16 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { RedisClient } from "../src/core/types.js";
 import {
+  benni,
   LockLeaseLostError,
   LockNotAcquiredError,
-  lock,
   SemaphoreLeaseLostError,
-  SemaphoreNotAcquiredError,
-  semaphore
-} from "../src/primitives/index.js";
+  SemaphoreNotAcquiredError
+} from "../src/index.js";
+import { lock, semaphore } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
-const client: RedisClient = fakeClient([], []);
+// The pages declare these in the schema module and reach them by name.
+const redis = benni({
+  client: fakeClient([], []),
+  schema: {
+    locks: lock("lock", { ttlMs: 10_000 }),
+    slots: semaphore("semaphore", { limit: 20, leaseMs: 60_000 })
+  }
+});
 
 type Receipt = { id: string };
 declare const prompt: string;
@@ -45,7 +51,7 @@ declare function generateText(input: {
  */
 function docsSnippets() {
   // --- primitives/lock -----------------------------------------------------
-  const locks = lock(client, { ttlMs: 10_000 });
+  const locks = redis.query.locks;
 
   void (async () => {
     await locks.run("order:42", async () => {
@@ -136,7 +142,7 @@ function docsSnippets() {
   });
 
   // --- primitives/semaphore ------------------------------------------------
-  const slots = semaphore(client, { limit: 20, leaseMs: 60_000 });
+  const slots = redis.query.slots;
 
   void (async () => {
     await slots.run("openai", work, { retries: 100, retryDelayMs: 50 });
@@ -218,8 +224,8 @@ void docsSnippets;
 
 describe("lease docs snippets", () => {
   it("reference the lease surface both pages document", () => {
-    expect(typeof lock).toBe("function");
-    expect(typeof semaphore).toBe("function");
+    expect(typeof redis.query.locks.run).toBe("function");
+    expect(typeof redis.query.slots.run).toBe("function");
     expect(new LockLeaseLostError("lock:x").key).toBe("lock:x");
     expect(new SemaphoreLeaseLostError("semaphore:x", 3).limit).toBe(3);
   });

@@ -1,10 +1,11 @@
-// Public API of the root entrypoint: `benni()`, its errors, and the types an
-// app names. Schema declarations live under `benni/schema`; the adapter-author
+// Public API of the root entrypoint: `benni()`, every error class (the
+// primitives' included), and the types an app names. Schema declarations live under `benni/schema`; the adapter-author
 // surface (the client contract, `resolveClient`, the server-error normalizer,
 // the script runner, the store builders) lives under `benni/core`.
 
 // Codecs.
 export { codecs } from "./core/codecs.js";
+export type { CounterIncrOptions } from "./core/counter.js";
 // Errors.
 export {
   PartialRecordError,
@@ -76,3 +77,71 @@ export {
   type SessionSchemaKind,
   type StorableSchema
 } from "./database.js";
+// Type-only: naming a primitive's module as a value here would pull its Lua
+// and lease logic into every bundle. The store and result types an app
+// names in its own signatures; the stores themselves come from `redis.query`.
+export type {
+  BudgetHold,
+  BudgetResult,
+  BudgetStore
+} from "./primitives/budget.js";
+export type { CacheStore } from "./primitives/cache.js";
+// The primitives' errors, from a module that holds only the classes, so
+// importing one to `instanceof` it costs the class and nothing more.
+export {
+  BudgetWindowRolledError,
+  CacheWaitTimeoutError,
+  IdempotencyConflictError,
+  IdempotencyFingerprintMismatchError,
+  IdempotencyLeaseLostError,
+  IdempotencyNotRecordedError,
+  IdempotencyTimeoutError,
+  JobCancelledError,
+  JobFailedError,
+  JobLeaseLostError,
+  JobNotFoundError,
+  LockLeaseLostError,
+  LockNotAcquiredError,
+  RetryJobError,
+  SemaphoreLeaseLostError,
+  SemaphoreNotAcquiredError,
+  TerminalJobError,
+  WorkerStoppedError
+} from "./primitives/errors.js";
+export type {
+  IdempotencyContext,
+  IdempotencyRunOptions,
+  IdempotencyStore,
+  IdempotentResult
+} from "./primitives/idempotency.js";
+export type {
+  AcquireOptions,
+  LockHandle,
+  LockRunOptions,
+  LockStore
+} from "./primitives/lock.js";
+export type {
+  EnqueueOptions,
+  EnqueueResult,
+  Job,
+  JobContext,
+  JobEvent,
+  JobStatus,
+  QueueStats,
+  QueueStore,
+  TerminalJobEvent,
+  WatchOptions,
+  Worker,
+  WorkerOptions,
+  WorkerStopOptions
+} from "./primitives/queue.js";
+export type {
+  RatelimitResult,
+  RatelimitStore
+} from "./primitives/ratelimit.js";
+export type {
+  SemaphoreAcquireOptions,
+  SemaphoreHandle,
+  SemaphoreRunOptions,
+  SemaphoreStore
+} from "./primitives/semaphore.js";

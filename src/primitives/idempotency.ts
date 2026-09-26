@@ -1,9 +1,15 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
 import type { Codec, InferAnchors, RedisClient } from "../core/types.js";
+import {
+  IdempotencyConflictError,
+  IdempotencyFingerprintMismatchError,
+  IdempotencyLeaseLostError,
+  IdempotencyNotRecordedError,
+  IdempotencyTimeoutError
+} from "./errors.js";
 import {
   createLease,
   extendIfHeldScript,
@@ -87,109 +93,6 @@ function doneRecord(encoded: string, fingerprint: string | undefined): string {
   return fingerprint === undefined
     ? `${DONE}${encoded}`
     : `${DONE_FINGERPRINTED}${fingerprint.length}:${fingerprint}${encoded}`;
-}
-
-/** Thrown when another caller holds the key and `onConflict` is `"throw"`. */
-export class IdempotencyConflictError extends Error {
-  readonly key: string;
-  constructor(key: string) {
-    super(
-      `Another request is already running for idempotency key "${key}". ` +
-        'Retry once it finishes, or use onConflict: "wait".'
-    );
-    this.name = "IdempotencyConflictError";
-    this.key = key;
-  }
-}
-
-/**
- * Thrown when the handler succeeded but its result could not be stored, so the
- * call is **not** protected against a repeat.
- *
- * The side effect happened. What failed is the record of it, which means a
- * later caller with the same key will run the handler again. Treat it as
- * indeterminate rather than as a failure: the work is done, and `value` carries
- * the result if you can use it (return it to the client, write it somewhere
- * durable), but do not assume a retry is safe.
- *
- * The usual cause is a codec that cannot encode the result, a Redis blip
- * between finishing the work and recording it, or a lost claim: when `cause`
- * is an {@link IdempotencyLeaseLostError}, another caller may have run the
- * handler too.
- */
-export class IdempotencyNotRecordedError<T = unknown> extends Error {
-  readonly key: string;
-  /** The handler's result. The effect ran; only storing it failed. */
-  readonly value: T;
-  constructor(key: string, value: T, cause: unknown) {
-    super(
-      `The handler for idempotency key "${key}" succeeded but its result ` +
-        "could not be stored, so a later call with this key will run it " +
-        "again. The side effect has already happened.",
-      { cause }
-    );
-    this.name = "IdempotencyNotRecordedError";
-    this.key = key;
-    this.value = value;
-  }
-}
-
-/**
- * The running marker lapsed, or was taken over, while the handler was still
- * running: the heartbeat that renews it failed for a whole `runningTtlMs`
- * (Redis unreachable, the event loop blocked) or found another caller's marker
- * in its place.
- *
- * From that moment another caller with the same key may run the handler too.
- * It is the abort reason on the handler's `signal`, so an effect not yet
- * committed can be stopped; if the handler resolves anyway, `run` throws
- * {@link IdempotencyNotRecordedError} with this as its `cause`.
- */
-export class IdempotencyLeaseLostError extends Error {
-  readonly key: string;
-  constructor(key: string) {
-    super(
-      `Lost the running marker for idempotency key "${key}" while the ` +
-        "handler was still running, so another caller may run it too. Raise " +
-        "runningTtlMs if Redis blips or the event loop stalls for that long."
-    );
-    this.name = "IdempotencyLeaseLostError";
-    this.key = key;
-  }
-}
-
-/**
- * Thrown when a key is reused with a different request: the fingerprint
- * passed to `run` does not match the one recorded with the key. Nothing ran.
- *
- * The Stripe contract: an idempotency key names one request, so replaying its
- * stored result for a *different* body would answer a question nobody asked.
- * Treat it as a client bug (HTTP 422), not as a retry.
- */
-export class IdempotencyFingerprintMismatchError extends Error {
-  readonly key: string;
-  constructor(key: string) {
-    super(
-      `Idempotency key "${key}" was already used with a different request ` +
-        "(the fingerprint does not match the one recorded with it). Send a " +
-        "new key for a new request."
-    );
-    this.name = "IdempotencyFingerprintMismatchError";
-    this.key = key;
-  }
-}
-
-/** Thrown when `onConflict: "wait"` gave up before the holder finished. */
-export class IdempotencyTimeoutError extends Error {
-  readonly key: string;
-  constructor(key: string, waitedMs: number) {
-    super(
-      `Timed out after ${waitedMs}ms waiting on idempotency key "${key}". ` +
-        "The original request is still running or died without releasing."
-    );
-    this.name = "IdempotencyTimeoutError";
-    this.key = key;
-  }
 }
 
 export type IdempotencyOptions<T> = {
@@ -288,7 +191,7 @@ export type IdempotentResult<T> = {
  * provider), or record progress inside it. This is an idempotency key, not a
  * transaction.
  */
-function createIdempotency<T>(
+export function createIdempotency<T>(
   client: RedisClient,
   options?: IdempotencyOptions<T>
 ) {
@@ -481,29 +384,8 @@ function createIdempotency<T>(
   };
 }
 
-/** The keyed once-only runner {@link idempotency} returns. */
+/** A keyed once-only runner, as `redis.query.<name>` returns it for a {@link IdempotencySchema}. */
 export type IdempotencyStore<T> = ReturnType<typeof createIdempotency<T>>;
-
-/** {@link IdempotencyOptions} plus the client, for the single-argument form. */
-export type IdempotencyConfig<T> = IdempotencyOptions<T> & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-export function idempotency<T>(
-  config: IdempotencyConfig<T>
-): IdempotencyStore<T>;
-export function idempotency<T>(
-  client: ClientSource,
-  options?: IdempotencyOptions<T>
-): IdempotencyStore<T>;
-export function idempotency<T>(
-  source: ClientSource | IdempotencyConfig<T>,
-  options?: IdempotencyOptions<T>
-): IdempotencyStore<T> {
-  const args = clientArgs<IdempotencyOptions<T>>(source, options);
-  return createIdempotency<T>(args.client, args.options);
-}
 
 /**
  * A once-only runner declared as a schema value, so it lands in `redis.query`
@@ -533,7 +415,7 @@ const idempotencyBinding: StoreBinding = {
  */
 export function defineIdempotency<T>(
   prefix: string,
-  options?: IdempotencyOptions<T>
+  options?: Omit<IdempotencyOptions<T>, "prefix">
 ): IdempotencySchema<T> {
   // The $infer* anchors are type-only phantoms — cast the literal.
   const schema = {

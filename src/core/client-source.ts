@@ -2,9 +2,9 @@ import type { RedisClient, RedisCommand, RedisReply } from "./types.js";
 
 /**
  * Anything that carries a bound client on `raw` — in practice the handle
- * `benni()` returns. Accepting it is what lets `cache({ client: redis })` work
- * instead of forcing `cache(redis.raw, …)` on callers who already hold a handle
- * and would otherwise have to thread two objects through their app.
+ * `benni()` returns. Accepting it is what lets `benni({ client: redis })` and
+ * the Hono and Next.js integrations share a handle's client instead of forcing
+ * `redis.raw` on callers who already hold a handle.
  */
 export type ClientProvider<TClient extends RedisClient = RedisClient> = {
   readonly raw: TClient;
@@ -123,34 +123,4 @@ export async function transactionOrPipeline(
 ): Promise<RedisReply[]> {
   if (client.transaction === undefined) return client.pipeline(commands);
   return client.transaction(commands);
-}
-
-/**
- * Accept either call shape — `f({ client, …options })` or the older
- * `f(client, options)` — and hand back what the implementation needs. Used by
- * the client-taking primitive forms in `benni/primitives`; `benni()` itself
- * takes only the config object.
- *
- * The config form is recognized by having a `client` property and no `send`,
- * which neither a client nor a benni handle has. The config object is passed
- * straight through as the options bag: every option is read by name, so the
- * extra `client` key is inert.
- */
-export function clientArgs<TOptions extends object>(
-  source: ClientSource | (TOptions & { readonly client: ClientSource }),
-  options?: TOptions
-): { client: RedisClient; options: TOptions } {
-  if (
-    typeof source === "object" &&
-    source !== null &&
-    !isClient(source) &&
-    "client" in source
-  ) {
-    const config = source as TOptions & { readonly client: ClientSource };
-    return { client: resolveClient(config.client), options: config };
-  }
-  return {
-    client: resolveClient(source as ClientSource),
-    options: (options ?? ({} as TOptions)) as TOptions
-  };
 }

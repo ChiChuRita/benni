@@ -1,7 +1,7 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
+import { LockLeaseLostError, LockNotAcquiredError } from "./errors.js";
 import {
   acquireWithRetry,
   coLocatedKey,
@@ -109,40 +109,6 @@ export type LockRunOptions = AcquireOptions & {
   readonly onRenewError?: (error: unknown) => void;
 };
 
-/** Thrown by `lock().run()` when the lock cannot be acquired. */
-export class LockNotAcquiredError extends Error {
-  readonly key: string;
-  constructor(key: string) {
-    super(`Could not acquire lock "${key}"`);
-    this.name = "LockNotAcquiredError";
-    this.key = key;
-  }
-}
-
-/**
- * Thrown by `lock().run()` when the lock was lost while `fn` was still
- * running — renewal found the key gone or owned by another token, so the
- * critical section ran without the mutual exclusion it asked for and someone
- * else may have been inside it at the same time.
- *
- * `run()` rejects with this even when `fn` itself resolved: a body that
- * completed without the lock did not complete under the guarantee it was
- * written against, and reporting success would hide exactly that. The same
- * error is the abort reason on {@link LockHandle.signal}, so a body that passes
- * the signal to `fetch` or to the AI SDK stops as soon as the lock is gone
- * rather than finishing work that is no longer protected.
- */
-export class LockLeaseLostError extends Error {
-  readonly key: string;
-  constructor(key: string) {
-    super(
-      `Lost the lock "${key}" before the critical section finished — another caller may hold it now. Raise ttlMs, lower heartbeatMs, or shorten the critical section if this recurs.`
-    );
-    this.name = "LockLeaseLostError";
-    this.key = key;
-  }
-}
-
 export type LockHandle = {
   readonly key: string;
   readonly token: string;
@@ -205,7 +171,7 @@ export type LockHandle = {
  * meant to *serialize* concurrent work — for that, ask for retries:
  *
  * ```ts
- * const locks = lock(client, { ttlMs: 10_000 });
+ * const locks = redis.query.orderLocks; // lock("order", { ttlMs: 10_000 })
  *
  * // Fail fast (default): six concurrent callers means one runs and five throw.
  * try {
@@ -368,24 +334,8 @@ export function createLock(client: RedisClient, options?: LockOptions) {
   };
 }
 
-/** The lock set {@link lock} returns. */
+/** A lock set, as `redis.query.<name>` returns it for a {@link LockSchema}. */
 export type LockStore = ReturnType<typeof createLock>;
-
-/** {@link LockOptions} plus the client, for the single-argument form. */
-export type LockConfig = LockOptions & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-export function lock(config: LockConfig): LockStore;
-export function lock(client: ClientSource, options?: LockOptions): LockStore;
-export function lock(
-  source: ClientSource | LockConfig,
-  options?: LockOptions
-): LockStore {
-  const args = clientArgs<LockOptions>(source, options);
-  return createLock(args.client, args.options);
-}
 
 /**
  * A lock set declared as a schema value, so it lands in `redis.query` next to
@@ -408,7 +358,10 @@ const lockBinding: StoreBinding = {
 };
 
 /** Build a {@link LockSchema}. Exported as `lock` from `benni/schema`. */
-export function defineLock(prefix: string, options?: LockOptions): LockSchema {
+export function defineLock(
+  prefix: string,
+  options?: Omit<LockOptions, "prefix">
+): LockSchema {
   return withStore(
     { ...options, kind: "lock", prefix } as LockSchema,
     lockBinding

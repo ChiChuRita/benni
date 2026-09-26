@@ -3,15 +3,15 @@ import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
 import {
   LockLeaseLostError,
-  LockNotAcquiredError,
-  lock
-} from "../src/primitives/index.js";
+  LockNotAcquiredError
+} from "../src/primitives/errors.js";
+import { createLock } from "../src/primitives/lock.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 /**
- * The lease behaviour of `lock().run()`, against a real server: renewal has to
+ * The lease behaviour of `createLock().run()`, against a real server: renewal has to
  * beat a real PX expiry, and a lost lease has to be reported rather than let a
  * body pass for exclusive. Short TTLs throughout so the suite stays quick.
  */
@@ -30,7 +30,7 @@ describeRedis("lock lease (live)", () => {
 
   it("holds the lock through a critical section far longer than ttlMs", async () => {
     const prefix = `${run}:renew`;
-    const locks = lock(client, { prefix, ttlMs: 200 }); // 50ms heartbeat.
+    const locks = createLock(client, { prefix, ttlMs: 200 }); // 50ms heartbeat.
     const key = `${prefix}:res`;
 
     let ownerDuringBody: unknown;
@@ -51,7 +51,7 @@ describeRedis("lock lease (live)", () => {
 
   it("reports a lost lease instead of resolving as if the body was exclusive", async () => {
     const prefix = `${run}:lost`;
-    const locks = lock(client, { prefix, ttlMs: 200 });
+    const locks = createLock(client, { prefix, ttlMs: 200 });
     const key = `${prefix}:res`;
 
     let abortReason: unknown;
@@ -80,7 +80,7 @@ describeRedis("lock lease (live)", () => {
 
   it("lets the lock lapse when renewal is switched off (the documented opt-out)", async () => {
     const prefix = `${run}:optout`;
-    const locks = lock(client, { prefix, ttlMs: 150 });
+    const locks = createLock(client, { prefix, ttlMs: 150 });
 
     const result = await locks.run(
       "res",
@@ -101,7 +101,7 @@ describeRedis("lock lease (live)", () => {
 
   it("serializes concurrent callers when retries are configured", async () => {
     const prefix = `${run}:mutex`;
-    const locks = lock(client, { prefix, ttlMs: 2_000 });
+    const locks = createLock(client, { prefix, ttlMs: 2_000 });
     const counterKey = `${prefix}:counter`;
     let inside = 0;
     let maxInside = 0;
@@ -132,7 +132,10 @@ describeRedis("lock lease (live)", () => {
   });
 
   it("still fails fast under contention with the default retries", async () => {
-    const locks = lock(client, { prefix: `${run}:failfast`, ttlMs: 1_000 });
+    const locks = createLock(client, {
+      prefix: `${run}:failfast`,
+      ttlMs: 1_000
+    });
 
     const outcomes = await Promise.allSettled(
       Array.from({ length: 6 }, () => locks.run("res", () => pause(100)))
@@ -149,7 +152,10 @@ describeRedis("lock lease (live)", () => {
   });
 
   it("serializes concurrent callers with waitTimeoutMs alone", async () => {
-    const locks = lock(client, { prefix: `${run}:deadline`, ttlMs: 2_000 });
+    const locks = createLock(client, {
+      prefix: `${run}:deadline`,
+      ttlMs: 2_000
+    });
     let inside = 0;
     let maxInside = 0;
 
@@ -176,7 +182,7 @@ describeRedis("lock lease (live)", () => {
     // wakes up after its lock was re-granted: it must rise with every grant,
     // including grants that follow an expiry rather than a release.
     const prefix = `${run}:fence`;
-    const locks = lock(client, { prefix, ttlMs: 2_000 });
+    const locks = createLock(client, { prefix, ttlMs: 2_000 });
     const fences: number[] = [];
 
     await Promise.all(
@@ -225,7 +231,7 @@ describeCluster("lock on a cluster-enabled node", () => {
       [run, "order:42"],
       [`${run}:tagged`, "{u1}"]
     ] as const) {
-      const locks = lock(client, { prefix });
+      const locks = createLock(client, { prefix });
       const first = await locks.run(id, (handle) => handle.fence);
       const second = await locks.run(id, (handle) => handle.fence);
       expect(second).toBe(first + 1);

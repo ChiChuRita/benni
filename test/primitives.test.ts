@@ -2,25 +2,27 @@ import { describe, expect, it } from "vitest";
 import { slotOf } from "../src/cluster.js";
 import { ValidationError } from "../src/core/errors.js";
 import type { RedisCommand } from "../src/core/types.js";
+import { createBudget } from "../src/primitives/budget.js";
+import { createCache } from "../src/primitives/cache.js";
 import {
-  budget,
-  cache,
   IdempotencyConflictError,
   IdempotencyNotRecordedError,
   IdempotencyTimeoutError,
-  idempotency,
-  lock,
-  ratelimit,
-  SemaphoreNotAcquiredError,
-  semaphore
-} from "../src/primitives/index.js";
+  SemaphoreNotAcquiredError
+} from "../src/primitives/errors.js";
+import { createIdempotency } from "../src/primitives/idempotency.js";
+import { createLock } from "../src/primitives/lock.js";
+import { createRatelimit } from "../src/primitives/ratelimit.js";
+import { createSemaphore } from "../src/primitives/semaphore.js";
 import { fakeClient } from "./fake-client.js";
 
 describe("lock", () => {
   it("acquires through one script (SET NX PX plus the fence) and returns a handle", async () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> the fence (0 would mean held)
-    const locks = lock(fakeClient(commands, ["sha1", 7]), { ttlMs: 10_000 });
+    const locks = createLock(fakeClient(commands, ["sha1", 7]), {
+      ttlMs: 10_000
+    });
 
     const handle = await locks.acquire("order:42");
     expect(handle).not.toBeNull();
@@ -43,7 +45,7 @@ describe("lock", () => {
 
   it("returns null when the lock is held and no retries are configured", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["sha1", 0]));
+    const locks = createLock(fakeClient(commands, ["sha1", 0]));
 
     await expect(locks.acquire("held")).resolves.toBeNull();
     expect(commands.filter((c) => c[0] === "EVALSHA")).toHaveLength(1);
@@ -51,7 +53,7 @@ describe("lock", () => {
 
   it("retries until acquired", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["sha1", 0, 0, 1]));
+    const locks = createLock(fakeClient(commands, ["sha1", 0, 0, 1]));
 
     const handle = await locks.acquire("busy", {
       retries: 5,
@@ -65,7 +67,7 @@ describe("lock", () => {
   it("releases only when the token still matches", async () => {
     const commands: RedisCommand[] = [];
     // acquire: load + run, then release: SCRIPT LOAD -> sha, EVALSHA -> 1
-    const locks = lock(fakeClient(commands, ["sha0", 1, "sha1", 1]));
+    const locks = createLock(fakeClient(commands, ["sha0", 1, "sha1", 1]));
 
     const handle = await locks.acquire("res");
     await expect(handle?.release()).resolves.toBe(true);
@@ -77,7 +79,7 @@ describe("lock", () => {
 
   it("release resolves false when we no longer hold the lock", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["sha0", 1, "sha1", 0]));
+    const locks = createLock(fakeClient(commands, ["sha0", 1, "sha1", 0]));
 
     const handle = await locks.acquire("res");
     await expect(handle?.release()).resolves.toBe(false);
@@ -85,7 +87,7 @@ describe("lock", () => {
 
   it("run acquires, invokes fn, and releases", async () => {
     const commands: RedisCommand[] = [];
-    const locks = lock(fakeClient(commands, ["sha0", 3, "sha1", 1]));
+    const locks = createLock(fakeClient(commands, ["sha0", 3, "sha1", 1]));
 
     const result = await locks.run("res", async (handle) => {
       expect(handle.key).toBe("lock:res");
@@ -103,14 +105,14 @@ describe("lock", () => {
   });
 
   it("run throws when the lock cannot be acquired", async () => {
-    const locks = lock(fakeClient([], ["sha0", 0]));
+    const locks = createLock(fakeClient([], ["sha0", 0]));
     await expect(locks.run("held", async () => 1)).rejects.toThrow(
       'Could not acquire lock "lock:held"'
     );
   });
 
   it("rejects a non-positive ttl", async () => {
-    const locks = lock(fakeClient([], []));
+    const locks = createLock(fakeClient([], []));
     await expect(locks.acquire("res", { ttlMs: 0 })).rejects.toThrow(
       ValidationError
     );
@@ -122,7 +124,7 @@ describe("ratelimit", () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset, retryAfter]
     const client = fakeClient(commands, ["sha1", [1, 9, 1_700_000_060_000, 0]]);
-    const limiter = ratelimit(client, { limit: 10, windowMs: 60_000 });
+    const limiter = createRatelimit(client, { limit: 10, windowMs: 60_000 });
 
     const result = await limiter.check("user:1");
     expect(result).toEqual({
@@ -151,7 +153,7 @@ describe("ratelimit", () => {
 
   it("reports a denied request with a skew-free retry delay", async () => {
     const client = fakeClient([], ["sha1", [0, 0, 1_700_000_099_000, 850]]);
-    const limiter = ratelimit(client, { limit: 5, windowMs: 1_000 });
+    const limiter = createRatelimit(client, { limit: 5, windowMs: 1_000 });
 
     const result = await limiter.check("user:2");
     expect(result.success).toBe(false);
@@ -164,10 +166,10 @@ describe("ratelimit", () => {
 
   it("rejects a non-positive limit or window", () => {
     expect(() =>
-      ratelimit(fakeClient([], []), { limit: 0, windowMs: 1 })
+      createRatelimit(fakeClient([], []), { limit: 0, windowMs: 1 })
     ).toThrow(ValidationError);
     expect(() =>
-      ratelimit(fakeClient([], []), { limit: 1, windowMs: -5 })
+      createRatelimit(fakeClient([], []), { limit: 1, windowMs: -5 })
     ).toThrow(ValidationError);
   });
 });
@@ -175,9 +177,12 @@ describe("ratelimit", () => {
 describe("cache", () => {
   it("returns a hit without touching the loader", async () => {
     const commands: RedisCommand[] = [];
-    const store = cache<{ n: number }>(fakeClient(commands, ['{"n":1}']), {
-      ttlMs: 60_000
-    });
+    const store = createCache<{ n: number }>(
+      fakeClient(commands, ['{"n":1}']),
+      {
+        ttlMs: 60_000
+      }
+    );
 
     const value = await store.get("a", () => {
       throw new Error("loader must not run on a hit");
@@ -192,7 +197,7 @@ describe("cache", () => {
     // GET miss, then two scripts: the claim (entry absent, lock taken -> {2})
     // and the fenced publish, which writes the value and frees the lock in one
     // step only while we still hold it. Each is a SCRIPT LOAD plus an EVALSHA.
-    const store = cache<{ n: number }>(
+    const store = createCache<{ n: number }>(
       fakeClient(commands, [null, "sha1", [2], "sha2", 1]),
       { ttlMs: 60_000 }
     );
@@ -227,7 +232,7 @@ describe("cache", () => {
     // The claim script re-reads the entry before it takes the lock, which is
     // the double-check a second GET used to do after winning it.
     const commands: RedisCommand[] = [];
-    const store = cache<string>(
+    const store = createCache<string>(
       fakeClient(commands, [null, "sha1", [1, '"filled"']]),
       { ttlMs: 60_000 }
     );
@@ -243,7 +248,7 @@ describe("cache", () => {
   it("polls for the value while another caller holds the fill lock", async () => {
     const commands: RedisCommand[] = [];
     // GET miss, claim -> held ({0}), poll (the same script) -> hit
-    const store = cache<string>(
+    const store = createCache<string>(
       fakeClient(commands, [null, "sha1", [0], [1, '"other"']]),
       { ttlMs: 60_000, pollMs: 1 }
     );
@@ -264,7 +269,7 @@ describe("cache", () => {
 
   it("peek reads without loading and set/del round-trip", async () => {
     const commands: RedisCommand[] = [];
-    const store = cache<string>(
+    const store = createCache<string>(
       fakeClient(commands, ['"v"', null, "sha1", 1, "sha2", 1]),
       { ttlMs: 5_000 }
     );
@@ -296,18 +301,18 @@ describe("cache", () => {
   });
 
   it("rejects non-positive ttl, lock ttl, wait timeout, and poll intervals", () => {
-    expect(() => cache(fakeClient([], []), { ttlMs: 0 })).toThrow(
+    expect(() => createCache(fakeClient([], []), { ttlMs: 0 })).toThrow(
       ValidationError
     );
     expect(() =>
-      cache(fakeClient([], []), { ttlMs: 1, lockTtlMs: -1 })
+      createCache(fakeClient([], []), { ttlMs: 1, lockTtlMs: -1 })
     ).toThrow(ValidationError);
     expect(() =>
-      cache(fakeClient([], []), { ttlMs: 1, waitTimeoutMs: 0 })
+      createCache(fakeClient([], []), { ttlMs: 1, waitTimeoutMs: 0 })
     ).toThrow(ValidationError);
-    expect(() => cache(fakeClient([], []), { ttlMs: 1, pollMs: 0 })).toThrow(
-      ValidationError
-    );
+    expect(() =>
+      createCache(fakeClient([], []), { ttlMs: 1, pollMs: 0 })
+    ).toThrow(ValidationError);
   });
 });
 
@@ -316,7 +321,7 @@ describe("budget", () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [status, bucket, remaining, retryAfter]
     const client = fakeClient(commands, ["sha1", [1, 7, 40, 0]]);
-    const budgets = budget(client, { limit: 100, windowMs: 60_000 });
+    const budgets = createBudget(client, { limit: 100, windowMs: 60_000 });
 
     const result = await budgets.charge("u1", 60);
     expect(result).toEqual({
@@ -346,7 +351,7 @@ describe("budget", () => {
 
   it("reports a denial with the retry delay and no hold", async () => {
     const client = fakeClient([], ["sha1", [0, 7, 5, 12_345]]);
-    const budgets = budget(client, { limit: 100, windowMs: 60_000 });
+    const budgets = createBudget(client, { limit: 100, windowMs: 60_000 });
 
     expect(await budgets.charge("u1", 60)).toEqual({
       ok: false,
@@ -355,7 +360,7 @@ describe("budget", () => {
       retryAfterMs: 12_345
     });
     expect(
-      await budget(fakeClient([], ["sha1", [0, 7, 5, 1]]), {
+      await createBudget(fakeClient([], ["sha1", [0, 7, 5, 1]]), {
         limit: 100,
         windowMs: 60_000
       }).reserve("u1", 60)
@@ -371,7 +376,7 @@ describe("budget", () => {
       [-1, 999, 0, 0],
       [1, 999, 10, 0]
     ]);
-    const budgets = budget(client, { limit: 100, windowMs: 60_000 });
+    const budgets = createBudget(client, { limit: 100, windowMs: 60_000 });
 
     expect((await budgets.charge("u1", 5)).ok).toBe(true);
     const evalshas = commands.filter((c) => c[0] === "EVALSHA");
@@ -381,14 +386,17 @@ describe("budget", () => {
   });
 
   it("rejects bad configuration and negative amounts", async () => {
-    expect(() => budget(fakeClient([], []), { limit: 0, windowMs: 1 })).toThrow(
-      ValidationError
-    );
     expect(() =>
-      budget(fakeClient([], []), { limit: 1, windowMs: -5 })
+      createBudget(fakeClient([], []), { limit: 0, windowMs: 1 })
+    ).toThrow(ValidationError);
+    expect(() =>
+      createBudget(fakeClient([], []), { limit: 1, windowMs: -5 })
     ).toThrow(ValidationError);
     await expect(
-      budget(fakeClient([], []), { limit: 10, windowMs: 10 }).charge("u", -1)
+      createBudget(fakeClient([], []), { limit: 10, windowMs: 10 }).charge(
+        "u",
+        -1
+      )
     ).rejects.toThrow(ValidationError);
   });
 });
@@ -399,7 +407,7 @@ describe("semaphore", () => {
     // acquire: SCRIPT LOAD + EVALSHA. release: its own SCRIPT LOAD + EVALSHA,
     // because a bare ZREM cannot tell a live lease from a lapsed one.
     const client = fakeClient(commands, ["sha1", 1, "sha2", 1]);
-    const slots = semaphore(client, { limit: 5, leaseMs: 30_000 });
+    const slots = createSemaphore(client, { limit: 5, leaseMs: 30_000 });
 
     const held = await slots.acquire("openai");
     expect(held?.key).toBe("semaphore:openai");
@@ -425,13 +433,16 @@ describe("semaphore", () => {
   });
 
   it("returns null when full, and retries when asked", async () => {
-    const full = semaphore(fakeClient([], ["sha1", 0]), { limit: 1 });
+    const full = createSemaphore(fakeClient([], ["sha1", 0]), { limit: 1 });
     expect(await full.acquire("x")).toBeNull();
 
     const commands: RedisCommand[] = [];
-    const eventually = semaphore(fakeClient(commands, ["sha1", 0, 0, 1]), {
-      limit: 1
-    });
+    const eventually = createSemaphore(
+      fakeClient(commands, ["sha1", 0, 0, 1]),
+      {
+        limit: 1
+      }
+    );
     expect(
       await eventually.acquire("x", { retries: 5, retryDelayMs: 1 })
     ).not.toBeNull();
@@ -440,9 +451,12 @@ describe("semaphore", () => {
 
   it("run releases even when the body throws", async () => {
     const commands: RedisCommand[] = [];
-    const slots = semaphore(fakeClient(commands, ["sha1", 1, "sha2", 1]), {
-      limit: 2
-    });
+    const slots = createSemaphore(
+      fakeClient(commands, ["sha1", 1, "sha2", 1]),
+      {
+        limit: 2
+      }
+    );
     await expect(
       slots.run("x", () => {
         throw new Error("boom");
@@ -454,7 +468,7 @@ describe("semaphore", () => {
   });
 
   it("run throws SemaphoreNotAcquiredError when no slot came free", async () => {
-    const slots = semaphore(fakeClient([], ["sha1", 0]), { limit: 3 });
+    const slots = createSemaphore(fakeClient([], ["sha1", 0]), { limit: 3 });
     await expect(slots.run("busy", () => 1)).rejects.toThrow(
       SemaphoreNotAcquiredError
     );
@@ -466,7 +480,7 @@ describe("idempotency", () => {
     const commands: RedisCommand[] = [];
     // SET NX -> OK (we win), SCRIPT LOAD -> sha, EVALSHA (complete) -> 1
     const client = fakeClient(commands, ["OK", "sha1", 1]);
-    const once = idempotency<{ n: number }>(client);
+    const once = createIdempotency<{ n: number }>(client);
 
     let calls = 0;
     const first = await once.run("k1", () => {
@@ -480,7 +494,7 @@ describe("idempotency", () => {
 
     // A later caller loses the SET NX and finds a completed record.
     const replayClient = fakeClient([], [null, `D${JSON.stringify({ n: 7 })}`]);
-    const replayed = await idempotency<{ n: number }>(replayClient).run(
+    const replayed = await createIdempotency<{ n: number }>(replayClient).run(
       "k1",
       () => {
         calls++;
@@ -494,7 +508,7 @@ describe("idempotency", () => {
   it("releases the key when the handler throws", async () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["OK", "sha1", 1]);
-    const once = idempotency<string>(client);
+    const once = createIdempotency<string>(client);
 
     await expect(
       once.run("k2", () => {
@@ -511,7 +525,7 @@ describe("idempotency", () => {
     // Reporting success would hide exactly the guarantee this primitive sells.
     // Only the acquire reply is queued, so the complete script's SCRIPT LOAD
     // hits an empty queue and rejects.
-    const once = idempotency<string>(fakeClient([], ["OK"]));
+    const once = createIdempotency<string>(fakeClient([], ["OK"]));
     const error = (await once
       .run("k8", () => "did-the-work")
       .catch((e: unknown) => e)) as IdempotencyNotRecordedError<string>;
@@ -528,7 +542,7 @@ describe("idempotency", () => {
     // reading the reply let the miss pass for success: nothing was stored, and
     // the next call with this key silently ran the handler a second time.
     // SET NX -> OK (claimed), SCRIPT LOAD -> sha, EVALSHA -> 0 (declined).
-    const once = idempotency<string>(fakeClient([], ["OK", "sha1", 0]));
+    const once = createIdempotency<string>(fakeClient([], ["OK", "sha1", 0]));
     const error = (await once
       .run("k9", () => "did-the-work")
       .catch((e: unknown) => e)) as IdempotencyNotRecordedError<string>;
@@ -540,7 +554,7 @@ describe("idempotency", () => {
   it("throws on a concurrent holder under onConflict: throw", async () => {
     // SET NX -> null (someone holds it), GET -> a running marker.
     const client = fakeClient([], [null, "Rsomeone-elses-token"]);
-    const once = idempotency<string>(client, { onConflict: "throw" });
+    const once = createIdempotency<string>(client, { onConflict: "throw" });
     await expect(once.run("k3", () => "x")).rejects.toThrow(
       IdempotencyConflictError
     );
@@ -548,7 +562,7 @@ describe("idempotency", () => {
 
   it("runs unguarded when the key is absent", async () => {
     const commands: RedisCommand[] = [];
-    const once = idempotency<string>(fakeClient(commands, []));
+    const once = createIdempotency<string>(fakeClient(commands, []));
     expect(await once.run(null, () => "v")).toEqual({
       value: "v",
       replayed: false
@@ -562,7 +576,7 @@ describe("idempotency", () => {
       [],
       [null, "Rother-token", null, `D${JSON.stringify("done")}`]
     );
-    const once = idempotency<string>(client, { pollMs: 1 });
+    const once = createIdempotency<string>(client, { pollMs: 1 });
     expect(await once.run("k5", () => "never")).toEqual({
       value: "done",
       replayed: true
@@ -574,7 +588,7 @@ describe("idempotency", () => {
     const replies = Array.from({ length: 200 }, (_, index) =>
       index % 2 === 0 ? null : "Rother-token"
     );
-    const once = idempotency<string>(fakeClient([], replies), {
+    const once = createIdempotency<string>(fakeClient([], replies), {
       pollMs: 1,
       waitTimeoutMs: 20
     });
@@ -584,7 +598,7 @@ describe("idempotency", () => {
   });
 
   it("peek decodes a completed record, and forget drops it", async () => {
-    const done = idempotency<{ ok: boolean }>(
+    const done = createIdempotency<{ ok: boolean }>(
       fakeClient([], [`D${JSON.stringify({ ok: true })}`, 1])
     );
     expect(await done.peek("k7")).toEqual({ ok: true });
@@ -592,7 +606,7 @@ describe("idempotency", () => {
   });
 
   it("peek returns null while still running", async () => {
-    const once = idempotency<string>(fakeClient([], ["Rtoken"]));
+    const once = createIdempotency<string>(fakeClient([], ["Rtoken"]));
     expect(await once.peek("k4")).toBeNull();
   });
 });

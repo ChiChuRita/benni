@@ -10,11 +10,11 @@ import {
   JobFailedError,
   JobLeaseLostError,
   JobNotFoundError,
-  queue,
   RetryJobError,
   TerminalJobError,
   WorkerStoppedError
-} from "../src/primitives/index.js";
+} from "../src/primitives/errors.js";
+import { createQueue } from "../src/primitives/queue.js";
 import { fakeClient } from "./fake-client.js";
 
 /** The reply `SCRIPT LOAD` gets, followed by whatever `EVALSHA` should return. */
@@ -31,7 +31,7 @@ function evalsha(commands: RedisCommand[]): RedisCommand {
 describe("queue: enqueue", () => {
   it("sends one hash-tagged EVALSHA and returns the new job id", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue<{ prompt: string }>(
+    const jobs = createQueue<{ prompt: string }>(
       fakeClient(commands, scripted(["job-1", 0])),
       { prefix: "gen" }
     );
@@ -67,7 +67,7 @@ describe("queue: enqueue", () => {
   });
 
   it("reports a deduplicated enqueue", async () => {
-    const jobs = queue(fakeClient([], scripted(["existing", 1])));
+    const jobs = createQueue(fakeClient([], scripted(["existing", 1])));
     await expect(
       jobs.enqueue({ n: 1 }, { idempotencyKey: "req-1" })
     ).resolves.toEqual({ id: "existing", deduplicated: true });
@@ -75,7 +75,7 @@ describe("queue: enqueue", () => {
 
   it("passes an explicit id, delay, and priority through", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue(fakeClient(commands, scripted(["mine", 0])), {
+    const jobs = createQueue(fakeClient(commands, scripted(["mine", 0])), {
       prefix: "q"
     });
 
@@ -93,7 +93,7 @@ describe("queue: enqueue", () => {
 
   it("rejects bad input before sending anything", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue(fakeClient(commands, []));
+    const jobs = createQueue(fakeClient(commands, []));
 
     await expect(jobs.enqueue({}, { priority: 10 })).rejects.toBeInstanceOf(
       ValidationError
@@ -112,10 +112,16 @@ describe("queue: enqueue", () => {
 
   it("rejects bad queue options at construction", () => {
     const client = fakeClient([], []);
-    expect(() => queue(client, { leaseMs: 0 })).toThrow(ValidationError);
-    expect(() => queue(client, { maxAttempts: -1 })).toThrow(/maxAttempts/);
-    expect(() => queue(client, { resultTtlMs: 1.5 })).toThrow(/resultTtlMs/);
-    expect(() => queue(client, { eventsMaxLen: 0 })).toThrow(/eventsMaxLen/);
+    expect(() => createQueue(client, { leaseMs: 0 })).toThrow(ValidationError);
+    expect(() => createQueue(client, { maxAttempts: -1 })).toThrow(
+      /maxAttempts/
+    );
+    expect(() => createQueue(client, { resultTtlMs: 1.5 })).toThrow(
+      /resultTtlMs/
+    );
+    expect(() => createQueue(client, { eventsMaxLen: 0 })).toThrow(
+      /eventsMaxLen/
+    );
   });
 });
 
@@ -152,9 +158,12 @@ describe("queue: get", () => {
   ];
 
   it("decodes a full record", async () => {
-    const jobs = queue<{ prompt: string }, string>(fakeClient([], [record]), {
-      prefix: "q"
-    });
+    const jobs = createQueue<{ prompt: string }, string>(
+      fakeClient([], [record]),
+      {
+        prefix: "q"
+      }
+    );
     const job = await jobs.get("job-1");
 
     expect(job).toEqual({
@@ -181,17 +190,17 @@ describe("queue: get", () => {
     for (let index = 0; index < record.length; index += 2) {
       map.set(record[index] as string, record[index + 1] as string);
     }
-    const jobs = queue<{ prompt: string }, string>(fakeClient([], [map]));
+    const jobs = createQueue<{ prompt: string }, string>(fakeClient([], [map]));
     expect((await jobs.get("job-1"))?.status).toBe("completed");
   });
 
   it("returns null for a missing job", async () => {
-    const jobs = queue(fakeClient([], [[]]));
+    const jobs = createQueue(fakeClient([], [[]]));
     await expect(jobs.get("nope")).resolves.toBeNull();
   });
 
   it("leaves unset optional fields null", async () => {
-    const jobs = queue(
+    const jobs = createQueue(
       fakeClient([], [["id", "job-2", "status", "waiting", "payload", "{}"]])
     );
     const job = await jobs.get("job-2");
@@ -206,7 +215,7 @@ describe("queue: get", () => {
   });
 
   it("throws a ReplyShapeError on a reply that is not a hash", async () => {
-    const jobs = queue(fakeClient([], [42]));
+    const jobs = createQueue(fakeClient([], [42]));
     await expect(jobs.get("job-1")).rejects.toBeInstanceOf(ReplyShapeError);
   });
 });
@@ -218,7 +227,7 @@ describe("queue: cancel", () => {
     [0, false, "unknown id"],
     [2, false, "already terminal"]
   ])("maps script outcome %i to %s (%s)", async (outcome, expected) => {
-    const jobs = queue(fakeClient([], scripted(outcome)));
+    const jobs = createQueue(fakeClient([], scripted(outcome)));
     await expect(jobs.cancel("job-1")).resolves.toBe(expected);
   });
 });
@@ -226,7 +235,9 @@ describe("queue: cancel", () => {
 describe("queue: introspection", () => {
   it("reads all four depths in one pipeline", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue(fakeClient(commands, [3, 1, 2, 0]), { prefix: "q" });
+    const jobs = createQueue(fakeClient(commands, [3, 1, 2, 0]), {
+      prefix: "q"
+    });
 
     await expect(jobs.stats()).resolves.toEqual({
       waiting: 3,
@@ -244,14 +255,16 @@ describe("queue: introspection", () => {
 
   it("lists dead-lettered ids oldest first", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue(fakeClient(commands, [["a", "b"]]), { prefix: "q" });
+    const jobs = createQueue(fakeClient(commands, [["a", "b"]]), {
+      prefix: "q"
+    });
 
     await expect(jobs.dead({ count: 2 })).resolves.toEqual(["a", "b"]);
     expect(commands[0]).toEqual(["ZRANGE", "{q}:dead", 0, 1]);
   });
 
   it("rejects a non-positive dead() count", async () => {
-    const jobs = queue(fakeClient([], []));
+    const jobs = createQueue(fakeClient([], []));
     await expect(jobs.dead({ count: 0 })).rejects.toBeInstanceOf(
       ValidationError
     );
@@ -259,15 +272,15 @@ describe("queue: introspection", () => {
 
   it("maps retryDead outcomes", async () => {
     await expect(
-      queue(fakeClient([], scripted(1))).retryDead("job-1")
+      createQueue(fakeClient([], scripted(1))).retryDead("job-1")
     ).resolves.toBe(true);
     await expect(
-      queue(fakeClient([], scripted(0))).retryDead("job-1")
+      createQueue(fakeClient([], scripted(0))).retryDead("job-1")
     ).resolves.toBe(false);
   });
 
   it("exposes the key layout it uses", () => {
-    const jobs = queue(fakeClient([], []), { prefix: "gen" });
+    const jobs = createQueue(fakeClient([], []), { prefix: "gen" });
     expect(jobs.jobKey("abc")).toBe("{gen}:job:abc");
     expect(jobs.eventsKey("abc")).toBe("{gen}:events:abc");
   });
@@ -284,7 +297,7 @@ describe("queue: watch", () => {
 
   it("yields the backlog and stops at the terminal event", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient(
         commands,
         scripted([
@@ -320,7 +333,7 @@ describe("queue: watch", () => {
 
   it("resumes strictly after the given cursor", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient(
         commands,
         scripted([
@@ -341,7 +354,7 @@ describe("queue: watch", () => {
   });
 
   it("decodes progress and restart events, ignoring unknown kinds", async () => {
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient(
         [],
         scripted([
@@ -367,7 +380,7 @@ describe("queue: watch", () => {
 
   it("polls when no events have arrived yet, then yields them", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient(commands, [
         ...scripted(["", []]), // backlog: empty
         [], // XREAD poll: nothing
@@ -392,7 +405,7 @@ describe("queue: watch", () => {
   });
 
   it("throws JobNotFoundError when the record is gone and nothing streamed", async () => {
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient([], [...scripted(["", []]), [], 0])
     );
     await expect(async () => {
@@ -403,7 +416,7 @@ describe("queue: watch", () => {
   });
 
   it("stops when the caller's signal is already aborted", async () => {
-    const jobs = queue<null, string>(fakeClient([], scripted(["", []])));
+    const jobs = createQueue<null, string>(fakeClient([], scripted(["", []])));
     const seen = [];
     for await (const event of jobs.watch("job-1", {
       signal: AbortSignal.abort()
@@ -427,7 +440,7 @@ describe("queue: wait", () => {
 
   it("returns a result already on the record without tailing", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient(commands, [[], settled("completed", ["result", '"done"'])])
     );
 
@@ -439,7 +452,7 @@ describe("queue: wait", () => {
   });
 
   it("throws the recorded error for a failed job", async () => {
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient([], [[], settled("failed", ["error", "provider exploded"])])
     );
     const failure = jobs.wait("job-1");
@@ -449,7 +462,7 @@ describe("queue: wait", () => {
   });
 
   it("throws for a cancelled job", async () => {
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient([], [[], settled("cancelled", [])])
     );
     const cancelled = jobs.wait("job-1");
@@ -458,13 +471,13 @@ describe("queue: wait", () => {
   });
 
   it("throws JobNotFoundError for an unknown id", async () => {
-    const jobs = queue<null, string>(fakeClient([], [[], []]));
+    const jobs = createQueue<null, string>(fakeClient([], [[], []]));
     await expect(jobs.wait("ghost")).rejects.toBeInstanceOf(JobNotFoundError);
   });
 
   it("tails from the newest existing entry when still running", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue<null, string>(
+    const jobs = createQueue<null, string>(
       fakeClient(commands, [
         [["7-0", ["t", "chunk", "d", "partial"]]], // XREVRANGE: newest so far
         settled("active", []),
@@ -574,7 +587,7 @@ const idle = [0, "-1"];
 
 describe("queue: worker", () => {
   it("validates its options before starting a loop", () => {
-    const jobs = queue(fakeClient([], []));
+    const jobs = createQueue(fakeClient([], []));
     const handler = async () => undefined;
     expect(() => jobs.worker(handler, { concurrency: 0 })).toThrow(
       ValidationError
@@ -587,7 +600,7 @@ describe("queue: worker", () => {
 
   it("stops cleanly when the queue is empty", async () => {
     const client = routedClient({ reserve: () => idle });
-    const worker = queue(client).worker(async () => undefined, {
+    const worker = createQueue(client).worker(async () => undefined, {
       pollMs: 1,
       onError: () => {}
     });
@@ -608,7 +621,7 @@ describe("queue: worker", () => {
     });
 
     const seen: Array<{ id: string; attempt: number; prompt: string }> = [];
-    const worker = queue<{ prompt: string }, string>(client).worker(
+    const worker = createQueue<{ prompt: string }, string>(client).worker(
       async (job) => {
         seen.push({
           id: job.id,
@@ -642,7 +655,7 @@ describe("queue: worker", () => {
     });
 
     let emittedId = "";
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async (job) => {
         emittedId = await job.emit("tok");
         await job.progress(0.5);
@@ -673,7 +686,7 @@ describe("queue: worker", () => {
       settle: () => 1
     });
 
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async (job) => {
         await job.progress(4);
         await job.progress(-2);
@@ -697,7 +710,7 @@ describe("queue: worker", () => {
       retry: () => 1
     });
 
-    const worker = queue<null, string>(client, {
+    const worker = createQueue<null, string>(client, {
       backoffMs: 40,
       maxBackoffMs: 40
     }).worker(
@@ -725,7 +738,9 @@ describe("queue: worker", () => {
       retry: () => 1
     });
 
-    const worker = queue<null, string>(client, { backoffMs: 30_000 }).worker(
+    const worker = createQueue<null, string>(client, {
+      backoffMs: 30_000
+    }).worker(
       async () => {
         throw new RetryJobError("429", 1_234);
       },
@@ -746,7 +761,7 @@ describe("queue: worker", () => {
       settle: () => 1
     });
 
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         throw new TerminalJobError("model refused");
       },
@@ -768,7 +783,7 @@ describe("queue: worker", () => {
       settle: () => 1
     });
 
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         throw new Error("still broken");
       },
@@ -789,7 +804,7 @@ describe("queue: worker", () => {
       settle: () => 1
     });
 
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         throw new Error("nope");
       },
@@ -810,7 +825,7 @@ describe("queue: worker", () => {
     });
 
     let aborted = false;
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async (job) => {
         await job.emit("tok");
         aborted = job.signal.aborted;
@@ -837,7 +852,7 @@ describe("queue: worker", () => {
     });
 
     let thrown: unknown;
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async (job) => {
         try {
           await job.emit("tok");
@@ -870,7 +885,7 @@ describe("queue: worker", () => {
     });
 
     const errors: unknown[] = [];
-    const worker = queue(client).worker(async () => undefined, {
+    const worker = createQueue(client).worker(async () => undefined, {
       pollMs: 1,
       onError: (error) => errors.push(error)
     });
@@ -892,7 +907,7 @@ describe("queue: worker", () => {
 
     let live = 0;
     let peak = 0;
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         live += 1;
         peak = Math.max(peak, live);
@@ -927,7 +942,7 @@ async function waitFor(
 
 describe("queue: heartbeat against lease", () => {
   it("refuses a heartbeat that could not land before the lease lapses", () => {
-    const jobs = queue(fakeClient([], []), { leaseMs: 10_000 });
+    const jobs = createQueue(fakeClient([], []), { leaseMs: 10_000 });
     const handler = async () => undefined;
     // The old fixed default (15000) against this lease reclaimed every job
     // longer than ten seconds before its first renewal.
@@ -952,7 +967,7 @@ describe("queue: heartbeat against lease", () => {
     // leaseMs 200 → a 50ms heartbeat, so a 500ms run renews several times and
     // outlives its lease comfortably.
     let aborted = false;
-    const worker = queue<null, string>(client, { leaseMs: 200 }).worker(
+    const worker = createQueue<null, string>(client, { leaseMs: 200 }).worker(
       async (job) => {
         await sleep(500);
         aborted = job.signal.aborted;
@@ -988,7 +1003,7 @@ describe("queue: local lease deadline", () => {
     const errors: unknown[] = [];
     let reason: unknown;
     let elapsed = 0;
-    const worker = queue<null, string>(client, { leaseMs: 200 }).worker(
+    const worker = createQueue<null, string>(client, { leaseMs: 200 }).worker(
       async (job) => {
         const started = performance.now();
         await new Promise((resolve) =>
@@ -1029,7 +1044,7 @@ describe("queue: local lease deadline", () => {
       settle: () => 1
     });
     const errors: unknown[] = [];
-    const worker = queue<null, string>(client, { leaseMs: 100 }).worker(
+    const worker = createQueue<null, string>(client, { leaseMs: 100 }).worker(
       async () => {
         await sleep(250); // ignores its signal and finishes anyway
         return "paid for";
@@ -1055,7 +1070,7 @@ describe("queue: local lease deadline", () => {
       touch: () => [0, 0, ""]
     });
     const thrown: unknown[] = [];
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async (job) => {
         for (const token of ["a", "b"]) {
           try {
@@ -1088,10 +1103,13 @@ describe("queue: refused final writes", () => {
       settle: () => 0
     });
     const errors: unknown[] = [];
-    const worker = queue<null, string>(client).worker(async () => "late", {
-      pollMs: 1,
-      onError: (error) => errors.push(error)
-    });
+    const worker = createQueue<null, string>(client).worker(
+      async () => "late",
+      {
+        pollMs: 1,
+        onError: (error) => errors.push(error)
+      }
+    );
     await waitFor(() => errors.length > 0);
     await worker.stop();
 
@@ -1106,7 +1124,7 @@ describe("queue: refused final writes", () => {
       retry: () => 0
     });
     const errors: unknown[] = [];
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         throw new Error("flaky provider");
       },
@@ -1122,7 +1140,7 @@ describe("queue: refused final writes", () => {
 describe("queue: stop with a timeout", () => {
   it("rejects a bad timeout before stopping anything", async () => {
     const client = routedClient({ reserve: () => idle });
-    const worker = queue(client).worker(async () => undefined, {
+    const worker = createQueue(client).worker(async () => undefined, {
       pollMs: 1,
       onError: () => {}
     });
@@ -1142,7 +1160,7 @@ describe("queue: stop with a timeout", () => {
     });
     let started = false;
     let reason: unknown;
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async (job) => {
         started = true;
         await new Promise((resolve) =>
@@ -1174,7 +1192,7 @@ describe("queue: stop with a timeout", () => {
     });
     let started = false;
     let release!: () => void;
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         started = true;
         await new Promise<void>((resolve) => {
@@ -1202,7 +1220,7 @@ describe("queue: stop with a timeout", () => {
       settle: () => 1
     });
     let started = false;
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         started = true;
         await sleep(20);
@@ -1231,7 +1249,7 @@ describe("queue: stop with a timeout", () => {
       },
       requeue: () => 1
     });
-    const worker = queue<null, string>(client).worker(
+    const worker = createQueue<null, string>(client).worker(
       async () => {
         runs += 1;
         return "should not start";
@@ -1255,7 +1273,7 @@ describe("queue: watch reports trimmed output", () => {
     replies: RedisReply[],
     after?: string
   ): Promise<unknown[]> {
-    const jobs = queue<null, string>(fakeClient([], replies));
+    const jobs = createQueue<null, string>(fakeClient([], replies));
     const seen = [];
     for await (const event of jobs.watch("job-1", { after, pollMs: 1 })) {
       seen.push(event);
@@ -1343,7 +1361,7 @@ describe("queue: watch reports trimmed output", () => {
 
   it("refuses a cursor that is not a stream id before sending anything", async () => {
     const commands: RedisCommand[] = [];
-    const jobs = queue(fakeClient(commands, []));
+    const jobs = createQueue(fakeClient(commands, []));
     for (const after of ["abc", "1-2-3", "", "1 OR 1"]) {
       await expect(async () => {
         for await (const _event of jobs.watch("job-1", { after })) {

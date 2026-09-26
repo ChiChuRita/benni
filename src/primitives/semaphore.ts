@@ -1,7 +1,10 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
+import {
+  SemaphoreLeaseLostError,
+  SemaphoreNotAcquiredError
+} from "./errors.js";
 import {
   acquireWithRetry,
   createLease,
@@ -179,50 +182,6 @@ export type SemaphoreRunOptions = SemaphoreAcquireOptions & {
   readonly onRenewError?: (error: unknown) => void;
 };
 
-/** Thrown by `semaphore().run()` when no slot came free. */
-export class SemaphoreNotAcquiredError extends Error {
-  readonly key: string;
-  readonly limit: number;
-  constructor(key: string, limit: number) {
-    super(`Could not acquire a slot on "${key}" (limit ${limit})`);
-    this.name = "SemaphoreNotAcquiredError";
-    this.key = key;
-    this.limit = limit;
-  }
-}
-
-/**
- * Thrown by `semaphore().run()` when the slot was lost while `fn` was still
- * running: renewal found the lease gone, so it had already been reclaimed and
- * handed to someone else.
- *
- * This is where a semaphore differs from a
- * [lock](./lock.js): a lost lock means two callers collided on one key, while a
- * lost slot means the semaphore **over-admits**. The pool believes `limit`
- * callers are inside the critical section and one more (this one) is in there
- * too, so a `limit: 20` semaphore guarding a provider quota quietly runs 21 in
- * flight, which is precisely the 429 it existed to prevent.
- *
- * `run()` rejects with this even when `fn` itself resolved: a body that
- * completed without a slot did not complete under the bound it was written
- * against, and reporting success would hide exactly that. The same error is the
- * abort reason on {@link SemaphoreHandle.signal}, so a body that passes the
- * signal to `fetch` or to the AI SDK stops as soon as its slot is gone rather
- * than finishing work that is over the limit.
- */
-export class SemaphoreLeaseLostError extends Error {
-  readonly key: string;
-  readonly limit: number;
-  constructor(key: string, limit: number) {
-    super(
-      `Lost the slot on "${key}" (limit ${limit}) before the critical section finished — the semaphore may now be over its limit. Raise leaseMs, lower heartbeatMs, or shorten the critical section if this recurs.`
-    );
-    this.name = "SemaphoreLeaseLostError";
-    this.key = key;
-    this.limit = limit;
-  }
-}
-
 export type SemaphoreHandle = {
   readonly key: string;
   readonly token: string;
@@ -258,7 +217,7 @@ export type SemaphoreHandle = {
  * their capacity, and exceeding either gets you 429s.
  *
  * ```ts
- * const slots = semaphore(client, { limit: 20 });
+ * const slots = redis.query.gpuSlots; // semaphore("gpu", { limit: 20 })
  * const answer = await slots.run("openai", async () => callModel());
  * ```
  *
@@ -309,7 +268,10 @@ export type SemaphoreHandle = {
  * retry options, same lease renewal. Reach for `lock` when the answer is one,
  * and this when it is a budget.
  */
-function createSemaphore(client: RedisClient, options: SemaphoreOptions) {
+export function createSemaphore(
+  client: RedisClient,
+  options: SemaphoreOptions
+) {
   const checkMs = (ms: number, name: string) =>
     positiveMs(ms, name, "semaphore");
   const limit = checkMs(options.limit, "limit");
@@ -445,27 +407,8 @@ function createSemaphore(client: RedisClient, options: SemaphoreOptions) {
   };
 }
 
-/** The semaphore {@link semaphore} returns. */
+/** A semaphore, as `redis.query.<name>` returns it for a {@link SemaphoreSchema}. */
 export type SemaphoreStore = ReturnType<typeof createSemaphore>;
-
-/** {@link SemaphoreOptions} plus the client, for the single-argument form. */
-export type SemaphoreConfig = SemaphoreOptions & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-export function semaphore(config: SemaphoreConfig): SemaphoreStore;
-export function semaphore(
-  client: ClientSource,
-  options: SemaphoreOptions
-): SemaphoreStore;
-export function semaphore(
-  source: ClientSource | SemaphoreConfig,
-  options?: SemaphoreOptions
-): SemaphoreStore {
-  const args = clientArgs<SemaphoreOptions>(source, options);
-  return createSemaphore(args.client, args.options);
-}
 
 /**
  * A semaphore declared as a schema value, so it lands in `redis.query` next to
@@ -493,7 +436,7 @@ const semaphoreBinding: StoreBinding = {
  */
 export function defineSemaphore(
   prefix: string,
-  options: SemaphoreOptions
+  options: Omit<SemaphoreOptions, "prefix">
 ): SemaphoreSchema {
   return withStore(
     { ...options, kind: "semaphore", prefix } as SemaphoreSchema,

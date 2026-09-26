@@ -4,7 +4,7 @@ import { codecs, type RedisClient } from "../src/core/index.js";
 import { definePubSubChannel } from "../src/core/pubsub.js";
 import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
-import { queue } from "../src/primitives/index.js";
+import { createQueue } from "../src/primitives/queue.js";
 import { json, kv, number, script } from "../src/schema.js";
 import { freePort } from "./free-port.js";
 import {
@@ -390,7 +390,7 @@ describeRedis("ioredis: typed client and primitives", () => {
 
   it("runs the AI job queue, Lua and all", async () => {
     const client: RedisClient = ioredis({ url: redisUrl });
-    const jobs = queue<{ prompt: string }, string>(client, {
+    const jobs = createQueue<{ prompt: string }, string>(client, {
       prefix: unique("queue")
     });
     const worker = jobs.worker(async (job) => {

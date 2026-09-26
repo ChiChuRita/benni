@@ -1,4 +1,3 @@
-import { type ClientSource, clientArgs } from "../core/client-source.js";
 import { codecs } from "../core/codecs.js";
 import { ReplyShapeError, ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
@@ -15,6 +14,15 @@ import type {
   RedisReply,
   RedisSession
 } from "../core/types.js";
+import {
+  JobCancelledError,
+  JobFailedError,
+  JobLeaseLostError,
+  JobNotFoundError,
+  RetryJobError,
+  TerminalJobError,
+  WorkerStoppedError
+} from "./errors.js";
 
 const DEFAULT_PREFIX = "queue";
 const DEFAULT_LEASE_MS = 60_000;
@@ -120,124 +128,8 @@ export type TerminalJobEvent<TResult> = Extract<
   { type: "completed" | "failed" | "cancelled" }
 >;
 
-/**
- * Thrown when a job id is not in Redis — either it never existed, or it
- * finished and its `resultTtlMs` elapsed.
- */
-export class JobNotFoundError extends Error {
-  readonly jobId: string;
-  constructor(jobId: string) {
-    super(`Job "${jobId}" not found (unknown id, or its result TTL elapsed)`);
-    this.name = "JobNotFoundError";
-    this.jobId = jobId;
-  }
-}
-
-/**
- * Thrown inside a handler when this worker no longer owns the job: Redis
- * reported another token on it, or the lease could not be renewed before it
- * would lapse (a partition, a stalled event loop), so another worker may
- * already be running it. Keep working and you are burning tokens on a run
- * whose result will likely be discarded, so `emit()`, `progress()`, and the
- * automatic heartbeat all abort the job's signal with this. The worker also
- * reports it to `onError`.
- */
-export class JobLeaseLostError extends Error {
-  readonly jobId: string;
-  constructor(jobId: string) {
-    super(
-      `Lost the lease on job "${jobId}" — another worker may be running it now. Raise leaseMs or lower heartbeatMs if this recurs.`
-    );
-    this.name = "JobLeaseLostError";
-    this.jobId = jobId;
-  }
-}
-
-/**
- * The reason on a job's signal when `worker.stop({ timeoutMs })` ran out of
- * time and handed the job back to the queue. Another worker re-runs it from the
- * top; nothing this run does from here on is recorded.
- */
-export class WorkerStoppedError extends Error {
-  readonly jobId: string;
-  constructor(jobId: string) {
-    super(
-      `The worker stopped before job "${jobId}" finished; it was requeued for another worker`
-    );
-    this.name = "WorkerStoppedError";
-    this.jobId = jobId;
-  }
-}
-
 // TODO(consistency pass): the queue errors extend Error directly because there
 // is no shared BenniError base yet. Rebase all of them onto it once it lands.
-
-/**
- * Thrown by `wait()` for a job that failed for good: dead-lettered after its
- * last attempt, or failed by a `TerminalJobError`. `message` is the recorded
- * failure, verbatim.
- */
-export class JobFailedError extends Error {
-  readonly jobId: string;
-  constructor(jobId: string, message: string) {
-    super(message);
-    this.name = "JobFailedError";
-    this.jobId = jobId;
-  }
-}
-
-/**
- * Thrown by `wait()` for a job that was cancelled, and the reason on a
- * handler's signal when `cancel()` reaches its running job.
- */
-export class JobCancelledError extends Error {
-  readonly jobId: string;
-  constructor(jobId: string) {
-    super(`Job "${jobId}" was cancelled`);
-    this.name = "JobCancelledError";
-    this.jobId = jobId;
-  }
-}
-
-/**
- * Throw from a handler to fail a job immediately with no further attempts —
- * a malformed request, a content-policy refusal, an unsupported model. Anything
- * a retry would reproduce verbatim belongs here rather than in the backoff.
- */
-export class TerminalJobError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "TerminalJobError";
-  }
-}
-
-/**
- * Throw from a handler to retry after an explicit delay, overriding the
- * configured backoff. Built for provider `Retry-After`: pass the header through
- * and the job comes back exactly when the provider says it may.
- */
-export class RetryJobError extends Error {
-  readonly retryAfterMs: number;
-  constructor(
-    message: string,
-    retryAfterMs: number,
-    options?: { cause?: unknown }
-  ) {
-    super(message, options);
-    this.name = "RetryJobError";
-    // A `Retry-After` header parsed straight through can be NaN or Infinity.
-    // Redis rejects that as a sorted-set score, and by the time the retry
-    // script reaches its ZADD it has already dropped the lease, so the job
-    // would be stranded outside every lifecycle index. Refuse it here, where
-    // the worker still falls back to the ordinary backoff.
-    if (!Number.isFinite(retryAfterMs)) {
-      throw new ValidationError(
-        `queue retryAfterMs must be a finite number of milliseconds, received ${retryAfterMs}`
-      );
-    }
-    this.retryAfterMs = Math.max(0, retryAfterMs);
-  }
-}
 
 /** The handler's view of the job it is running. */
 export type JobContext<TPayload> = {
@@ -1158,7 +1050,8 @@ return {watermark or "", redis.call("XRANGE", KEYS[2], ARGV[1], "+")}
  * — while streams carry output, which is what streams are good at.
  *
  * ```ts
- * const jobs = queue<{ prompt: string }, string>(client, { prefix: "generate" });
+ * // queue<{ prompt: string }, string>("generate")
+ * const jobs = redis.query.generate;
  *
  * // Producer — runs anywhere, including the edge.
  * const { id } = await jobs.enqueue({ prompt }, { idempotencyKey: requestId });
@@ -1190,7 +1083,7 @@ return {watermark or "", redis.call("XRANGE", KEYS[2], ARGV[1], "+")}
  * connection and blocks on a doorbell list when the adapter provides
  * `session()`, falling back to polling when it does not.
  */
-function createQueue<TPayload, TResult = unknown>(
+export function createQueue<TPayload, TResult = unknown>(
   client: RedisClient,
   options?: QueueOptions<TPayload, TResult>,
   track?: StoreContext["track"]
@@ -2307,31 +2200,10 @@ function toNumber(reply: RedisReply): number {
   return 0;
 }
 
-/** The queue {@link queue} returns. */
+/** A queue, as `redis.query.<name>` returns it for a {@link QueueSchema}. */
 export type QueueStore<TPayload, TResult = unknown> = ReturnType<
   typeof createQueue<TPayload, TResult>
 >;
-
-/** {@link QueueOptions} plus the client, for the single-argument form. */
-export type QueueConfig<TPayload, TResult> = QueueOptions<TPayload, TResult> & {
-  /** The client, a promise of one, a factory, or a benni handle. */
-  readonly client: ClientSource;
-};
-
-export function queue<TPayload, TResult = unknown>(
-  config: QueueConfig<TPayload, TResult>
-): QueueStore<TPayload, TResult>;
-export function queue<TPayload, TResult = unknown>(
-  client: ClientSource,
-  options?: QueueOptions<TPayload, TResult>
-): QueueStore<TPayload, TResult>;
-export function queue<TPayload, TResult = unknown>(
-  source: ClientSource | QueueConfig<TPayload, TResult>,
-  options?: QueueOptions<TPayload, TResult>
-): QueueStore<TPayload, TResult> {
-  const args = clientArgs<QueueOptions<TPayload, TResult>>(source, options);
-  return createQueue<TPayload, TResult>(args.client, args.options);
-}
 
 /**
  * A queue declared as a schema value, so it lands in `redis.query` next to the
@@ -2358,7 +2230,7 @@ const queueBinding: StoreBinding = {
 /** Build a {@link QueueSchema}. Exported as `queue` from `benni/schema`. */
 export function defineQueue<TPayload, TResult = unknown>(
   prefix: string,
-  options?: QueueOptions<TPayload, TResult>
+  options?: Omit<QueueOptions<TPayload, TResult>, "prefix">
 ): QueueSchema<TPayload, TResult> {
   // The $infer* anchors are type-only phantoms — cast the literal.
   const schema = {

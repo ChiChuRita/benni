@@ -2,11 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ValidationError } from "../src/core/errors.js";
 import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
-import {
-  queue,
-  RetryJobError,
-  TerminalJobError
-} from "../src/primitives/index.js";
+import { RetryJobError, TerminalJobError } from "../src/primitives/errors.js";
+import { createQueue } from "../src/primitives/queue.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -71,7 +68,7 @@ describeRedis("queue: hunt regressions (live)", () => {
     // script after it had removed the lease and written status=scheduled: the
     // job was in no lifecycle index at all, so nothing could ever reserve it.
     const prefix = nextPrefix();
-    const jobs = queue<null, string>(client, {
+    const jobs = createQueue<null, string>(client, {
       prefix,
       backoffMs: 60_000,
       maxBackoffMs: 60_000
@@ -100,7 +97,7 @@ describeRedis("queue: hunt regressions (live)", () => {
   it("refuses to re-enqueue an id that is still live", async () => {
     // Rewriting a live record left the id in two lifecycle indexes at once, and
     // a worker pair ran the supposedly single job twice.
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     await jobs.enqueue("one", { id: "dup" });
 
     await expect(jobs.enqueue("two", { id: "dup" })).rejects.toBeInstanceOf(
@@ -123,7 +120,7 @@ describeRedis("queue: hunt regressions (live)", () => {
     // The clean-slate block only touched the hash, so the new job kept the old
     // one's dead-letter entry and its terminal event: watch() replayed the old
     // failure and ended before the new generation had produced anything.
-    const jobs = queue<string, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<string, string>(client, { prefix: nextPrefix() });
     const worker = jobs.worker(
       async () => {
         throw new TerminalJobError("model refused");
@@ -157,7 +154,7 @@ describeRedis("queue: hunt regressions (live)", () => {
     // boundary and the chunks after it are never delivered. The seeded entry
     // stands in for that clock collision deterministically.
     const seeded = "9999999999999-0";
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     let attempts = 0;
     const worker = jobs.worker(
       async (job) => {
@@ -209,7 +206,7 @@ describeRedis("queue: hunt regressions (live)", () => {
     // cancel() promises the caller no result is coming, but settle only checked
     // the lease token, so a handler finishing before the next heartbeat
     // recorded its result anyway.
-    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    const jobs = createQueue<null, string>(client, { prefix: nextPrefix() });
     const running = gate();
     const finish = gate();
     const worker = jobs.worker(
@@ -239,7 +236,7 @@ describeRedis("queue: hunt regressions (live)", () => {
   it("settles cancelled instead of scheduling another paid attempt", async () => {
     // Same race on the retry path: a retryable throw after cancel() scheduled a
     // second generation of work the caller had already stopped.
-    const jobs = queue<null, string>(client, {
+    const jobs = createQueue<null, string>(client, {
       prefix: nextPrefix(),
       backoffMs: 10,
       maxBackoffMs: 10
@@ -284,7 +281,7 @@ describeRedis("queue: hunt regressions (live)", () => {
     // that TTL lost its key mid-flight and a duplicate request paid for a
     // second generation.
     const prefix = nextPrefix();
-    const jobs = queue<null, string>(client, { prefix });
+    const jobs = createQueue<null, string>(client, { prefix });
     const running = gate();
     const finish = gate();
     let runs = 0;

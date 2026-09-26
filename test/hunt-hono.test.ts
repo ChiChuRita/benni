@@ -9,6 +9,8 @@ import {
   rateLimitMiddleware,
   sessionMiddleware
 } from "../src/hono/index.js";
+import { benni } from "../src/index.js";
+import { ratelimit } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 
 // These requests carry a sid cookie, which cacheMiddleware() now bypasses by default;
@@ -145,9 +147,9 @@ describe("hono ratelimit headers", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client,
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: client }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester"
       })
     );
@@ -174,9 +176,9 @@ describe("hono ratelimit headers", () => {
     app.use(
       "*",
       rateLimitMiddleware({
-        client,
-        limit: 5,
-        windowMs: 60_000,
+        limiter: benni({ client: client }).store(
+          ratelimit("ratelimit", { limit: 5, windowMs: 60_000 })
+        ),
         key: () => "tester"
       })
     );

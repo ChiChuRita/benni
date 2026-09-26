@@ -8,8 +8,10 @@ import {
   vi
 } from "vitest";
 import type { RedisClient, RedisCommand } from "../src/core/types.js";
+import { benni } from "../src/index.js";
 import { cacheHandler, rateLimitMiddleware } from "../src/next/index.js";
 import { node } from "../src/node/index.js";
+import { ratelimit } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
 import {
   appPageSet,
@@ -533,14 +535,25 @@ describe("rateLimit", () => {
     vi.useRealTimers();
   });
 
+  it("refuses the 0.1 { client, limit, windowMs } options, naming the fix", () => {
+    expect(() =>
+      rateLimitMiddleware({
+        client: fakeClient([], []),
+        limit: 5,
+        windowMs: 60_000,
+        identify: () => "tester"
+      } as never)
+    ).toThrow(/pass `limiter: redis\.query\.apiLimit`/);
+  });
+
   it("resolves null when the request is allowed", async () => {
     const commands: RedisCommand[] = [];
     // SCRIPT LOAD -> sha, EVALSHA -> [allowed, remaining, reset]
     const client = fakeClient(commands, ["sha1", [1, 9, Date.now() + 60_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 10,
-      windowMs: 60_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 10, windowMs: 60_000 })
+      ),
       identify: (request) =>
         request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
         "anonymous"
@@ -567,9 +580,9 @@ describe("rateLimit", () => {
     // duration, so the local clock is irrelevant to it.
     const client = fakeClient([], ["sha1", [0, 0, resetMs, 30_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 5,
-      windowMs: 60_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 5, windowMs: 60_000 })
+      ),
       identify: () => "tester"
     });
 
@@ -591,9 +604,9 @@ describe("rateLimit", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 5,
-      windowMs: 1_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 5, windowMs: 1_000 })
+      ),
       identify: (request) =>
         request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
         "anonymous"
@@ -608,9 +621,9 @@ describe("rateLimit", () => {
     const commands: RedisCommand[] = [];
     const client = fakeClient(commands, ["sha1", [1, 4, Date.now() + 1_000]]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 5,
-      windowMs: 1_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 5, windowMs: 1_000 })
+      ),
       identify: (request) => request.headers.get("x-api-key") ?? "anonymous"
     });
 
@@ -630,9 +643,9 @@ describe("rateLimit", () => {
       [0, 0, 1_700_000_099_000, 900]
     ]);
     const limiter = rateLimitMiddleware({
-      client,
-      limit: 3,
-      windowMs: 10_000,
+      limiter: benni({ client: client }).store(
+        ratelimit("next-ratelimit", { limit: 3, windowMs: 10_000 })
+      ),
       identify: () => "tester"
     });
 

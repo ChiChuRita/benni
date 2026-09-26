@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
-import type { RedisClient } from "../src/core/types.js";
-import {
-  budget,
-  cache,
-  idempotency,
-  semaphore
-} from "../src/primitives/index.js";
+import { benni } from "../src/index.js";
+import { budget, cache, idempotency, json, semaphore } from "../src/schema.js";
 import { fakeClient } from "./fake-client.js";
-
-const client: RedisClient = fakeClient([], []);
 
 type Receipt = { id: string };
 type Order = { total: number };
+
+// The pages declare these in the schema module and reach them by name.
+const redis = benni({
+  client: fakeClient([], []),
+  schema: {
+    budgets: budget("budget", { limit: 2_000_000, windowMs: 86_400_000 }),
+    slots: semaphore("semaphore", { limit: 20, leaseMs: 60_000 }),
+    once: idempotency("idem", { codec: json<Receipt>() }),
+    receipts: cache("receipt", { ttlMs: 60_000, codec: json<Receipt>() })
+  }
+});
 declare const userId: string;
 declare const promptTokens: number;
 declare const prompt: string;
@@ -31,10 +35,7 @@ declare function handler(): Promise<Receipt>;
  */
 function docsSnippets() {
   // --- primitives/budget ---------------------------------------------------
-  const budgets = budget(client, {
-    limit: 2_000_000,
-    windowMs: 86_400_000
-  });
+  const budgets = redis.query.budgets;
 
   void (async () => {
     const { ok, remaining, retryAfterMs } = await budgets.charge(
@@ -69,7 +70,7 @@ function docsSnippets() {
   });
 
   // --- primitives/semaphore ------------------------------------------------
-  const slots = semaphore(client, { limit: 20, leaseMs: 60_000 });
+  const slots = redis.query.slots;
 
   void (async () => {
     // run() renews the lease on its own, so a body no longer heartbeats by
@@ -102,7 +103,7 @@ function docsSnippets() {
   });
 
   // --- primitives/idempotency ----------------------------------------------
-  const once = idempotency<Receipt>(client);
+  const once = redis.query.once;
 
   void (async () => {
     const { value, replayed } = await once.run(
@@ -126,15 +127,15 @@ function docsSnippets() {
   });
 
   // The pages cross-link to cache; keep that call shape honest too.
-  void cache<Receipt>(client, { ttlMs: 60_000 });
+  void redis.query.receipts.get("r-1", async () => ({ id: "r-1" }));
 }
 
 void docsSnippets;
 
 describe("new primitives", () => {
-  it("are all reachable from benni/primitives", () => {
-    expect(typeof budget).toBe("function");
-    expect(typeof semaphore).toBe("function");
-    expect(typeof idempotency).toBe("function");
+  it("are all reachable through redis.query", () => {
+    expect(typeof redis.query.budgets.charge).toBe("function");
+    expect(typeof redis.query.slots.run).toBe("function");
+    expect(typeof redis.query.once.run).toBe("function");
   });
 });

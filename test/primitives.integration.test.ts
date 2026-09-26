@@ -2,16 +2,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RedisClient } from "../src/core/index.js";
 import { benni } from "../src/index.js";
 import { node } from "../src/node/index.js";
+import { createBudget } from "../src/primitives/budget.js";
 import {
-  budget,
-  cache,
   defineCache as cacheSchema,
-  idempotency,
-  lock,
-  ratelimit,
-  defineRatelimit as ratelimitSchema,
-  semaphore
-} from "../src/primitives/index.js";
+  createCache
+} from "../src/primitives/cache.js";
+import { createIdempotency } from "../src/primitives/idempotency.js";
+import { createLock } from "../src/primitives/lock.js";
+import {
+  createRatelimit,
+  defineRatelimit as ratelimitSchema
+} from "../src/primitives/ratelimit.js";
+import { createSemaphore } from "../src/primitives/semaphore.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
@@ -32,7 +34,10 @@ describeRedis("primitives (live)", () => {
 
   describe("lock", () => {
     it("gives one holder at a time and frees on release", async () => {
-      const locks = lock(client, { prefix: `${run}:lock`, ttlMs: 10_000 });
+      const locks = createLock(client, {
+        prefix: `${run}:lock`,
+        ttlMs: 10_000
+      });
       const id = "resource";
 
       const first = await locks.acquire(id);
@@ -51,7 +56,10 @@ describeRedis("primitives (live)", () => {
     });
 
     it("extends the TTL only while held", async () => {
-      const locks = lock(client, { prefix: `${run}:lock2`, ttlMs: 10_000 });
+      const locks = createLock(client, {
+        prefix: `${run}:lock2`,
+        ttlMs: 10_000
+      });
       const handle = await locks.acquire("res");
       await expect(handle?.extend(20_000)).resolves.toBe(true);
       await handle?.release();
@@ -59,7 +67,7 @@ describeRedis("primitives (live)", () => {
     });
 
     it("run releases the lock even when the body throws", async () => {
-      const locks = lock(client, { prefix: `${run}:lock3` });
+      const locks = createLock(client, { prefix: `${run}:lock3` });
       await expect(
         locks.run("res", async () => {
           throw new Error("boom");
@@ -74,7 +82,7 @@ describeRedis("primitives (live)", () => {
 
   describe("ratelimit", () => {
     it("admits up to the limit, then denies within the window", async () => {
-      const limiter = ratelimit(client, {
+      const limiter = createRatelimit(client, {
         limit: 3,
         windowMs: 60_000,
         prefix: `${run}:rl`
@@ -98,7 +106,7 @@ describeRedis("primitives (live)", () => {
     });
 
     it("tracks each id independently", async () => {
-      const limiter = ratelimit(client, {
+      const limiter = createRatelimit(client, {
         limit: 1,
         windowMs: 60_000,
         prefix: `${run}:rl2`
@@ -117,7 +125,7 @@ describeRedis("primitives (live)", () => {
 
   describe("cache", () => {
     it("collapses a stampede of concurrent misses to one loader call", async () => {
-      const store = cache<{ n: number }>(client, {
+      const store = createCache<{ n: number }>(client, {
         ttlMs: 60_000,
         prefix: `${run}:cache`,
         pollMs: 10
@@ -143,7 +151,7 @@ describeRedis("primitives (live)", () => {
       // holder whose loader threw released within milliseconds, but every
       // waiter still slept the full lockTtlMs and then all loaded at once:
       // one backend 503 became a multi-second stall plus a stampede.
-      const store = cache<string>(client, {
+      const store = createCache<string>(client, {
         ttlMs: 60_000,
         prefix: `${run}:cache3`,
         lockTtlMs: 5_000,
@@ -176,7 +184,7 @@ describeRedis("primitives (live)", () => {
     });
 
     it("expires by ttl and reloads after del", async () => {
-      const store = cache<string>(client, {
+      const store = createCache<string>(client, {
         ttlMs: 60_000,
         prefix: `${run}:cache2`
       });
@@ -197,7 +205,7 @@ describeRedis("primitives (live)", () => {
   // the condition these guarantees are not about.
 
   it("budget: charge respects the limit", async () => {
-    const b = budget(client, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 60_000 });
     const id = uid();
     expect((await b.charge(id, 60)).ok).toBe(true);
     expect((await b.charge(id, 30)).ok).toBe(true);
@@ -225,7 +233,7 @@ describeRedis("primitives (live)", () => {
         return client.send(command);
       }
     };
-    const b = budget(flaky, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(flaky, { limit: 100, windowMs: 60_000 });
     const id = uid();
     const hold = await b.reserve(id, 10);
     expect(hold).not.toBeNull();
@@ -241,7 +249,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("budget: a hold blocks others, settle charges the real cost", async () => {
-    const b = budget(client, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 60_000 });
     const id = uid();
     const hold = await b.reserve(id, 80);
     expect(hold).not.toBeNull();
@@ -254,7 +262,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("budget: release charges nothing; settle is idempotent", async () => {
-    const b = budget(client, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 60_000 });
     const id = uid();
     const hold = await b.reserve(id, 50);
     await hold?.release();
@@ -266,7 +274,11 @@ describeRedis("primitives (live)", () => {
   });
 
   it("budget: an expired hold stops counting", async () => {
-    const b = budget(client, { limit: 100, windowMs: 60_000, holdTtlMs: 300 });
+    const b = createBudget(client, {
+      limit: 100,
+      windowMs: 60_000,
+      holdTtlMs: 300
+    });
     const id = uid();
     await b.reserve(id, 90);
     expect((await b.charge(id, 50)).ok).toBe(false);
@@ -277,7 +289,11 @@ describeRedis("primitives (live)", () => {
   it("budget: settle after the hold lapsed still charges", async () => {
     // The money was spent even though the lease is gone; a budget that
     // forgets real spend is worse than one that briefly runs over.
-    const b = budget(client, { limit: 100, windowMs: 60_000, holdTtlMs: 300 });
+    const b = createBudget(client, {
+      limit: 100,
+      windowMs: 60_000,
+      holdTtlMs: 300
+    });
     const id = uid();
     const hold = await b.reserve(id, 10);
     await new Promise((r) => setTimeout(r, 500));
@@ -287,7 +303,11 @@ describeRedis("primitives (live)", () => {
   });
 
   it("budget: extend keeps a hold alive past its lease", async () => {
-    const b = budget(client, { limit: 100, windowMs: 60_000, holdTtlMs: 400 });
+    const b = createBudget(client, {
+      limit: 100,
+      windowMs: 60_000,
+      holdTtlMs: 400
+    });
     const id = uid();
     const hold = await b.reserve(id, 90);
     await new Promise((r) => setTimeout(r, 250));
@@ -298,7 +318,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("budget: spend rolls off as the window slides", async () => {
-    const b = budget(client, { limit: 100, windowMs: 1_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 1_000 });
     const id = uid();
     expect((await b.charge(id, 100)).ok).toBe(true);
     expect((await b.charge(id, 1)).ok).toBe(false);
@@ -309,7 +329,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("budget: 20 concurrent reserves admit exactly 12", async () => {
-    const b = budget(client, { limit: 120, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 120, windowMs: 60_000 });
     const id = uid();
     const held = await Promise.all(
       Array.from({ length: 20 }, () => b.reserve(id, 10))
@@ -320,7 +340,7 @@ describeRedis("primitives (live)", () => {
   it("budget: a zero reservation is not mistaken for a settled one", async () => {
     // The settle tombstone must not collide with a legitimate zero hold, or
     // the next settle would treat a real charge as a duplicate and skip it.
-    const b = budget(client, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 60_000 });
     const id = uid();
     const hold = await b.reserve(id, 0);
     expect(hold).not.toBeNull();
@@ -331,7 +351,7 @@ describeRedis("primitives (live)", () => {
   it("budget: rejects fractional amounts instead of failing inside Lua", async () => {
     // The buckets are integer counters, so a fractional cost used to surface
     // as a raw "value is not an integer" from the script.
-    const b = budget(client, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 60_000 });
     await expect(b.charge(uid(), 1.5)).rejects.toThrow(
       /must be a non-negative integer/
     );
@@ -341,7 +361,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("semaphore: never exceeds the limit under 50 concurrent runs", async () => {
-    const s = semaphore(client, { limit: 5, leaseMs: 10_000 });
+    const s = createSemaphore(client, { limit: 5, leaseMs: 10_000 });
     const id = uid();
     let inFlight = 0;
     let peak = 0;
@@ -368,7 +388,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("semaphore: reclaims a dead holder's slot", async () => {
-    const s = semaphore(client, { limit: 1, leaseMs: 300 });
+    const s = createSemaphore(client, { limit: 1, leaseMs: 300 });
     const id = uid();
     const held = await s.acquire(id);
     expect(held).not.toBeNull();
@@ -379,7 +399,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("idempotency: 10 concurrent calls run fn once", async () => {
-    const once = idempotency<{ n: number }>(client, { ttlMs: 60_000 });
+    const once = createIdempotency<{ n: number }>(client, { ttlMs: 60_000 });
     const key = uid();
     let calls = 0;
     const results = await Promise.all(
@@ -397,7 +417,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("idempotency: a throwing handler releases the key", async () => {
-    const once = idempotency<string>(client);
+    const once = createIdempotency<string>(client);
     const key = uid();
     await expect(
       once.run(key, () => {
@@ -414,7 +434,7 @@ describeRedis("primitives (live)", () => {
   // specific timing or configuration that the happy-path tests never hit.
 
   it("F1 semaphore: a short lease must not shorten the whole set's TTL", async () => {
-    const s = semaphore(client, {
+    const s = createSemaphore(client, {
       limit: 2,
       leaseMs: 5_000,
       prefix: `${uid()}`
@@ -427,7 +447,11 @@ describeRedis("primitives (live)", () => {
   });
 
   it("F2 semaphore: extend must fail once our lease elapsed", async () => {
-    const s = semaphore(client, { limit: 2, leaseMs: 100, prefix: `${uid()}` });
+    const s = createSemaphore(client, {
+      limit: 2,
+      leaseMs: 100,
+      prefix: `${uid()}`
+    });
     // A long-lived co-holder keeps the sorted set itself alive, so the expired
     // member is still physically present and ZSCORE alone cannot tell.
     await s.acquire("x", { leaseMs: 60_000 });
@@ -438,7 +462,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("F3 budget: holds must survive when holdTtlMs exceeds 2x the window", async () => {
-    const b = budget(client, {
+    const b = createBudget(client, {
       limit: 100,
       windowMs: 100,
       holdTtlMs: 3_000,
@@ -450,7 +474,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("F4 budget: a duplicate settle must not double-charge after the hold was pruned", async () => {
-    const b = budget(client, {
+    const b = createBudget(client, {
       limit: 100,
       windowMs: 60_000,
       holdTtlMs: 100,
@@ -465,7 +489,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("F5 budget: reset must clear spend even with a skewed local clock", async () => {
-    const b = budget(client, {
+    const b = createBudget(client, {
       limit: 100,
       windowMs: 60_000,
       prefix: `${uid()}`
@@ -482,7 +506,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("F6 idempotency: a failed write-back must not be reported as plain success", async () => {
-    const once = idempotency<string>(client, {
+    const once = createIdempotency<string>(client, {
       prefix: `${uid()}`,
       codec: {
         encode: () => {
@@ -500,7 +524,7 @@ describeRedis("primitives (live)", () => {
     // Settle-once used to be enforced with a server-side marker per settle,
     // which meant 200 sequential calls left 200 members for every later check
     // to scan. The bound the docs promise is concurrency, not call volume.
-    const b = budget(client, { limit: 10_000_000, windowMs: 600_000 });
+    const b = createBudget(client, { limit: 10_000_000, windowMs: 600_000 });
     const id = uid();
     for (let index = 0; index < 200; index++) {
       const hold = await b.reserve(id, 10);
@@ -511,7 +535,7 @@ describeRedis("primitives (live)", () => {
   });
 
   it("settling twice on one handle charges once, and disarms the handle", async () => {
-    const b = budget(client, { limit: 100, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 100, windowMs: 60_000 });
     const id = uid();
     const hold = await b.reserve(id, 50);
     await hold?.settle(25);
@@ -525,7 +549,7 @@ describeRedis("primitives (live)", () => {
     // The lease keys are expired with PEXPIREAT on an epoch-ms value. Lua can
     // render a large number as 1.78e+12, which Redis rejects, so assert a
     // concrete TTL actually landed rather than trusting the call succeeded.
-    const s = semaphore(client, { limit: 1, leaseMs: 30_000 });
+    const s = createSemaphore(client, { limit: 1, leaseMs: 30_000 });
     const id = uid();
     await s.acquire(id);
     const ttl = Number(await client.send(["PTTL", `semaphore:${id}`]));
@@ -536,7 +560,11 @@ describeRedis("primitives (live)", () => {
   it("budget: extending past the window keeps the hold counted", async () => {
     // Deeper than the holdTtlMs > window*2 case: the extend itself has to push
     // the reservation key's own expiry out, or the hold vanishes mid-call.
-    const b = budget(client, { limit: 100, windowMs: 200, holdTtlMs: 300 });
+    const b = createBudget(client, {
+      limit: 100,
+      windowMs: 200,
+      holdTtlMs: 300
+    });
     const id = uid();
     const hold = await b.reserve(id, 90);
     expect(await hold?.extend(5_000)).toBe(true);
@@ -548,7 +576,7 @@ describeRedis("primitives (live)", () => {
     // bare ZREM answered "yes, you held it" for a slot already handed on.
     // A second, longer-lived holder is what makes this observable: it keeps
     // the ZSET key alive, so the lapsed member is still physically there.
-    const slots = semaphore(client, {
+    const slots = createSemaphore(client, {
       limit: 2,
       prefix: `${run}:sem-lapse`
     });
@@ -569,7 +597,7 @@ describeRedis("primitives (live)", () => {
     // The allowed branch returned now + window, but in a sliding window a slot
     // frees when the OLDEST entry ages out. With requests spread through a
     // window that put X-RateLimit-Reset up to a full window late.
-    const limiter = ratelimit(client, {
+    const limiter = createRatelimit(client, {
       limit: 5,
       windowMs: 3_000,
       prefix: `${run}:rl-reset`
@@ -589,7 +617,7 @@ describeRedis("primitives (live)", () => {
   it("budget: check reports a real retryAfterMs when it reports not ok", async () => {
     // check's script always returns status 1, and resultOf zeroes retryAfter
     // for status 1, so a check with no headroom said "not ok, retry in 0ms".
-    const b = budget(client, { limit: 10, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 10, windowMs: 60_000 });
     const id = uid();
     expect((await b.charge(id, 10)).ok).toBe(true);
 
@@ -656,7 +684,7 @@ describeRedis("primitives (live)", () => {
     // budget:{}:0 is not a smaller tag, it is no tag: Redis hashes the whole
     // key, so this id's three keys scatter and every script for it fails with
     // CROSSSLOT -- for this one id and no other.
-    const b = budget(client, { limit: 10, windowMs: 60_000 });
+    const b = createBudget(client, { limit: 10, windowMs: 60_000 });
     await expect(b.charge("", 1)).rejects.toThrow(/hash tag/);
     await expect(b.check("}oops")).rejects.toThrow(/hash tag/);
   });
