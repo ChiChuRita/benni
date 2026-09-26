@@ -16,7 +16,30 @@ export const users = hash("user", {
 });
 ```
 
-## Write A Hash
+## Optional Fields
+
+Wrap a field's codec in `optional()` when a stored record may lack it. That is how a schema grows: add the new field as `optional(...)` and every record written before it keeps reading, with nothing to backfill first.
+
+```ts
+import { hash, number, optional, string } from "benni/schema";
+
+export const users = hash("user", {
+  name: string(),
+  score: number(),
+  bio: optional(string())
+});
+
+const user = await redis.hash(users).hget("42");
+//    ^? { name: string; score: number; bio?: string } | null
+```
+
+A missing optional field is **absent** from the record: `"bio" in user` is `false`, never a `bio: undefined` or `bio: null` key. A missing *required* field still throws [`PartialRecordError`](#missing-required-fields-throw). The write side matches: `hset` lets you leave an optional field out, and `InferInput<typeof users>` types it `bio?: string`.
+
+`optional()` only means something on a hash field. On a `kv` value, a stream field, or a script arg it is the wrapped codec unchanged, and the value stays required.
+
+There is no default-value wrapper: read `user.bio ?? ""` where you need one. A default would have to decide what `hgetall`, `hmget`, and `hgetdel` report for a field that was never stored, and each answer hides the fact that it was missing.
+
+## Write A Whole Record
 
 ```ts
 await redis.hash(users).hset("42", {
@@ -25,19 +48,28 @@ await redis.hash(users).hset("42", {
 });
 ```
 
-## Read A Hash
+The record form requires every required field, so forgetting one is a compile error rather than a partial record in Redis. It writes the whole record: an optional field you leave out (or pass as `undefined`) is deleted, in the same `MULTI`/`EXEC` as the `HSET`, so the next `hget` returns exactly what you wrote and not a `bio` left over from an earlier write. When every optional field is present it is one plain `HSET`.
+
+## Update Some Fields
+
+`hmset` writes any subset of the declared fields in one `HSET` and leaves the rest alone. It is the partial update, and it resolves to the number of fields that were new:
 
 ```ts
-const user = await redis.hash(users).hgetall("42");
-//    ^? { name: string; score: number } | null
+await redis.hash(users).hmset("42", { score: 11, bio: "Mathematician" });
 ```
 
-## Update Fields
+Each value is checked against its field's codec, and an unknown field name is a compile error. An empty object and a value of `undefined` are rejected before anything is sent: omit a key to leave that field unchanged, or `hdel` it to remove it. (Redis deprecated its `HMSET` command in favour of variadic `HSET`, which is what this sends; the name pairs it with `hmget`.)
+
+The partial update is its own method rather than a looser `hset` on purpose: if `hset(id, record)` also accepted a partial object, a record with a forgotten required field would compile as a partial update and the mistake would reach Redis.
+
+For one field, or a counter:
 
 ```ts
 await redis.hash(users).hset("42", "score", 11);
 await redis.hash(users).hincrby("42", "score", 1);
 ```
+
+`hincrby` throws a `ReplyShapeError` once the stored value passes `Number.MAX_SAFE_INTEGER`, like `incr`, instead of resolving a rounded number.
 
 ## Read Fields
 
@@ -48,25 +80,33 @@ const score = await redis.hash(users).hget("42", "score");
 //    ^? number | null      (one field)
 
 const user = await redis.hash(users).hget("42");
-//    ^? { name: string; score: number } | null   (the whole record)
+//    ^? { name: string; score: number; bio?: string } | null   (the whole record)
 
-const fields = await redis.hash(users).hmget("42", ["name", "score"]);
-//    ^? { name?: string | null; score?: number | null }
+const fields = await redis.hash(users).hmget("42", ["name", "bio"]);
+//    ^? { name?: string; bio?: string }
 ```
 
 The single-field form returns the field's decoded type, so `hget("42", "score")` is a `number | null` and not a string you have to parse.
 
-## Missing Declared Fields Throw
+Every read that returns an object says "not stored" the same way: the key is absent. That holds for an optional field on `hget(id)`, for every field on `hgetall`, and for `hmget`, `hgetex`, and `hgetdel`, whose results only carry the fields Redis had a value for. Only a read that returns a bare value, `hget(id, field)`, uses `null`.
 
-A hash under `hash("user", …)` is a record your schema owns, so the whole-record read insists on it. `hget("42")` needs every declared field and throws a `PartialRecordError` when one is gone (deleted with `hdel`, or expired by a per-field TTL). `hgetall` is the tolerant read for exactly that case, and types its result as `Partial`:
+## Missing Required Fields Throw
+
+A hash under `hash("user", …)` is a record your schema owns, so the whole-record read insists on it. `hget("42")` needs every required field and throws a `PartialRecordError` naming the missing ones on `.missing` when one is gone (deleted with `hdel`, or expired by a per-field TTL). Optional fields never trigger it. `hgetall` is the tolerant read for exactly that case, and types every field as optional:
 
 ```ts
 const strict = await redis.hash(users).hget("42");
-//    ^? { name: string; score: number } | null   (throws PartialRecordError if incomplete)
+//    ^? { name: string; score: number; bio?: string } | null   (throws PartialRecordError if name or score is missing)
 
 const tolerant = await redis.hash(users).hgetall("42");
-//    ^? { name?: string; score?: number } | null
+//    ^? { name?: string; score?: number; bio?: string } | null
 ```
+
+A key that holds none of the declared fields reads as `null` from both.
+
+## Undeclared Fields Are Left Out
+
+A field in Redis that the schema does not declare (written by another service, by `redis-cli`, or by an older schema that has since dropped it) is not part of the record: `hgetall` leaves it out, the way `hget(id)` never asks for it, and `redis.scan.hash` skips it. That is what makes removing a field from a schema safe; throwing on it would turn every old record into an error. The fields are still there and still counted by `hlen`. List them with `hkeys`, which returns raw names, or read them with `redis.raw.send(["HGET", key, field])`.
 
 This is the opposite of how [stream](/benni/data-structures/streams/) entry values behave, which are always `Partial` and never throw. The difference is who writes the key: a hash is a record you own, while a stream is an append log any producer can write to. See [Entry Values Are Partial](/benni/data-structures/streams/#entry-values-are-partial).
 
@@ -130,9 +170,9 @@ const wrote = await redis.hash(users).hsetex(
 const removed = await redis.hash(users).hgetdel("42", ["name", "score"]);
 ```
 
-`hsetex` writes only the fields you pass, and it rejects a field whose value is `undefined` rather than storing the string `"undefined"`: omit the key to leave that field alone. `hgetex` with an empty field list rejects too when you pass an expiry, because there is no field to apply it to.
+`hsetex` takes the same input as [`hmset`](#update-some-fields): any subset of the declared fields, the rest left alone. Like `hmset`, it rejects a field whose value is `undefined` rather than storing the string `"undefined"`: omit the key to leave that field alone. `hgetex` with an empty field list rejects too when you pass an expiry, because there is no field to apply it to.
 
-A lapsed field TTL leaves the hash partially populated, and so does `hdel` or `hgetdel` on a declared field. That is precisely the case [`hgetall` exists for](#missing-declared-fields-throw): a record with per-field TTLs should be read with `hgetall`, since `hget("42")` throws a `PartialRecordError` the moment one declared field has gone.
+A lapsed field TTL leaves the hash partially populated, and so does `hdel` or `hgetdel` on a declared field. That is precisely the case [`hgetall` exists for](#missing-required-fields-throw): a record with per-field TTLs should be read with `hgetall`, or have those fields declared `optional()`, since `hget("42")` throws a `PartialRecordError` the moment one required field has gone.
 
 ## Delete Fields Or The Hash
 
@@ -153,6 +193,8 @@ await redis.hash(users).hset(
   { ttlSeconds: 3600 }
 );
 ```
+
+The `HSET` (plus any `HDEL` of omitted optional fields) and the `EXPIRE` run in one `MULTI`/`EXEC`, so no reader sees the record without its TTL.
 
 ## Raw Redis Equivalent
 

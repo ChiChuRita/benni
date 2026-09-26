@@ -26,9 +26,30 @@ await redis.hash(users).hset("42", {
 Reads return decoded values:
 
 ```ts
-const user = await redis.hash(users).hgetall("42");
+const user = await redis.hash(users).hget("42");
 //    ^? { name: string; score: number; active: boolean } | null
 ```
+
+That comment is also what your editor shows. Inferred value types are flattened, so hovering `user` prints the object type itself, not the `InferHashOutput<{ name: Codec<string, string>; … }>` that computes it. The same goes for `hgetall`, `hmget`, stream entries, and `redis.scan.hash` entries.
+
+A field a stored record may lack is declared `optional()`, and the types say so on both sides:
+
+```ts
+import { optional } from "benni/schema";
+
+export const accounts = hash("account", {
+  email: string(),
+  nickname: optional(string())
+});
+
+await redis.hash(accounts).hset("7", { email: "ada@example.com" }); // nickname may be left out
+await redis.hash(accounts).hset("7", { nickname: "ada" });           // compile error: email is required
+
+const account = await redis.hash(accounts).hget("7");
+//    ^? { email: string; nickname?: string } | null
+```
+
+A missing optional field is absent from the object; `nickname` is never present as `undefined` or `null`. See [Optional Fields](/benni/data-structures/hashes/#optional-fields).
 
 Hash field methods are typed by field name:
 
@@ -51,7 +72,7 @@ export const sessions = kv("session", json<Session>());
 
 ## Inferring Types From Schemas
 
-Every schema carries type-only `$inferInput` / `$inferOutput` anchors, plus the `InferInput<T>` / `InferOutput<T>` utility types exported from `benni/schema`. Name a schema's value types anywhere without redeclaring them:
+`InferInput<T>` and `InferOutput<T>`, exported from `benni/schema` (and `benni`), name a schema's value types anywhere without redeclaring them. They work on every schema that encodes or decodes values, and on a bare codec:
 
 ```ts
 import { hash, json, kv, number, string } from "benni/schema";
@@ -66,11 +87,11 @@ export const profiles = kv("profile", json<Profile>());
 type NewUser = InferInput<typeof users>;
 //   ^? { name: string; score: number }
 
-type StoredProfile = typeof profiles.$inferOutput;
+type StoredProfile = InferOutput<typeof profiles>;
 //   ^? Profile
 ```
 
-`InferInput` is the write-side type (what `hset`/`set` accept) and `InferOutput` the read-side type (what `hgetall`/`get` return, before the `| null`). They differ when a codec transforms values on the way through. The `$infer*` properties are type-only phantoms; they never exist at runtime, so only use them in type positions (`typeof users.$inferInput`).
+`InferInput` is the write-side type (what `hset`/`set` accept) and `InferOutput` the read-side type (what `hget`/`get` return, before the `| null`). They differ when a codec transforms values on the way through. The schema carries nothing at runtime for them to read: the type lives on a phantom key that only the type system can see, so there is no property to access by mistake. (0.1's `typeof users.$inferInput` is `InferInput<typeof users>` now.)
 
 ## Runtime Validation With Standard Schema
 

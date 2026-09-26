@@ -5,13 +5,14 @@ import { type BlockingWait, blockingTimeoutMilliseconds } from "./session.js";
 import type {
   FieldCodecs,
   InferAnchors,
-  InferHashInput,
-  InferHashOutput,
+  InferFieldsInput,
+  PartialHashOutput,
   RedisClient,
   RedisCommandArgument,
   RedisKey,
   RedisKeyPart,
-  RedisReply
+  RedisReply,
+  Simplify
 } from "./types.js";
 
 export type StreamSchema<
@@ -19,7 +20,7 @@ export type StreamSchema<
   TPrefix extends string = string,
   TId extends RedisKeyPart = RedisKeyPart,
   THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
-> = InferAnchors<InferHashInput<TFields>, Partial<InferHashOutput<TFields>>> & {
+> = InferAnchors<InferFieldsInput<TFields>, PartialHashOutput<TFields>> & {
   readonly kind: "stream";
   readonly prefix: TPrefix;
   readonly hashTag?: THashTag;
@@ -29,10 +30,10 @@ export type StreamSchema<
   ): RedisKey<TPrefix, TActualId, THashTag>;
 };
 
-export type StreamEntry<TFields extends FieldCodecs> = {
+export type StreamEntry<TFields extends FieldCodecs> = Simplify<{
   id: string;
-  value: Partial<InferHashOutput<TFields>>;
-};
+  value: PartialHashOutput<TFields>;
+}>;
 
 export type StreamAddOptions = {
   readonly entryId?: string;
@@ -108,7 +109,7 @@ export function decodeStreamEntry<TFields extends FieldCodecs>(
   if (!Array.isArray(rawFields) || rawFields.length % 2 !== 0) {
     throw replyShapeError(command, "field/value pairs", rawFields);
   }
-  const value: Partial<InferHashOutput<TFields>> = {};
+  const value = {} as PartialHashOutput<TFields>;
   for (let index = 0; index < rawFields.length; index += 2) {
     const field = rawFields[index];
     const stored = rawFields[index + 1];
@@ -184,7 +185,7 @@ export function createStreamStore<
   TFields extends FieldCodecs,
   TId extends RedisKeyPart = RedisKeyPart
 >(client: RedisClient, schema: StreamSchema<TFields, string, TId>) {
-  type Input = InferHashInput<TFields>;
+  type Input = InferFieldsInput<TFields>;
   const declaredFields = Object.keys(schema.fields) as Array<
     keyof TFields & string
   >;

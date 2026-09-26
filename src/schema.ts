@@ -23,7 +23,8 @@ export type {
   InferHashInput,
   InferHashOutput,
   InferInput,
-  InferOutput
+  InferOutput,
+  OptionalCodec
 } from "./core/types.js";
 
 /** Codec: store and read a value as a UTF-8 string. */
@@ -49,6 +50,17 @@ export const json = codecs.json;
  * ```
  */
 export const enumOf = codecs.enumOf;
+
+/**
+ * Marks a hash field that a stored record may lack: whole-record reads leave
+ * it off (typed `?:`) instead of throwing `PartialRecordError`, and
+ * whole-record writes may omit it. Only hash schemas read the marker.
+ * @example
+ * ```ts
+ * const users = hash("user", { name: string(), bio: optional(string()) });
+ * ```
+ */
+export const optional = codecs.optional;
 
 /**
  * A ReplyShapeError, not a bare TypeError: every other decoder attaches the

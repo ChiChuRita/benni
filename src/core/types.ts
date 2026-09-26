@@ -254,16 +254,42 @@ export type Keyspace<
 export type FieldCodecs = Record<string, Codec<any, any>>;
 
 /**
- * Type-only inference anchors, present on every value-carrying schema.
- * `typeof profiles.$inferInput` / `.$inferOutput` name the schema's value
- * types the way Drizzle's `$inferSelect` does. The properties never exist at
- * runtime — accessing them outside a type position is always a bug.
+ * A hash field codec marked with `optional()`: the field may be absent from a
+ * stored record. Only hash schemas read the marker; everywhere else it is the
+ * wrapped codec unchanged.
+ */
+export type OptionalCodec<TInput, TOutput = TInput> = Codec<TInput, TOutput> & {
+  readonly optional: true;
+};
+
+/**
+ * Flattens an alias instantiation or an intersection into one object literal
+ * type. Type-only: it changes what an editor hover prints (`{ name: string }`
+ * rather than `InferHashOutput<{ name: Codec<string, string> }>`), never what
+ * is assignable to what.
+ */
+export type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
+// The phantom key behind InferInput/InferOutput. `declare`d, so it is never
+// emitted, and not exported, so no code can index a schema with it: the
+// anchor exists in the type system only, and it is optional, so the type does
+// not claim a property the runtime object lacks.
+declare const inferTypes: unique symbol;
+
+/**
+ * Type-only inference anchor, for schemas whose value types are not an
+ * `encode`/`decode` pair of their own (hash, stream, the primitives) and the
+ * codec-backed stores built alongside them. {@link InferInput} and
+ * {@link InferOutput} read it where it exists and fall back to
+ * `encode`/`decode` where it does not (geo, hll, channel, pattern, a bare
+ * codec), so they work on every schema that carries values. There is no
+ * property to access at runtime.
  */
 export type InferAnchors<TInput, TOutput> = {
-  /** Type-only: the write-side value type. Never exists at runtime. */
-  readonly $inferInput: TInput;
-  /** Type-only: the read-side value type. Never exists at runtime. */
-  readonly $inferOutput: TOutput;
+  readonly [inferTypes]?: {
+    readonly input: TInput;
+    readonly output: TOutput;
+  };
 };
 
 /**
@@ -274,10 +300,10 @@ export type InferAnchors<TInput, TOutput> = {
  * type NewUser = InferInput<typeof users>; // { name: string; score: number }
  * ```
  */
-export type InferInput<TSchema> = TSchema extends {
-  readonly $inferInput: infer TInput;
-}
-  ? TInput
+export type InferInput<TSchema> = typeof inferTypes extends keyof TSchema
+  ? TSchema extends { readonly [inferTypes]?: { readonly input: infer TInput } }
+    ? TInput
+    : never
   : TSchema extends { encode(input: infer TInput): string }
     ? TInput
     : never;
@@ -286,29 +312,101 @@ export type InferInput<TSchema> = TSchema extends {
  * The read-side value type of any Benni schema or codec.
  * @example
  * ```ts
- * const profiles = kv("profile", json<Profile>());
+ * const profiles = kv("profile", json(Profile));
  * type StoredProfile = InferOutput<typeof profiles>; // Profile
  * ```
  */
-export type InferOutput<TSchema> = TSchema extends {
-  readonly $inferOutput: infer TOutput;
-}
-  ? TOutput
+export type InferOutput<TSchema> = typeof inferTypes extends keyof TSchema
+  ? TSchema extends {
+      readonly [inferTypes]?: { readonly output: infer TOutput };
+    }
+    ? TOutput
+    : never
   : TSchema extends { decode(stored: string): infer TOutput }
     ? TOutput
     : never;
 
-export type InferHashInput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]: TFields[K] extends Codec<infer TInput, any>
-    ? TInput
-    : never;
-};
+type FieldInput<TCodec> =
+  TCodec extends Codec<infer TInput, any> ? TInput : never;
 
-export type InferHashOutput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]: TFields[K] extends Codec<any, infer TOutput>
-    ? TOutput
+type FieldOutput<TCodec> =
+  TCodec extends Codec<any, infer TOutput> ? TOutput : never;
+
+type OptionalFieldName<TFields extends FieldCodecs> = {
+  [K in keyof TFields]: TFields[K] extends { readonly optional: true }
+    ? K
     : never;
-};
+}[keyof TFields];
+
+type RequiredFieldName<TFields extends FieldCodecs> = Exclude<
+  keyof TFields,
+  OptionalFieldName<TFields>
+>;
+
+/**
+ * What a whole-record hash write takes: every required field, and the
+ * `optional()` ones as `?:`.
+ */
+export type InferHashInput<TFields extends FieldCodecs> = [
+  OptionalFieldName<TFields>
+] extends [never]
+  ? InferFieldsInput<TFields>
+  : Simplify<
+      { [K in RequiredFieldName<TFields>]: FieldInput<TFields[K]> } & {
+        [K in OptionalFieldName<TFields>]?: FieldInput<TFields[K]>;
+      }
+    >;
+
+/**
+ * What a whole-record hash read returns: every required field, and the
+ * `optional()` ones as `?:`, absent from the object when not stored.
+ */
+export type InferHashOutput<TFields extends FieldCodecs> = [
+  OptionalFieldName<TFields>
+] extends [never]
+  ? { [K in keyof TFields]: FieldOutput<TFields[K]> } & {}
+  : Simplify<
+      { [K in RequiredFieldName<TFields>]: FieldOutput<TFields[K]> } & {
+        [K in OptionalFieldName<TFields>]?: FieldOutput<TFields[K]>;
+      }
+    >;
+
+/** One declared field's write-side type, whether or not it is optional. */
+export type HashFieldInput<
+  TFields extends FieldCodecs,
+  TField extends keyof TFields
+> = FieldInput<TFields[TField]>;
+
+/** One declared field's read-side type, whether or not it is optional. */
+export type HashFieldOutput<
+  TFields extends FieldCodecs,
+  TField extends keyof TFields
+> = FieldOutput<TFields[TField]>;
+
+/**
+ * Any subset of a hash's fields, each at its own write-side type: what
+ * `hmset` and `hsetex` take.
+ */
+export type PartialHashInput<TFields extends FieldCodecs> = {
+  [K in keyof TFields]?: FieldInput<TFields[K]>;
+} & {};
+
+/**
+ * Any subset of a hash's fields, each at its own read-side type, absent when
+ * not stored: what `hgetall` returns.
+ */
+export type PartialHashOutput<TFields extends FieldCodecs> = {
+  [K in keyof TFields]?: FieldOutput<TFields[K]>;
+} & {};
+
+/**
+ * A record of field codecs read with every field required, ignoring any
+ * `optional()` marker: a stream entry written by `xadd`, a script's args.
+ * Only hash schemas give `optional()` a meaning.
+ */
+export type InferFieldsInput<TFields extends FieldCodecs> = {
+  [K in keyof TFields]: FieldInput<TFields[K]>;
+} & {};
 
 export type HashSchema<
   TFields extends FieldCodecs,

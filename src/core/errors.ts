@@ -72,11 +72,12 @@ export class ReplyShapeError extends TypeError {
 }
 
 /**
- * Thrown when a whole-record hash read finds some, but not all, of the fields
- * the schema declares. The reply is well formed, so this is not a protocol or
- * adapter fault: it means the stored record is incomplete, most often because
- * individual fields were given their own TTLs with `hexpire` and some have
- * since lapsed. `missing` names the absent fields.
+ * Thrown when a whole-record hash read finds a record that lacks one or more
+ * of the schema's required fields (an `optional()` field never causes it).
+ * The reply is well formed, so this is not a protocol or adapter fault: it
+ * means the stored record is incomplete, most often because individual fields
+ * were given their own TTLs with `hexpire` and some have since lapsed.
+ * `missing` names the absent required fields.
  *
  * Extends {@link ReplyShapeError} so code that already catches that keeps
  * working; catch `PartialRecordError` specifically to tell an ordinary

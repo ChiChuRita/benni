@@ -112,7 +112,7 @@ describe("whole-record hash reads/writes (review #4)", () => {
   it("names the missing fields on a partial hash", async () => {
     const store = createHashStore(fakeClient([], [["Ada", null]]), users);
     await expect(store.hget("42")).rejects.toThrow(
-      "missing declared field(s): score"
+      "missing required field(s): score"
     );
   });
 });

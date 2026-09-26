@@ -11,6 +11,7 @@ import {
   type ExpiryOptions,
   expectNumber,
   expectNumberLike,
+  expectSafeNumber,
   expiryArgs,
   positiveSafeInteger,
   ttlSeconds
@@ -25,14 +26,20 @@ import {
 import type {
   Codec,
   FieldCodecs,
+  HashFieldInput,
+  HashFieldOutput,
   HashSchema,
   InferHashInput,
   InferHashOutput,
+  OptionalCodec,
+  PartialHashInput,
+  PartialHashOutput,
   RedisClient,
   RedisCommand,
   RedisCommandArgument,
   RedisKeyPart,
   RedisReply,
+  Simplify,
   StoreSetOptions
 } from "./types.js";
 
@@ -201,20 +208,18 @@ type NumberHashField<TFields extends FieldCodecs> = {
 }[keyof TFields] &
   string;
 
-export type PartialHashOutput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]?: InferHashOutput<TFields>[K];
-};
-
 // Optional, not required: HMGET/HGETEX/HGETDEL fill only the field names the
 // call actually asked for, and a caller can pass a narrowed subset of the union
 // at runtime. Declaring every member of TField as a present key promised data
-// the reply need not contain.
+// the reply need not contain. A field the reply has no value for is left off,
+// never set to null: absent is the one way a hash read says "not stored",
+// the same as an optional field on hget(id) and every field on hgetall.
 export type PickedHashOutput<
   TFields extends FieldCodecs,
   TField extends keyof TFields & string
-> = {
-  [K in TField]?: InferHashOutput<TFields>[K] | null;
-};
+> = Simplify<{
+  [K in TField]?: HashFieldOutput<TFields, K>;
+}>;
 
 function expectNumberArray(reply: RedisReply, command: string): number[] {
   if (!Array.isArray(reply)) {
@@ -288,9 +293,15 @@ export function createHashStore<
 >(client: RedisClient, schema: HashSchema<TFields, string, TId>) {
   type Input = InferHashInput<TFields>;
   type Output = InferHashOutput<TFields>;
-  const declaredFields = Object.keys(schema.fields) as Array<
-    keyof TFields & string
-  >;
+  type Field = keyof TFields & string;
+  const declaredFields = Object.keys(schema.fields) as Field[];
+  const optionalFields = new Set(
+    declaredFields.filter(
+      (field) =>
+        (schema.fields[field] as Partial<OptionalCodec<unknown>>).optional ===
+        true
+    )
+  );
   const fieldCodec = <TField extends keyof TFields & string>(field: TField) => {
     // Own-property only: a plain index read walks the prototype chain, so
     // "toString" or "constructor" resolves to an Object.prototype member,
@@ -307,8 +318,9 @@ export function createHashStore<
   };
 
   // Positional decode shared by HMGET / HGETEX / HGETDEL: each returns the
-  // requested field values in order, with nil (null/absent) for missing ones.
-  const decodePicked = <TField extends keyof TFields & string>(
+  // requested field values in order, with nil for missing ones, which stay
+  // off the result.
+  const decodePicked = <TField extends Field>(
     reply: RedisReply,
     codecsByField: ReadonlyArray<readonly [TField, TFields[TField]]>,
     command: string
@@ -316,22 +328,46 @@ export function createHashStore<
     if (!Array.isArray(reply)) {
       throw replyShapeError(command, "array", reply);
     }
-    const output = {} as PickedHashOutput<TFields, TField>;
+    const output: Record<string, unknown> = {};
     for (const [index, [field, codec]] of codecsByField.entries()) {
       const value = reply[index];
-      if (value === null) {
-        output[field] = null;
-        continue;
-      }
+      if (value === null) continue;
       if (typeof value !== "string") {
         throw new ReplyShapeError(
           `Expected Redis ${command} item to return string or null, got ${describeReply(value)}`,
           value
         );
       }
-      output[field] = codec.decode(value) as Output[TField];
+      output[field] = codec.decode(value);
     }
-    return output;
+    return output as PickedHashOutput<TFields, TField>;
+  };
+
+  // Field/value pairs for the commands that write a caller-chosen subset of
+  // fields (hmset's HSET, HSETEX). Every key present must carry a value.
+  const encodeFieldPairs = (
+    values: PartialHashInput<TFields>,
+    method: string
+  ): RedisCommandArgument[] => {
+    const fields = Object.keys(values) as Field[];
+    if (fields.length === 0) {
+      throw new ValidationError(`${method} requires at least one field`);
+    }
+    const pairs: RedisCommandArgument[] = [];
+    for (const field of fields) {
+      const value = (values as Record<string, unknown>)[field];
+      // A `?:` key admits an explicit undefined unless the caller runs
+      // exactOptionalPropertyTypes, and the permissive codecs encode it:
+      // string()/enumOf() write "undefined", boolean() writes "0". Refuse
+      // rather than corrupt the field with `{ active: form.active }`.
+      if (value === undefined) {
+        throw new ValidationError(
+          `${method} received undefined for field '${field}'; omit the key to leave the field unchanged, or hdel to remove it`
+        );
+      }
+      pairs.push(field, fieldCodec(field).encode(value));
+    }
+    return pairs;
   };
 
   // Object-literal methods can't carry overload signatures, so the collapsed
@@ -340,8 +376,12 @@ export function createHashStore<
 
   /**
    * HSET. Two forms:
-   * - `hset(id, value, options?)` writes the whole record (every declared
-   *   field), with an optional TTL; resolves to `void`.
+   * - `hset(id, value, options?)` writes the whole record, with an optional
+   *   TTL; resolves to `void`. Every required field must be present, which is
+   *   what makes a forgotten field a compile error. An `optional()` field
+   *   left out (or `undefined`) is deleted, so the stored record is exactly
+   *   the one passed. To change some fields and leave the rest alone, use
+   *   `hmset`.
    * - `hset(id, field, value)` writes one field; resolves to the number of
    *   newly-added fields (0 or 1).
    */
@@ -353,62 +393,69 @@ export function createHashStore<
   function hset<TField extends keyof TFields & string>(
     id: TId,
     field: TField,
-    value: Input[TField]
+    value: HashFieldInput<TFields, TField>
   ): Promise<number>;
   async function hset(
     id: TId,
-    valueOrField: Input | (keyof TFields & string),
-    optionsOrValue?: StoreSetOptions | Input[keyof TFields & string]
+    valueOrField: Input | Field,
+    optionsOrValue?: StoreSetOptions | HashFieldInput<TFields, Field>
   ): Promise<void | number> {
     if (typeof valueOrField === "string") {
-      const field = valueOrField as keyof TFields & string;
+      const field = valueOrField;
       const reply = await client.send([
         "HSET",
         schema.key(id),
         field,
-        fieldCodec(field).encode(
-          optionsOrValue as Input[keyof TFields & string]
-        )
+        fieldCodec(field).encode(optionsOrValue)
       ]);
       return expectNumber(reply, "HSET");
     }
-    const value = valueOrField;
+    const value = valueOrField as Record<string, unknown>;
     const options = (optionsOrValue as StoreSetOptions | undefined) ?? {};
     const key = schema.key(id);
-    // One variadic HSET writes the whole record atomically — no torn record
-    // if the process dies mid-write, no interleaving with other clients.
-    const commands: RedisCommand[] = [
-      [
-        "HSET",
-        key,
-        ...declaredFields.flatMap((field) => [
-          field,
-          schema.fields[field].encode(value[field])
-        ])
-      ]
-    ];
+    const pairs: RedisCommandArgument[] = [];
+    const absent: string[] = [];
+    for (const field of declaredFields) {
+      const fieldValue = value[field];
+      if (fieldValue === undefined && optionalFields.has(field)) {
+        absent.push(field);
+        continue;
+      }
+      pairs.push(field, schema.fields[field].encode(fieldValue));
+    }
+    // One variadic HSET writes the record's fields atomically — no torn
+    // record if the process dies mid-write, no interleaving with other
+    // clients.
+    const commands: RedisCommand[] = [];
+    if (pairs.length > 0) commands.push(["HSET", key, ...pairs]);
+    // Without this, writing a record that leaves an optional field out would
+    // keep whatever value an earlier write stored there, and the next hget
+    // would return a record nobody wrote.
+    if (absent.length > 0) commands.push(["HDEL", key, ...absent]);
     if (options.ttlSeconds !== undefined) {
       commands.push(["EXPIRE", key, ttlSeconds(options.ttlSeconds)]);
     }
-    // A pipeline only batches; it does not make the pair atomic. With a TTL
-    // that matters: another client reading between the HSET and the EXPIRE
-    // sees a record with no expiry, and a connection lost in the same window
-    // leaves one that never expires at all. MULTI/EXEC closes both. Every
-    // adapter implements transaction(); the fallback is for a custom client
-    // that does not, which is no worse off than before, and it has to cover
-    // that client behind a promise or factory too (see transactionOrPipeline).
-    // On a session holding a WATCH the facade degrades this back to a pipeline
-    // rather than let an EXEC clear the caller's watch set (see
-    // createBenniSession).
+    if (commands.length === 0) return;
+    // A pipeline only batches; it does not make the commands atomic. With a
+    // TTL that matters: another client reading between the HSET and the
+    // EXPIRE sees a record with no expiry, and a connection lost in the same
+    // window leaves one that never expires at all. The HSET/HDEL pair has the
+    // same window, a reader seeing the new fields beside the stale optional
+    // one. MULTI/EXEC closes both. Every adapter implements transaction(); the
+    // fallback is for a custom client that does not, which is no worse off
+    // than before, and it has to cover that client behind a promise or
+    // factory too (see transactionOrPipeline). On a session holding a WATCH
+    // the facade degrades this back to a pipeline rather than let an EXEC
+    // clear the caller's watch set (see createBenniSession).
     const replies =
-      options.ttlSeconds === undefined
+      commands.length === 1
         ? await client.pipeline(commands)
         : await transactionOrPipeline(client, commands);
 
     for (const reply of replies) {
       if (typeof reply !== "number") {
         throw new ReplyShapeError(
-          `Expected Redis HSET/EXPIRE to return number, got ${describeReply(reply)}`,
+          `Expected Redis HSET/HDEL/EXPIRE to return number, got ${describeReply(reply)}`,
           reply
         );
       }
@@ -417,7 +464,9 @@ export function createHashStore<
 
   /**
    * HGET. Two forms:
-   * - `hget(id)` reads the whole record; resolves to the record or null.
+   * - `hget(id)` reads the whole record; resolves to the record or null. A
+   *   missing `optional()` field is left off the record; a missing required
+   *   field throws `PartialRecordError`.
    * - `hget(id, field)` reads one field; resolves to the decoded value or
    *   null.
    */
@@ -425,11 +474,11 @@ export function createHashStore<
   function hget<TField extends keyof TFields & string>(
     id: TId,
     field: TField
-  ): Promise<Output[TField] | null>;
+  ): Promise<HashFieldOutput<TFields, TField> | null>;
   async function hget(
     id: TId,
-    field?: keyof TFields & string
-  ): Promise<Output | Output[keyof TFields & string] | null> {
+    field?: Field
+  ): Promise<Output | HashFieldOutput<TFields, Field> | null> {
     if (field !== undefined) {
       const codec = fieldCodec(field);
       const reply = await client.send(["HGET", schema.key(id), field]);
@@ -437,7 +486,7 @@ export function createHashStore<
       if (typeof reply !== "string") {
         throw replyShapeError("HGET", "string or null", reply);
       }
-      return codec.decode(reply) as Output[keyof TFields & string];
+      return codec.decode(reply);
     }
     // One HMGET reads the whole record atomically — a pipeline of HGETs can
     // interleave with other clients' writes and produce a torn read.
@@ -450,28 +499,40 @@ export function createHashStore<
       throw replyShapeError("HMGET", "array", reply);
     }
 
-    if (reply.every((value) => value === null)) return null;
-
-    const missing = declaredFields.filter(
-      (_, index) => typeof reply[index] !== "string"
-    );
+    const missing: string[] = [];
+    let present = 0;
+    for (const [index, declared] of declaredFields.entries()) {
+      const stored = reply[index];
+      if (stored === null) {
+        if (!optionalFields.has(declared)) missing.push(declared);
+        continue;
+      }
+      if (typeof stored !== "string") {
+        throw new ReplyShapeError(
+          `Expected Redis HMGET item to return string or null, got ${describeReply(stored)}`,
+          stored
+        );
+      }
+      present += 1;
+    }
+    if (present === 0) return null;
     if (missing.length > 0) {
       // Not a shape violation: the reply is well formed and the record is
       // simply incomplete, which per-field TTLs make an ordinary outcome. A
       // dedicated class lets a caller tell the two apart, and it still extends
       // ReplyShapeError so existing handling keeps working.
       throw new PartialRecordError(
-        `Hash ${schema.key(id)} is missing declared field(s): ${missing.join(", ")}`,
+        `Hash ${schema.key(id)} is missing required field(s): ${missing.join(", ")}`,
         reply,
         missing
       );
     }
 
-    const output: Partial<Output> = {};
-    for (const [index, f] of declaredFields.entries()) {
-      output[f as keyof Output] = schema.fields[f].decode(
-        reply[index] as string
-      ) as Output[keyof Output];
+    const output: Record<string, unknown> = {};
+    for (const [index, declared] of declaredFields.entries()) {
+      const stored = reply[index];
+      if (stored === null) continue;
+      output[declared] = schema.fields[declared].decode(stored as string);
     }
     return output as Output;
   }
@@ -522,13 +583,19 @@ export function createHashStore<
     hset,
     hget,
     hrandfield,
-    /** HGETALL — tolerant/partial read; unknown fields are ignored. */
+    /**
+     * HGETALL — the tolerant read: every declared field that is stored, none
+     * required. Fields the schema does not declare are left out, the way
+     * `hget(id)` never asks for them, so dropping a field from the schema
+     * costs nothing on read where throwing would break every old record.
+     * `hkeys` lists them when you need to find strays.
+     */
     async hgetall(id: TId): Promise<PartialHashOutput<TFields> | null> {
       const reply = await client.send(["HGETALL", schema.key(id)]);
       const entries = hashEntries(reply, "HGETALL");
       if (entries.length === 0) return null;
 
-      const output: PartialHashOutput<TFields> = {};
+      const output: Record<string, unknown> = {};
       for (const [field, value] of entries) {
         // Field names come from Redis, so the lookup has to be own-property:
         // an undeclared field named after an Object.prototype member
@@ -538,13 +605,11 @@ export function createHashStore<
         if (!Object.hasOwn(schema.fields, field)) continue;
         const codec = schema.fields[field];
         if (!codec) continue;
-        output[field as keyof TFields] = codec.decode(
-          value
-        ) as Output[keyof TFields];
+        output[field] = codec.decode(value);
       }
-      return output;
+      return output as PartialHashOutput<TFields>;
     },
-    /** HMGET — read the requested fields in order (null for missing). */
+    /** HMGET — read the requested fields; a field not stored is left off. */
     async hmget<TField extends keyof TFields & string>(
       id: TId,
       fields: readonly TField[]
@@ -556,7 +621,10 @@ export function createHashStore<
       const reply = await client.send(["HMGET", schema.key(id), ...fields]);
       return decodePicked(reply, codecsByField, "HMGET");
     },
-    /** HGETEX — read fields, optionally (re)setting their expiry. */
+    /**
+     * HGETEX — read fields, optionally (re)setting their expiry; a field not
+     * stored is left off.
+     */
     async hgetex<TField extends keyof TFields & string>(
       id: TId,
       fields: readonly TField[],
@@ -586,7 +654,10 @@ export function createHashStore<
       ];
       return decodePicked(await client.send(command), codecsByField, "HGETEX");
     },
-    /** HGETDEL — read the requested fields and delete them. */
+    /**
+     * HGETDEL — read the requested fields and delete them; a field not stored
+     * is left off.
+     */
     async hgetdel<TField extends keyof TFields & string>(
       id: TId,
       fields: readonly TField[]
@@ -629,7 +700,7 @@ export function createHashStore<
     async hsetnx<TField extends keyof TFields & string>(
       id: TId,
       field: TField,
-      value: Input[TField]
+      value: HashFieldInput<TFields, TField>
     ): Promise<boolean> {
       const reply = await client.send([
         "HSETNX",
@@ -639,36 +710,35 @@ export function createHashStore<
       ]);
       return expectNumber(reply, "HSETNX") === 1;
     },
-    /** HSETEX — set fields with an expiry/condition in one command. */
+    /**
+     * HSET with any subset of the declared fields, in one command: the
+     * partial update. Fields you leave out keep their stored values; to
+     * remove one, `hdel` it. Resolves to the number of fields that were new.
+     * (Redis deprecated the HMSET command in favour of variadic HSET, which
+     * is what this sends; the name pairs it with `hmget`.)
+     * @example await redis.query.users.hmset("42", { score: 11, bio: "hi" });
+     */
+    async hmset(id: TId, values: PartialHashInput<TFields>): Promise<number> {
+      const pairs = encodeFieldPairs(values, "hmset");
+      const reply = await client.send(["HSET", schema.key(id), ...pairs]);
+      return expectNumber(reply, "HSET");
+    },
+    /**
+     * HSETEX — set any subset of fields with an expiry/condition in one
+     * command. Like `hmset`, fields you leave out are untouched.
+     */
     async hsetex(
       id: TId,
-      values: Partial<Input>,
+      values: PartialHashInput<TFields>,
       options: HashSetExOptions = {}
     ): Promise<boolean> {
-      const fields = Object.keys(values) as Array<keyof TFields & string>;
-      if (fields.length === 0) {
-        throw new ValidationError("hsetex requires at least one field");
-      }
-      const pairs: RedisCommandArgument[] = [];
-      for (const field of fields) {
-        const value = values[field];
-        // Partial<Input> admits an explicit undefined unless the caller runs
-        // exactOptionalPropertyTypes, and the permissive codecs encode it:
-        // string()/enumOf() write "undefined", boolean() writes "0". Refuse
-        // rather than corrupt the field with `{ active: form.active }`.
-        if (value === undefined) {
-          throw new ValidationError(
-            `hsetex received undefined for field '${field}'; omit the key to leave the field unchanged, or hdel to remove it`
-          );
-        }
-        pairs.push(field, fieldCodec(field).encode(value));
-      }
+      const pairs = encodeFieldPairs(values, "hsetex");
       const reply = await client.send([
         "HSETEX",
         schema.key(id),
         ...hashSetExArgs(options),
         "FIELDS",
-        fields.length,
+        pairs.length / 2,
         ...pairs
       ]);
       return expectNumber(reply, "HSETEX") === 1;
@@ -791,7 +861,11 @@ export function createHashStore<
       const reply = await client.send(["HEXISTS", schema.key(id), field]);
       return expectNumber(reply, "HEXISTS") === 1;
     },
-    /** HINCRBY — increment a numeric field by an integer amount. */
+    /**
+     * HINCRBY — increment a numeric field by an integer amount. Throws a
+     * `ReplyShapeError` once the value passes `Number.MAX_SAFE_INTEGER`, like
+     * `incr`, rather than resolving a rounded number.
+     */
     async hincrby<TField extends NumberHashField<TFields>>(
       id: TId,
       field: TField,
@@ -807,7 +881,7 @@ export function createHashStore<
         field,
         amount
       ]);
-      return expectNumber(reply, "HINCRBY");
+      return expectSafeNumber(reply, "HINCRBY");
     },
     /** DEL — delete the whole hash. */
     async del(id: TId): Promise<number> {
@@ -840,7 +914,7 @@ export function defineHash<
   options?: KeyOptions<TIds, THashTag>
 ): HashSchema<TFields, TPrefix, TIds[number], THashTag> {
   const hashTag = options?.hashTag as THashTag;
-  // The $infer* anchors are type-only phantoms — cast the literal.
+  // The inference anchor is type-only and never present — cast the literal.
   const schema = {
     kind: "hash",
     prefix,

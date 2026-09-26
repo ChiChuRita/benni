@@ -10,7 +10,7 @@ import {
 import type {
   Codec,
   FieldCodecs,
-  InferHashInput,
+  InferFieldsInput,
   RedisClient,
   RedisCommandArgument,
   RedisReply
@@ -217,7 +217,7 @@ export type ScriptSchema<
   readonly name: TName;
   readonly keys: TKeys;
   readonly args: TArgs;
-  encodeArgs(args: InferHashInput<TArgs>): RedisCommandArgument[];
+  encodeArgs(args: InferFieldsInput<TArgs>): RedisCommandArgument[];
 };
 
 export type ScriptOptions<
@@ -270,7 +270,7 @@ export function createScriptResource<
       const TKeyValues extends { readonly [K in TKeys[number]]: string }
     >(input: {
       readonly keys: SameSlotScriptKeys<TKeys, TKeyValues>;
-      readonly args: InferHashInput<TArgs>;
+      readonly args: InferFieldsInput<TArgs>;
     }): Promise<TResult> {
       return scriptRunnerFor(ctx).run(
         schema,
@@ -365,7 +365,7 @@ export function script<
     name,
     keys: options.keys,
     args: options.args,
-    encodeArgs(args: InferHashInput<TArgs>) {
+    encodeArgs(args: InferFieldsInput<TArgs>) {
       return argNames.map((argName) =>
         options.args[argName].encode(args[argName])
       );

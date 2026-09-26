@@ -167,9 +167,39 @@ All from `benni/schema`. Each takes a key prefix and (except `bitmap`) a codec.
 | `script(name, options)` | Lua script | `redis.script(x)` |
 
 Codecs: `string()`, `number()`, `boolean()`, `json(validator)`, `json<T>()`,
-`enumOf([...])`, `bytes()`. There are also `redis.counter(x)` and
-`redis.string(x)` accessors for `kv` schemas whose codec is `number()` /
-`string()`.
+`enumOf([...])`, `bytes()`, and `optional(codec)` for hash fields. There are
+also `redis.counter(x)` and `redis.string(x)` accessors for `kv` schemas whose
+codec is `number()` / `string()`.
+
+### Hashes
+
+```ts
+export const users = hash("user", {
+  name: string(),
+  score: number(),
+  bio: optional(string()) // a stored record may lack it
+});
+
+await redis.query.users.hset("42", { name: "Ada", score: 10 }); // whole record
+await redis.query.users.hmset("42", { score: 11 });             // any subset
+const user = await redis.query.users.hget("42");
+//    ^? { name: string; score: number; bio?: string } | null
+```
+
+- `hset(id, record)` requires every required field (a forgotten one is a
+  compile error) and **replaces** the record: an optional field left out is
+  deleted in the same MULTI/EXEC. To change some fields and keep the rest, use
+  `hmset(id, partial)` (one `HSET`) or `hsetex(id, partial, expiry)`.
+- `hget(id)` throws `PartialRecordError` (`.missing` names the fields) when a
+  required field is gone; a missing optional field is just absent. `hgetall`
+  types every field `?:` and never throws for missing fields.
+- "Not stored" is always an absent key in an object result (`hget(id)`,
+  `hgetall`, `hmget`, `hgetex`, `hgetdel`), never `null`; only the bare
+  `hget(id, field)` returns `null`.
+- Fields the schema does not declare are left out of every read; `hkeys` lists
+  them. Add fields as `optional()` so old records keep reading.
+- `InferInput<typeof users>` / `InferOutput<typeof users>` name the value
+  types; there is no `$inferInput` property.
 
 **Reach for `json(validator)`, not `json<T>()`.** `json(validator)` accepts any
 [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType),

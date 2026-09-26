@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { RedisCommand } from "../src/core/types.js";
+import type {
+  InferInput,
+  InferOutput,
+  RedisCommand
+} from "../src/core/types.js";
 import { type Benni, benni } from "../src/index.js";
 import {
   budget,
@@ -127,15 +131,18 @@ describe("primitive schema types", () => {
     type _Hit = Expect<Equal<typeof hit, Profile | null>>;
     // The queue's payload and result travel the same way.
     type _Payload = Expect<
-      Equal<typeof generate.$inferInput, { prompt: string }>
+      Equal<InferInput<typeof generate>, { prompt: string }>
     >;
-    type _Result = Expect<Equal<typeof generate.$inferOutput, string>>;
+    type _Result = Expect<Equal<InferOutput<typeof generate>, string>>;
 
     expect(hit?.name).toBe("Ada");
   });
 
-  it("keeps the $infer anchors type-only", () => {
-    expect(Object.keys(profiles)).not.toContain("$inferOutput");
+  it("keeps the inference anchor type-only", () => {
+    // The one symbol is the non-enumerable store binding.
+    expect(
+      Object.getOwnPropertySymbols(profiles).map((key) => key.description)
+    ).toEqual(["benni.store"]);
     expect((profiles as Record<string, unknown>).$inferOutput).toBeUndefined();
   });
 

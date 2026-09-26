@@ -5,7 +5,7 @@ import {
   type InferStandardOutput,
   type StandardSchemaV1
 } from "./standard-schema.js";
-import type { Codec } from "./types.js";
+import type { Codec, OptionalCodec } from "./types.js";
 
 // Shared with the zod bridge's zodJson() so both JSON codecs refuse the same
 // unrepresentable values; `label` names the offending codec in the message.
@@ -93,6 +93,35 @@ function json(schema?: StandardSchemaV1): Codec<unknown, unknown> {
       }
       return result.value;
     }
+  };
+}
+
+/**
+ * Marks a hash field that a stored record may lack. A whole-record read
+ * leaves the key off the result (typed `?:`) instead of throwing
+ * `PartialRecordError`, and a whole-record write may omit it. Add a field to
+ * an existing hash schema as `optional(...)` and the records written before
+ * it keep reading.
+ *
+ * Hash schemas are the only ones that read the marker. Anywhere else (a kv
+ * value, a stream field, a script arg) it is the wrapped codec unchanged.
+ *
+ * @example
+ * ```ts
+ * const users = hash("user", { name: string(), bio: optional(string()) });
+ * const user = await redis.query.users.hget("42");
+ * //    ^? { name: string; bio?: string } | null
+ * ```
+ */
+function optional<TInput, TOutput>(
+  codec: Codec<TInput, TOutput>
+): OptionalCodec<TInput, TOutput> {
+  // Delegating methods rather than a spread: a codec may keep encode/decode
+  // on a prototype, or rely on `this`, and a spread would drop both.
+  return {
+    optional: true,
+    encode: (input) => codec.encode(input),
+    decode: (stored) => codec.decode(stored)
   };
 }
 
@@ -188,6 +217,7 @@ export const codecs = {
    * ```
    */
   json,
+  optional,
   /**
    * A string field constrained to a fixed set of literals, stored as the plain
    * string (no JSON overhead) and validated on decode. The inferred type is the

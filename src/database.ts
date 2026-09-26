@@ -374,7 +374,7 @@ const SCHEMA_KINDS: ReadonlySet<unknown> = new Set<SchemaKind>([
  */
 export type QueryResource<T> = T extends { readonly kind: "hash" }
   ? T extends HashSchema<
-      infer TFields,
+      infer TFields extends FieldCodecs,
       infer TPrefix extends string,
       infer TId,
       infer THashTag extends HashTagLayout | undefined
