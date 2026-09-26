@@ -405,3 +405,18 @@ await redis.raw.pipeline([
   ["GET", "a"]
 ]);
 ```
+
+Replies come back in the same shape on every adapter: the RESP2 shape, whatever protocol the adapter speaks underneath. So a decoder you write against `redis.raw` behaves identically on Node, ioredis, Bun, and Upstash:
+
+| Redis reply | What `raw` returns | Example |
+| --- | --- | --- |
+| Simple or bulk string | `string` (UTF-8) | `GET` -> `"benni"` |
+| Integer | `number` | `HLEN` -> `2` |
+| Nil | `null` | `GET` on a missing key -> `null` |
+| Double | decimal `string` | `ZSCORE` -> `"1.5"`, `"inf"` |
+| Map | flat array | `HGETALL` -> `["name", "ada", "score", "2"]` |
+| Scores and pairs | flat array | `ZRANGE ... WITHSCORES` -> `["a", "1", "b", "2"]` |
+| Stream read | `[stream, entries]` pairs | `XREAD` -> `[["events", [["1-1", ["f", "v"]]]]]` |
+| Error | rejects with `RedisServerError` | `WRONGTYPE ...` |
+
+A `pipeline` returns one reply per command, in order, and rejects with the first failing command's error. Bun is the adapter this takes work for: it only speaks RESP3, where `HGETALL` is a map and `ZSCORE` a number, so `benni/bun` reshapes its replies to match. The full contract is documented on the `RedisClient` type.

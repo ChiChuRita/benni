@@ -233,6 +233,74 @@ export async function expectRedisClientContract(
       ])
     ).resolves.toEqual(["OK", "pipeline"]);
 
+    // Reply shapes: every adapter returns RESP2 shapes whatever protocol it
+    // speaks underneath (see "Reply shapes" on RedisClient in core/types.ts),
+    // so `redis.raw.send()` and a user decoder read the same value on every
+    // adapter. Bun speaks RESP3 and used to hand back a map, a number, and
+    // nested pairs for the first three of these.
+    const shapeHash = `${rawKey}:shape:hash`;
+    const shapeZset = `${rawKey}:shape:zset`;
+    const shapeStream = `${rawKey}:shape:stream`;
+    await client.send(["DEL", shapeHash, shapeZset, shapeStream]);
+    await client.send(["HSET", shapeHash, "field", "value"]);
+    await expect(client.send(["HGETALL", shapeHash])).resolves.toEqual([
+      "field",
+      "value"
+    ]);
+    await expect(
+      client.send(["HRANDFIELD", shapeHash, "1", "WITHVALUES"])
+    ).resolves.toEqual(["field", "value"]);
+    await expect(client.send(["HLEN", shapeHash])).resolves.toBe(1);
+    await client.send(["ZADD", shapeZset, "1.5", "a", "2", "b"]);
+    await expect(client.send(["ZSCORE", shapeZset, "a"])).resolves.toBe("1.5");
+    await expect(
+      client.send(["ZMSCORE", shapeZset, "a", "missing"])
+    ).resolves.toEqual(["1.5", null]);
+    await expect(client.send(["ZINCRBY", shapeZset, "1", "a"])).resolves.toBe(
+      "2.5"
+    );
+    await expect(
+      client.send(["ZRANGE", shapeZset, "0", "-1", "WITHSCORES"])
+    ).resolves.toEqual(["b", "2", "a", "2.5"]);
+    await expect(
+      client.send(["ZRANK", shapeZset, "a", "WITHSCORE"])
+    ).resolves.toEqual([1, "2.5"]);
+    await expect(
+      client.send(["ZADD", shapeZset, "INCR", "1", "b"])
+    ).resolves.toBe("3");
+    await expect(client.send(["ZPOPMIN", shapeZset])).resolves.toEqual([
+      "a",
+      "2.5"
+    ]);
+    await expect(client.send(["ZPOPMAX", shapeZset, "1"])).resolves.toEqual([
+      "b",
+      "3"
+    ]);
+    await client.send(["XADD", shapeStream, "1-1", "field", "value"]);
+    await expect(
+      client.send(["XREAD", "STREAMS", shapeStream, "0"])
+    ).resolves.toEqual([[shapeStream, [["1-1", ["field", "value"]]]]]);
+    // The batch paths reshape each reply as the command that produced it.
+    await client.send(["ZADD", shapeZset, "4.5", "c"]);
+    await expect(
+      client.pipeline([
+        ["HGETALL", shapeHash],
+        ["ZSCORE", shapeZset, "c"]
+      ])
+    ).resolves.toEqual([["field", "value"], "4.5"]);
+    if (client.transaction) {
+      await expect(
+        client.transaction([
+          ["HGETALL", shapeHash],
+          ["ZRANGE", shapeZset, "0", "-1", "WITHSCORES"]
+        ])
+      ).resolves.toEqual([
+        ["field", "value"],
+        ["c", "4.5"]
+      ]);
+    }
+    await client.send(["DEL", shapeHash, shapeZset, shapeStream]);
+
     if (client.transaction) {
       const transactionKey = `${rawKey}:transaction`;
       const transactionResults = await createTransaction(client)

@@ -33,6 +33,8 @@ Channel subscriptions only, though. The Bun subscriber deliberately omits `psubs
 
 If the subscriber connection drops, the adapter resubscribes every channel on the reconnect. Bun's own client reconnects a subscriber but comes back with no subscriptions, so without this the handlers would go silent while the connection looked healthy. Messages published during the outage are still lost, as on every adapter: see [Reconnects](/benni/data-structures/pubsub/#reconnects). If Bun gives up reconnecting (after `maxRetries`), the lease reports itself closed and the next subscribe opens a fresh connection.
 
+Bun's client only speaks RESP3, where `HGETALL` is a map, `ZSCORE` a number, and `ZRANGE ... WITHSCORES` a list of pairs. The adapter reshapes every reply to the RESP2 shape the other adapters return, so [`redis.raw`](/benni/api/benni-client/#redisraw) and your own decoders see the same values on Bun as everywhere else.
+
 The Bun adapter supports [sessions](/benni/advanced/sessions/), so `redis.session()` and `redis.watch()` work: each session is a fresh Bun Redis client with reconnection and offline queueing disabled, and closing it rejects an in-flight blocking read promptly.
 
 The Bun adapter runs the same Redis contract suite as the Node adapter against a real server:

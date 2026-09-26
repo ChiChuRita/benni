@@ -60,7 +60,7 @@ export const SESSION_UNSUPPORTED = "Redis client does not support sessions";
 export const TRANSACTION_UNSUPPORTED =
   "Redis client does not support transactions";
 export const SUBSCRIBER_UNSUPPORTED =
-  "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node or benni/bun.";
+  "Pub/Sub subscribe requires a client that can hold a connection; this adapter provides none (HTTP is stateless). Publishing still works — subscribe through benni/node, benni/ioredis, or benni/bun.";
 
 /**
  * Refused because `close()` already ran. Matches the shape the adapters use for
