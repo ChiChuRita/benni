@@ -9,6 +9,7 @@ import { benni } from "../src/index.js";
 import { ioredis } from "../src/ioredis/index.js";
 import { queue } from "../src/primitives/index.js";
 import { json, kv } from "../src/schema.js";
+import { freePort } from "./free-port.js";
 import { expectRedisClientContract } from "./redis-contract.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
@@ -126,10 +127,11 @@ describeRedis("ioredis", () => {
     console.error = (...parts: unknown[]) => {
       logged.push(parts.map(String).join(" "));
     };
+    const port = await freePort();
     const socketsBefore = activeSockets();
     try {
       await expect(
-        ioredis({ host: "127.0.0.1", port: 6399, connectTimeout: 300 })
+        ioredis({ host: "127.0.0.1", port, connectTimeout: 300 })
       ).rejects.toThrow();
       // Long enough for at least one reconnect attempt to fire.
       await new Promise((resolve) => setTimeout(resolve, 900));

@@ -7,6 +7,7 @@ import {
   definePubSubPattern
 } from "../src/core/index.js";
 import { benni } from "../src/index.js";
+import { freePort } from "./free-port.js";
 import { expectRedisClientContract } from "./redis-contract.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
@@ -38,12 +39,13 @@ describe("bun connect failure", () => {
     // connect() rejects, the reconnect timer keeps running, close() does not
     // stop it, and the orphan pins the process forever.
     const adapter = new URL("../src/bun/index.ts", import.meta.url).pathname;
+    const port = await freePort();
     const child = spawn(
       "bun",
       [
         "-e",
         `import { bun } from "${adapter}";
-           await bun({ url: "redis://127.0.0.1:6399" }).catch(() => {});`
+           await bun({ url: "redis://127.0.0.1:${port}" }).catch(() => {});`
       ],
       { stdio: "ignore" }
     );
