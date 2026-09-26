@@ -3,6 +3,10 @@ title: "Budget"
 description: "Cost-weighted spend limits: cap a user at tokens or cents per window, with reservations that hold an estimate while a model call is in flight."
 ---
 
+:::caution[Experimental]
+`budget` is experimental: its API may change in a minor release, and it is approximate by design. Up to about **twice the limit** can be spent inside one sliding window, buckets turn over on UTC boundaries, and every call walks the id's live holds. Read [Accuracy](#accuracy) before using it for anything that bills.
+:::
+
 Rate limits count requests. Model calls are not priced by the request, so counting them caps nothing you actually care about.
 
 One call with a 200k-token context costs what fifty 4k-token calls cost. "100 requests per minute" lets a single user spend fifty times more than another while both stay inside the limit. `budget` counts the unit you are billed in: tokens, cents, credits.
@@ -96,11 +100,15 @@ await budgets.reset(userId);   // clear spend and holds outright
 
 ## Accuracy
 
-The window is a two-bucket sliding estimate: the previous window's spend decays out linearly as the current one fills. That means usage can drift slightly over the limit near a bucket boundary.
+The window is a two-bucket sliding estimate: the previous bucket's spend decays out linearly as the current one fills, and what counts is `current + previous × (1 − elapsed / windowMs)` plus live holds.
 
-This is deliberate. The exact alternative is a log with one entry per request, and for a daily token budget that keeps every request of the last 24 hours alive in memory just to add up numbers. A counter is O(1) and never grows. If you need a hard ceiling rather than a spend guardrail, enforce it at the billing layer, not here.
+**The worst case is about twice the limit inside one sliding window.** Spend the whole limit in the last moments of a bucket, and as the next bucket runs, that spend decays out of the estimate at a steady rate, freeing the limit again by the end of it, even though the real spend of the last `windowMs` still includes the first burst. With a limit of 1,000 and a one-hour window: 1,000 at 10:59:59, then another 1,000 spread through 11:00 to 11:59, is about 2,000 inside one hour. Traffic that does not concentrate on a boundary comes out far closer to the limit, but that is the bound you should design for.
 
-The one place cost is not O(1) is summing live reservations, which walks the reservation set. That is bounded by *concurrent in-flight calls for a single id*, normally single digits. The limit does most of that bounding on its own, since every hold consumes headroom, but a hold for `0` consumes none, so `maxHolds` (10000 by default) puts a ceiling on the set regardless. Past it `reserve` returns `null` like any other denial.
+**Buckets are aligned to the Unix epoch, not to the user.** Bucket boundaries fall at multiples of `windowMs` since 1970-01-01T00:00Z, so a 24-hour window's buckets turn over at 00:00 UTC for every id at once, not 24 hours after each user's first call. The previous day's spend then decays over the following day rather than dropping to zero at midnight.
+
+This is deliberate. The exact alternative is a log with one entry per request, and for a daily token budget that keeps every request of the last 24 hours alive in memory just to add up numbers. The two counters are O(1) and never grow. If you need a hard ceiling rather than a spend guardrail, enforce it at the billing layer, not here.
+
+**Summing live reservations is O(holds).** Every `charge`, `reserve`, and `check` walks the id's reservation set inside the Lua script, and a Redis script blocks the server while it runs. That is bounded by *concurrent in-flight calls for a single id*, normally single digits, and the limit does most of the bounding on its own, since every hold consumes headroom. A hold for `0` consumes none, so `maxHolds` (10000 by default) caps the set regardless; past it `reserve` returns `null` like any other denial. At that cap each call walks 10,000 members, which we measured at about 2ms of Redis server time per `check` (Redis 8, local), time during which that Redis serves nobody else; if an id can get there, lower `maxHolds`.
 
 `retryAfterMs` is the time until enough units decay out of the window for that exact spend, computed server-side. It is not the time to the next bucket boundary, which frees nothing: the two-bucket estimate is continuous across the roll.
 
@@ -118,7 +126,7 @@ Each id's two window buckets, its reservation set, and its settle markers share 
 | `windowMs` | required | Window length in milliseconds. |
 | `prefix` | `"budget"` | Key namespace. |
 | `holdTtlMs` | `120000` | How long a reservation counts before lapsing. |
-| `maxHolds` | `10000` | Most reservations one id may hold at once. |
+| `maxHolds` | `10000` | Most reservations one id may hold at once. Also the most any one call has to walk. |
 
 ## When You Don't Need This
 

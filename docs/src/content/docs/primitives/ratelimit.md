@@ -14,14 +14,16 @@ export const apiLimit = ratelimit("api", { limit: 10, windowMs: 60_000 });
 
 ```ts
 // app.ts
-const { success, remaining, resetMs } = await redis.query.apiLimit.check(userId);
+const { success, retryAfterMs } = await redis.query.apiLimit.check(userId);
 if (!success) {
   throw new Response("Too Many Requests", {
     status: 429,
-    headers: { "Retry-After": String(Math.ceil((resetMs - Date.now()) / 1000)) }
+    headers: { "Retry-After": String(Math.ceil(retryAfterMs / 1000)) }
   });
 }
 ```
+
+Use `retryAfterMs` for `Retry-After`, not `resetMs - Date.now()`. `resetMs` is a timestamp on the *Redis server's* clock; subtracting your own clock from it bakes the skew between the two into every header, and a server a few seconds ahead tells clients to wait seconds longer than they need to (or, behind, to come back while still limited). `retryAfterMs` is computed inside the script from the same clock as `resetMs`, so it carries no skew.
 
 Declared as a schema value it lands in [`redis.query`](/benni/core-concepts/schema-registry/) and needs no client of its own. Where you hold a client but no handle, such as inside a middleware factory, `benni/primitives` exports the same limiter in its client-taking form, over the same keys:
 
@@ -38,10 +40,11 @@ const { success } = await limiter.check(userId);
 
 ```ts
 type RatelimitResult = {
-  success: boolean;   // is this request allowed?
-  limit: number;      // the configured limit
-  remaining: number;  // requests left in the window (0 when denied)
-  resetMs: number;    // epoch-ms when the window next frees a slot
+  success: boolean;      // is this request allowed?
+  limit: number;         // the configured limit
+  remaining: number;     // requests left in the window (0 when denied)
+  resetMs: number;       // server epoch-ms when the window next frees a slot
+  retryAfterMs: number;  // how long to wait before retrying (0 when allowed), skew-free
 };
 ```
 
