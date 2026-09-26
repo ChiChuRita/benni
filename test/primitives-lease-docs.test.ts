@@ -27,6 +27,10 @@ declare function processOrder(): Promise<void>;
 declare function chargeCard(): Promise<Receipt>;
 declare function reconcile(key: string): Receipt;
 declare function generateReport(): Promise<void>;
+declare const db: {
+  orders: { get(id: string): Promise<{ id: string }> };
+  query(sql: string, params: unknown[]): Promise<{ rowCount: number }>;
+};
 declare function generateText(input: {
   model: unknown;
   prompt: string;
@@ -63,8 +67,19 @@ function docsSnippets() {
       retryDelayMs: 50
     });
 
+    await locks.run("order:42", processOrder, { waitTimeoutMs: 2_000 });
+
     await locks.run("report:nightly", async () => {
       await generateReport();
+    });
+
+    await locks.run("order:42", async ({ fence }) => {
+      const order = await db.orders.get("42");
+      const { rowCount } = await db.query(
+        "UPDATE orders SET status = $1, fence = $2 WHERE id = $3 AND fence < $2",
+        ["shipped", fence, order.id]
+      );
+      if (rowCount === 0) throw new Error("superseded by a newer lock holder");
     });
 
     await locks.run("order:42", processOrder, { heartbeatMs: 1_000 });
@@ -122,6 +137,11 @@ function docsSnippets() {
 
   // --- primitives/semaphore ------------------------------------------------
   const slots = semaphore(client, { limit: 20, leaseMs: 60_000 });
+
+  void (async () => {
+    await slots.run("openai", work, { retries: 100, retryDelayMs: 50 });
+    await slots.run("openai", work, { waitTimeoutMs: 2_000 });
+  });
 
   void (async () => {
     const answer = await slots.run("openai", async () => callModel(prompt));

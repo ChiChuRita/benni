@@ -1,6 +1,6 @@
 ---
 title: "Distributed Lock"
-description: "A correct distributed lock over Redis: acquire with SET NX PX, renew the lease while your critical section runs, release atomically so you never free someone else's lock."
+description: "A distributed lock over Redis: acquire with SET NX PX, renew the lease while your critical section runs, release atomically, and hand every holder a fencing token for the stores it writes to."
 ---
 
 `lock` is a distributed lock built the correct way: acquire with `SET key token NX PX ttl`, and release with an atomic check-and-delete Lua so a caller can **never** delete a lock that already expired and was re-acquired by someone else, the classic footgun of a naive `DEL`.
@@ -29,9 +29,9 @@ const locks = lock({ client, prefix: "order", ttlMs: 10_000 });
 await locks.run("42", async () => { /* ... */ });
 ```
 
-`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `SET` and `EVALSHA`, no persistent connection).
+`client` accepts a `RedisClient`, a promise of one, a factory, or a Benni handle, so it works over every adapter, including [`benni/upstash`](/benni/runtime/edge/) on the edge (it needs only `EVALSHA`, no persistent connection).
 
-Two defaults decide how it behaves under pressure, and both are worth reading before you ship: acquisition **fails fast**, and `run` **renews the lease** while your body is in flight.
+Two defaults decide how it behaves under pressure, and both are worth reading before you ship: acquisition **fails fast**, and `run` **renews the lease** while your body is in flight. One assumption decides what it can promise at all: it is a lock on **one Redis primary**, and [a failover can grant it twice](#one-primary-no-redlock).
 
 ## Acquiring Fails Fast
 
@@ -64,6 +64,15 @@ await locks.run("order:42", processOrder, {
   retryDelayMs: 50
 });
 ```
+
+Or bound the wait by time rather than by count. `waitTimeoutMs` alone means "keep retrying until then"; with `retries` as well, whichever runs out first stops the wait, and a last attempt is made at the deadline rather than after it:
+
+```ts
+// Wait up to two seconds for the holder, then throw LockNotAcquiredError.
+await locks.run("order:42", processOrder, { waitTimeoutMs: 2_000 });
+```
+
+Each wait between attempts is jittered over half to one and a half times `retryDelayMs`, so callers that collided once do not wake in lockstep and collide again.
 
 Retries are a bounded spin, not a fair queue: callers do not get the lock in arrival order, and a heavily contended lock can starve an unlucky one. If strict ordering matters, that is a job for the [queue](/benni/primitives/queue/).
 
@@ -173,6 +182,35 @@ await locks.run("order:42", async (handle) => {
 
 If `fn` rejects with the abort reason itself (as `fetch` does), that error propagates unchanged rather than being replaced.
 
+## Fencing Tokens
+
+Renewal narrows the window in which a lock can be lost, and `signal` stops work once it is, but neither can stop a holder that is *paused*: a long GC, a descheduled container, a laptop lid. It wakes up after its lease lapsed and someone else took the lock, and its next write lands on top of theirs before any renewal gets a chance to notice.
+
+The fix has to live where the write lands. Every acquisition carries `handle.fence`, a number that strictly increases with every grant of that lock id, across all processes (it is an `INCR` in the same script as the `SET NX`). Send it with each write, and have the store refuse a fence lower than one it has already accepted:
+
+```ts
+await locks.run("order:42", async ({ fence }) => {
+  const order = await db.orders.get("42");
+  // 0 rows updated means a newer holder already wrote: back off.
+  const { rowCount } = await db.query(
+    "UPDATE orders SET status = $1, fence = $2 WHERE id = $3 AND fence < $2",
+    ["shipped", fence, order.id]
+  );
+  if (rowCount === 0) throw new Error("superseded by a newer lock holder");
+});
+```
+
+The same pattern works for anything with a conditional write: a version column, an object store's `If-Match`, a Redis script that compares first. The counter lives at `{<prefix>:<id>}:fence` (the braces keep it in the lock's Cluster slot) and is kept forever, one small key per lock id, because a counter that expired would restart below fences a store has already accepted. An id containing a `}` that does not close a hash tag (`"a}b"`) cannot share a slot with its counter, so it is rejected with a `ValidationError` before anything is sent.
+
+## One Primary, No Redlock
+
+The lock is exactly as strong as the Redis primary it lives on. Replication is asynchronous, so if the primary fails over after acknowledging your `SET` but before a replica received it, the promoted replica has never heard of your lock and will grant it to the next caller while you are still inside. Nothing a client does over one Redis deployment can close that gap, and this library does not implement Redlock.
+
+What that means in practice:
+
+- For **efficiency** (don't do the same work twice, don't hammer a provider), this lock is the right tool: a double grant during a failover costs one duplicate job.
+- For **correctness** (two writers must never interleave), pair it with a fencing check at the store, as above. The fence counter can fail over too, but a store that rejects any fence at or below the highest it has seen still refuses a stale holder's write.
+
 ## Acquire And Release Manually
 
 ```ts
@@ -186,7 +224,7 @@ if (handle) {
 }
 ```
 
-`acquire` resolves `null` when the lock is already held. `release()` and `extend()` resolve `true` only when your token still owns the key; both run the atomic Lua, so they are safe under expiry races.
+`acquire` resolves `null` when the lock is already held. `release()` and `extend()` resolve `true` only when your token still owns the key; both run the atomic Lua, so they are safe under expiry races. `extend()` with no argument re-applies the TTL this acquisition was taken with, not the store default.
 
 **An `acquire`d handle is not renewed in the background.** Nothing watches it on your behalf: if the work can outlive `ttlMs`, you have to call `extend()` yourself. That also means `handle.signal` cannot fire unless you do, because your own `extend()` resolving `false` is the only thing that can abort it. If you want renewal, use `run`.
 
@@ -203,10 +241,11 @@ if (stillOurs === false) {
 
 | Option | Where | Default | Meaning |
 | --- | --- | --- | --- |
-| `prefix` | `lock(client, …)` | `"lock"` | Key namespace; keys are `<prefix>:<id>`. |
+| `prefix` | `lock(client, …)` | `"lock"` | Key namespace; locks are `<prefix>:<id>`, fence counters `{<prefix>:<id>}:fence`. |
 | `ttlMs` | `lock` / `acquire` / `run` | `30000` | Lock lifetime. It is the crash backstop, and with `run` it is also the renewal window. |
-| `retries` | `acquire` / `run` | `0` | Attempts when the lock is held. `0` fails fast. |
-| `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries. |
+| `retries` | `acquire` / `run` | `0` | Attempts when the lock is held. `0` fails fast; unlimited when only `waitTimeoutMs` is set. |
+| `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries, jittered over 0.5 to 1.5 times this. |
+| `waitTimeoutMs` | `acquire` / `run` | none | The most time to spend waiting for the lock, across all retries. |
 | `heartbeatMs` | `run` | `ttlMs / 4` | Renewal interval while `fn` runs. Must be at most half of `ttlMs` when set explicitly. `false` disables renewal. |
 | `onRenewError` | `run` | none | Called when a renewal round trip fails. Not a lost lock. |
 
@@ -217,5 +256,5 @@ A lock lets one caller through. [`semaphore`](/benni/primitives/semaphore/) lets
 ## See Also
 
 - [Semaphore](/benni/primitives/semaphore/) for bounded concurrency rather than one-at-a-time
-- [Idempotency](/benni/primitives/idempotency/) when the goal is "exactly once", not "one at a time"
+- [Idempotency](/benni/primitives/idempotency/) when the goal is "run once per request", not "one at a time"
 - [Queue](/benni/primitives/queue/) when callers must all run, in order

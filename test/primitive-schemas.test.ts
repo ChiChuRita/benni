@@ -72,12 +72,13 @@ describe("primitives in the query registry", () => {
 
   it("reaches a lock by its export name", async () => {
     const commands: RedisCommand[] = [];
-    const redis = bind(commands, ["OK"]);
+    // The acquire script's SCRIPT LOAD, then its EVALSHA returning the fence.
+    const redis = bind(commands, ["sha", 1]);
 
     const handle = await redis.query.orderLocks.acquire("42");
 
     expect(handle?.key).toBe("order:42");
-    expect(commands[0]?.slice(3)).toEqual(["NX", "PX", 10_000]);
+    expect(commands[1]?.at(-1)).toBe("10000"); // the schema's ttlMs
   });
 
   it("reaches a semaphore, a queue, a budget, and an idempotency key", () => {
@@ -93,12 +94,12 @@ describe("primitives in the query registry", () => {
   it("binds every primitive to the handle's own client", async () => {
     const first: RedisCommand[] = [];
     const second: RedisCommand[] = [];
-    const a = bind(first, ["OK"]);
-    const b = bind(second, ["OK"]);
+    const a = bind(first, ["sha", 1]);
+    const b = bind(second, ["sha", 1]);
 
     await a.query.orderLocks.acquire("42");
 
-    expect(first).toHaveLength(1);
+    expect(first).toHaveLength(2); // SCRIPT LOAD + EVALSHA
     expect(second).toHaveLength(0);
     // Two handles over one schema module never share a connection.
     expect(a.query.orderLocks).not.toBe(b.query.orderLocks);
@@ -140,7 +141,7 @@ describe("primitive schema types", () => {
 
   it("types a handle through Benni<typeof schema>", async () => {
     const commands: RedisCommand[] = [];
-    const redis: Benni<typeof schema> = bind(commands, ["OK"]);
+    const redis: Benni<typeof schema> = bind(commands, ["sha", 1]);
 
     // The registry is reachable through the named handle type, primitives
     // included — this is the signature a helper function would carry.

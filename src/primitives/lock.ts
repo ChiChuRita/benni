@@ -1,37 +1,51 @@
 import { type ClientSource, clientArgs } from "../core/client-source.js";
-import { ValidationError } from "../core/errors.js";
 import { createScriptRunner, defineScript } from "../core/script.js";
 import { type StoreBinding, withStore } from "../core/store.js";
 import type { RedisClient } from "../core/types.js";
+import {
+  acquireWithRetry,
+  coLocatedKey,
+  createLease,
+  extendIfHeldScript,
+  type Lease,
+  type LeaseTerms,
+  monotonicNow,
+  positiveMs,
+  releaseIfHeldScript,
+  renewalInterval,
+  runHeld,
+  waitPolicy
+} from "./lease.js";
 
 const DEFAULT_PREFIX = "lock";
 const DEFAULT_TTL_MS = 30_000;
-// `run()` renews on a quarter of the TTL, the same ratio the queue uses for
-// its leases (leaseMs 60000 / heartbeatMs 15000): three renewals in a row may
-// fail outright before the lock could lapse, which is what makes a transient
-// blip survivable rather than fatal.
-const HEARTBEAT_DIVISOR = 4;
+const TERMS: LeaseTerms = { owner: "lock", ttlName: "ttlMs", held: "lock" };
 
-// Release only if we still hold the token — never DEL a lock that has expired
-// and been re-acquired by someone else. Returns 1 if released, else 0.
-const releaseScript = defineScript<readonly [token: string], number>({
-  keyCount: 1,
-  lua: 'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end',
-  decode: (reply) => (typeof reply === "number" ? reply : 0)
-});
-
-// Extend the TTL only if we still hold the token. Returns 1 if extended, else 0.
-const extendScript = defineScript<
+/**
+ * Take the lock and draw the next fencing token in one atomic step. Returns
+ * the fence (1 or more) if acquired, else 0.
+ *
+ * The fence has to come from the same script as the `SET NX`: drawn in a
+ * second round trip, two holders in quick succession could each take the
+ * lock and then draw their fences in the opposite order, and a downstream
+ * store would reject the *current* holder's writes. KEYS[2] shares KEYS[1]'s
+ * slot (see `coLocatedKey`), so this is legal on a cluster.
+ */
+const acquireScript = defineScript<
   readonly [token: string, ttlMs: string],
   number
 >({
-  keyCount: 1,
-  lua: 'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("PEXPIRE", KEYS[1], ARGV[2]) else return 0 end',
+  keyCount: 2,
+  lua: 'if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then return redis.call("INCR", KEYS[2]) end return 0',
   decode: (reply) => (typeof reply === "number" ? reply : 0)
 });
 
 export type LockOptions = {
-  /** Key namespace; keys are `<prefix>:<id>`. Default `"lock"`. */
+  /**
+   * Key namespace; locks are `<prefix>:<id>`, and each id's fence counter is
+   * `{<prefix>:<id>}:fence` (the braces keep it in the lock's Cluster slot).
+   * Default `"lock"`.
+   */
   readonly prefix?: string;
   /** Lock lifetime in milliseconds. Default `30000`. */
   readonly ttlMs?: number;
@@ -44,11 +58,23 @@ export type AcquireOptions = {
    * How many times to retry while the lock is held. Default `0`, which **fails
    * fast**: a contended `acquire()` resolves `null` and a contended `run()`
    * throws {@link LockNotAcquiredError} instead of waiting. Pass `retries` (and
-   * optionally `retryDelayMs`) to queue behind the current holder instead.
+   * optionally `retryDelayMs`), or `waitTimeoutMs`, to queue behind the
+   * current holder instead.
    */
   readonly retries?: number;
-  /** Delay between retries in milliseconds. Default `100`. */
+  /**
+   * Delay between retries in milliseconds. Default `100`. Each wait is
+   * jittered over half to one and a half times this, so contenders that
+   * collided once do not wake in lockstep and collide again.
+   */
   readonly retryDelayMs?: number;
+  /**
+   * The most time to spend waiting for the lock, in milliseconds, across every
+   * retry. Passed alone it means "retry until then"; with `retries` as well,
+   * whichever runs out first stops the wait. A final attempt is made at the
+   * deadline rather than after it.
+   */
+  readonly waitTimeoutMs?: number;
 };
 
 export type LockRunOptions = AcquireOptions & {
@@ -121,6 +147,21 @@ export type LockHandle = {
   readonly key: string;
   readonly token: string;
   /**
+   * The fencing token for this acquisition: a number that strictly increases
+   * with every acquisition of this lock id, across all processes.
+   *
+   * A lease cannot stop a paused holder from waking up and writing after its
+   * lock expired and someone else took it. A downstream store can: send the
+   * fence with every write, and have the store reject any write whose fence is
+   * lower than the highest it has already accepted.
+   *
+   * ```sql
+   * UPDATE orders SET status = $1, fence = $2
+   *  WHERE id = $3 AND fence < $2;  -- 0 rows: a newer holder already wrote
+   * ```
+   */
+  readonly fence: number;
+  /**
    * Aborts with a {@link LockLeaseLostError} the moment this handle is known to
    * have lost the lock: `run()`'s automatic renewal failed, or an `extend()`
    * you made yourself resolved `false`. Pass it to `fetch`, the AI SDK, or any
@@ -136,37 +177,24 @@ export type LockHandle = {
   /**
    * Extend the lock's TTL; resolves `true` only if we still held it. A `false`
    * result means the lock is gone, and aborts {@link LockHandle.signal}.
+   * Without an argument it re-applies the TTL this acquisition was taken
+   * with, not the store default.
    */
   extend(ttlMs?: number): Promise<boolean>;
 };
 
 /**
- * What we believe about our hold on the lock, tracked alongside the handle so
- * `run()`'s renewal loop and the caller's own `extend()`/`release()` calls
- * share one view of it.
- */
-type Lease = {
-  /** The TTL this acquisition uses, and that renewals re-apply. */
-  readonly ttlMs: number;
-  /**
-   * Local timestamp at which the lock has certainly lapsed unless it is
-   * renewed. Measured from *before* each round trip, so it never overstates
-   * how long we hold the lock.
-   */
-  expiresAt: number;
-  /** True once we know the lock is no longer ours. */
-  lost: boolean;
-  /** True once the caller gave the lock up deliberately. */
-  released: boolean;
-  /** Record the loss, once, and abort the handle's signal. */
-  lose(): void;
-};
-
-/**
  * A distributed lock over Redis: `SET key token NX PX ttl` to acquire, and an
  * atomic check-and-delete Lua to release, so a caller can never release a lock
- * that expired and was re-acquired elsewhere. Works over any adapter, including
- * `benni/upstash` on the edge.
+ * that expired and was re-acquired elsewhere. Every acquisition also carries a
+ * {@link LockHandle.fence | fencing token} for downstream stores to check.
+ * Works over any adapter, including `benni/upstash` on the edge.
+ *
+ * It assumes **one Redis primary**. Replication is asynchronous, so a failover
+ * can promote a replica that never saw the `SET`, and grant the lock a second
+ * time while the first holder is still inside. There is no Redlock here: when
+ * a double grant would be unacceptable, check {@link LockHandle.fence} where
+ * the write lands.
  *
  * Two defaults are worth knowing before you reach for it.
  *
@@ -212,48 +240,33 @@ export function createLock(client: RedisClient, options?: LockOptions) {
   const prefix = options?.prefix ?? DEFAULT_PREFIX;
   const defaultTtlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const scripts = createScriptRunner(client);
+  const checkTtl = (ms: number) => positiveMs(ms, "ttlMs", "lock");
 
   function handleFor(
     key: string,
     token: string,
-    acquiredAt: number,
+    fence: number,
+    startedAt: number,
     ttlMs: number
   ): { handle: LockHandle; lease: Lease } {
-    const controller = new AbortController();
-    const lease: Lease = {
+    const lease = createLease({
       ttlMs,
-      expiresAt: acquiredAt + ttlMs,
-      lost: false,
-      released: false,
-      lose() {
-        if (lease.lost) return;
-        lease.lost = true;
-        controller.abort(new LockLeaseLostError(key));
-      }
-    };
+      startedAt,
+      checkTtl,
+      extend: async (ms) =>
+        (await scripts.run(extendIfHeldScript, [key], [token, String(ms)])) ===
+        1,
+      release: async () =>
+        (await scripts.run(releaseIfHeldScript, [key], [token])) === 1,
+      lostError: () => new LockLeaseLostError(key)
+    });
     const handle: LockHandle = {
       key,
       token,
-      signal: controller.signal,
-      async release() {
-        // Flagged before the round trip: giving the lock up is deliberate, so
-        // a renewal that overlaps this call must not report it as a loss.
-        lease.released = true;
-        return (await scripts.run(releaseScript, [key], [token])) === 1;
-      },
-      async extend(nextTtlMs = defaultTtlMs) {
-        const ms = positiveMs(nextTtlMs, "ttlMs");
-        // Time the renewal from before the call, not after: the server applies
-        // PEXPIRE at some point during it, so `sentAt + ms` is the earliest the
-        // new TTL can lapse. Anything later would let the deadline below claim
-        // we still hold a lock that has already expired.
-        const sentAt = Date.now();
-        const args = [token, String(ms)] as const;
-        const held = (await scripts.run(extendScript, [key], args)) === 1;
-        if (held) lease.expiresAt = sentAt + ms;
-        else if (!lease.released) lease.lose();
-        return held;
-      }
+      fence,
+      signal: lease.signal,
+      release: () => lease.release(),
+      extend: (ttl) => lease.extend(ttl)
     };
     return { handle, lease };
   }
@@ -262,25 +275,32 @@ export function createLock(client: RedisClient, options?: LockOptions) {
     id: string,
     acquireOptions?: AcquireOptions
   ): Promise<{ handle: LockHandle; lease: Lease } | null> {
-    const ttlMs = positiveMs(acquireOptions?.ttlMs ?? defaultTtlMs, "ttlMs");
-    const retries = acquireOptions?.retries ?? 0;
-    const retryDelayMs = acquireOptions?.retryDelayMs ?? 100;
+    const ttlMs = checkTtl(acquireOptions?.ttlMs ?? defaultTtlMs);
+    const policy = waitPolicy(acquireOptions, "lock");
     const key = `${prefix}:${id}`;
-    for (let attempt = 0; ; attempt++) {
+    // TODO: one fence counter per lock id, kept forever, because a counter
+    // that expired would restart below fences a downstream store has already
+    // accepted. Fine for a bounded set of ids; a time-seeded fence would let
+    // it expire if the key count ever matters.
+    const fenceKey = coLocatedKey(key, "fence", "lock");
+    return acquireWithRetry(async () => {
       const token = globalThis.crypto.randomUUID();
-      const sentAt = Date.now();
-      const reply = await client.send(["SET", key, token, "NX", "PX", ttlMs]);
-      if (reply !== null) return handleFor(key, token, sentAt, ttlMs);
-      if (attempt >= retries) return null;
-      await sleep(retryDelayMs);
-    }
+      const startedAt = monotonicNow();
+      const fence = await scripts.run(
+        acquireScript,
+        [key, fenceKey],
+        [token, String(ttlMs)]
+      );
+      return fence > 0 ? handleFor(key, token, fence, startedAt, ttlMs) : null;
+    }, policy);
   }
 
   return {
     /**
      * Take the lock, or resolve `null` if someone else holds it. **Fails fast
-     * by default** (`retries: 0`): pass `retries`/`retryDelayMs` to wait for
-     * the current holder instead of giving up on the first attempt.
+     * by default** (`retries: 0`): pass `retries`/`retryDelayMs`, or a
+     * `waitTimeoutMs`, to wait for the current holder instead of giving up on
+     * the first attempt.
      *
      * You own the returned handle: `release()` it in a `finally`, and
      * `extend()` it yourself if the work can outlive `ttlMs` — nothing renews
@@ -299,8 +319,8 @@ export function createLock(client: RedisClient, options?: LockOptions) {
      *
      * **Fails fast by default.** With `retries: 0` (the default) a contended
      * call throws {@link LockNotAcquiredError} immediately rather than waiting;
-     * to serialize concurrent callers, pass `{ retries, retryDelayMs }` so each
-     * one queues behind the holder.
+     * to serialize concurrent callers, pass `{ retries, retryDelayMs }` or a
+     * `waitTimeoutMs` so each one queues behind the holder.
      *
      * **The lock is renewed while `fn` runs**, every `heartbeatMs` (a quarter of
      * `ttlMs` by default), so a body that outlives `ttlMs` keeps its lock. If a
@@ -317,8 +337,9 @@ export function createLock(client: RedisClient, options?: LockOptions) {
      * @throws LockNotAcquiredError if the lock cannot be acquired (after any
      * configured retries).
      * @throws LockLeaseLostError if the lock was lost while `fn` was running.
-     * @throws ValidationError if `ttlMs` is not a positive integer, or if a
-     * `heartbeatMs` was passed that is more than half the effective `ttlMs`.
+     * @throws ValidationError if `ttlMs` is not a positive integer, if
+     * `waitTimeoutMs` is negative, or if a `heartbeatMs` was passed that is
+     * more than half the effective `ttlMs`.
      */
     async run<T>(
       id: string,
@@ -326,160 +347,23 @@ export function createLock(client: RedisClient, options?: LockOptions) {
       runOptions?: LockRunOptions
     ): Promise<T> {
       // Validate the renewal settings *before* taking the lock. A throw between
-      // the acquire and the try/finally below would strand the key until its
-      // TTL lapsed, holding up every other caller over a typo.
-      const ttlMs = positiveMs(runOptions?.ttlMs ?? defaultTtlMs, "ttlMs");
-      const heartbeatMs = renewalInterval(runOptions?.heartbeatMs, ttlMs);
-      const onRenewError = runOptions?.onRenewError;
+      // the acquire and the try/finally in `runHeld` would strand the key until
+      // its TTL lapsed, holding up every other caller over a typo.
+      const ttlMs = checkTtl(runOptions?.ttlMs ?? defaultTtlMs);
+      const heartbeatMs = renewalInterval(
+        runOptions?.heartbeatMs,
+        ttlMs,
+        TERMS
+      );
 
       const held = await acquireLease(id, runOptions);
       if (held === null) {
         throw new LockNotAcquiredError(`${prefix}:${id}`);
       }
-      const { handle, lease } = held;
-
-      let stopped = false;
-      let renewing = false;
-      let timer: ReturnType<typeof setInterval> | null = null;
-      /**
-       * Stop renewing, for good. Called both from the tick that notices the
-       * lock is gone and from the exit path below, because "the flag is set"
-       * is not the same as "the interval is gone": a lease declared lost used
-       * to leave the interval armed, and a body that ignores the abort signal
-       * and never settles then span on early-returning ticks for the life of
-       * the process.
-       */
-      const stopRenewal = (): void => {
-        stopped = true;
-        if (timer === null) return;
-        clearInterval(timer);
-        timer = null;
-      };
-      /**
-       * Hand a failed round trip to the caller's hook, if any, without letting
-       * the hook out. A throw from it would reject the renewal promise the tick
-       * discards, and an unobserved rejection is fatal in default Node: a
-       * telemetry callback must not be able to take the process down.
-       */
-      const reportRenewError = (error: unknown): void => {
-        // Deliberately silent once `run()` has stopped renewing: a round trip
-        // still in flight when the lock was released can settle after the call
-        // the caller awaited already returned, and reporting a failure to renew
-        // a lock we have since given up is noise, not news.
-        if (stopped || onRenewError === undefined) return;
-        try {
-          onRenewError(error);
-        } catch {
-          // Swallowed exactly as a failed release is. The hook exists to
-          // observe renewals, not to decide the fate of the critical section.
-        }
-      };
-      /**
-       * One renewal round trip, with every outcome handled *inside* it. The
-       * tick discards the returned promise, so anything escaping here would be
-       * an unobserved rejection.
-       */
-      const renewOnce = async (): Promise<void> => {
-        try {
-          // `extend()` flags the lease lost itself when Redis reports the key
-          // is not ours, so a `false` result means there is nothing left to
-          // renew and the interval can go now rather than on the next tick.
-          if (!(await handle.extend(lease.ttlMs))) stopRenewal();
-        } catch (error) {
-          // A failed round trip is not proof the lock is gone, so the next tick
-          // retries; the deadline below is what eventually calls it lost.
-          reportRenewError(error);
-        } finally {
-          renewing = false;
-        }
-      };
-      if (heartbeatMs !== null) {
-        timer = setInterval(() => {
-          // Nothing left to renew: `run()` is done, the body gave the lock up,
-          // or the lease is gone. Tear the interval down rather than waking up
-          // to early-return from here on.
-          if (stopped || lease.lost || lease.released) {
-            stopRenewal();
-            return;
-          }
-          // The whole TTL window has passed with no successful renewal, so
-          // the lock has lapsed whatever the cause: renewals that keep
-          // rejecting, or one still hanging while the guard below skips
-          // ticks. Silence here is the bug this renewal exists to fix.
-          if (Date.now() >= lease.expiresAt) {
-            lease.lose();
-            stopRenewal();
-            return;
-          }
-          // One renewal at a time. A round trip slower than the interval
-          // would otherwise stack up calls that all re-apply the same TTL.
-          if (renewing) return;
-          renewing = true;
-          void renewOnce();
-        }, heartbeatMs);
-        // Never keep the process alive for a renewal alone: an un-unref'd
-        // interval is what makes `node script.js` hang after the work is done.
-        (timer as { unref?: () => void }).unref?.();
-      }
-
-      // Evidence about our hold on the lock that only exists at the end of the
-      // call: the clock as the body finished, whether the body had given the
-      // lock up by then, and what the release reported.
-      let expiredOnCompletion = false;
-      let releasedByBody = false;
-      let heldOnRelease: boolean | null = null;
-      /**
-       * Whether the critical section has to be reported as having run without
-       * the lock. `lease.lost` alone is not enough, because it is only ever set
-       * from inside the renewal tick: a body that blocks the event loop past
-       * the TTL and then returns without awaiting anything never lets the tick
-       * run at all, and since a timer is a macrotask while `await fn(handle)`
-       * resumes on a microtask, the check below used to win that race and
-       * report success for a lock that had already expired.
-       */
-      const lostTheLock = (): boolean => {
-        // Proven: Redis told a renewal the key is no longer ours.
-        if (lease.lost) return true;
-        // Given up on purpose. Renewals and the second release both find the
-        // key gone, and neither of those is a loss. Read from the snapshot, not
-        // from `lease.released`: our own release in the exit path sets that flag
-        // too, and consulting it live would excuse every lost lock there is.
-        if (releasedByBody) return false;
-        // Renewal was switched off, so a lock that lapses under a long body is
-        // exactly what that opt-out documents.
-        if (heartbeatMs === null) return false;
-        // The deadline, read in the same turn the body finished rather than
-        // only from a tick that may never have got to run.
-        if (expiredOnCompletion) return true;
-        // The release ran the same token check `extend()` does, so `false` is
-        // Redis saying the lock had already moved on. `null` (the round trip
-        // itself failed) proves nothing either way.
-        return heldOnRelease === false;
-      };
-
-      let result: T;
-      try {
-        result = await fn(handle);
-        // Snapshotted before the release, so the round trip it takes cannot push
-        // a body that finished comfortably inside its lease past the deadline,
-        // and so a lock the body gave up is told apart from one we release here.
-        expiredOnCompletion = Date.now() >= lease.expiresAt;
-        releasedByBody = lease.released;
-      } finally {
-        stopRenewal();
-        try {
-          heldOnRelease = await handle.release();
-        } catch {
-          // A failed release must not mask fn's outcome (or replace its
-          // error); the lock's TTL is the backstop and frees it regardless.
-        }
-      }
-      // Reached only when `fn` resolved: a body that threw propagates its own
-      // error, which a lease report would bury. `fn` finished, but not under
-      // the guarantee it asked for, and resolving here is what let a lost lock
-      // pass for a successful critical section.
-      if (lostTheLock()) throw new LockLeaseLostError(handle.key);
-      return result;
+      return runHeld(held.lease, () => fn(held.handle), {
+        heartbeatMs,
+        onRenewError: runOptions?.onRenewError
+      });
     }
   };
 }
@@ -529,55 +413,4 @@ export function defineLock(prefix: string, options?: LockOptions): LockSchema {
     { ...options, kind: "lock", prefix } as LockSchema,
     lockBinding
   );
-}
-
-/**
- * The default renewal interval for a TTL. Floored at 1ms so an absurdly short
- * `ttlMs` still renews rather than dividing down to a zero-delay spin.
- */
-function heartbeatFor(ttlMs: number): number {
-  return Math.max(1, Math.floor(ttlMs / HEARTBEAT_DIVISOR));
-}
-
-/**
- * The renewal interval for one `run()`: `null` when the caller opted out, the
- * derived default when they said nothing, and their own value otherwise.
- *
- * Only a value the caller passed is checked against the TTL, and it has to
- * leave room for a renewal *and* a retry, so half the TTL is the ceiling. At or
- * above the TTL the first tick lands on or after expiry, so the lock is
- * declared lost before a single renewal has been attempted — on an uncontended
- * lock, and only once a body is slow enough to reach that first tick, so the
- * misconfiguration passes every quick test and shows up under load.
- *
- * The derived default is deliberately exempt: {@link heartbeatFor} floors at
- * 1ms, which for a `ttlMs` of 1 is the whole TTL and can satisfy no ratio at
- * all, and a working configuration must not start throwing.
- */
-function renewalInterval(
-  requested: number | false | undefined,
-  ttlMs: number
-): number | null {
-  if (requested === false) return null;
-  if (requested === undefined) return heartbeatFor(ttlMs);
-  const heartbeatMs = positiveMs(requested, "heartbeatMs");
-  if (heartbeatMs * 2 > ttlMs) {
-    throw new ValidationError(
-      `lock heartbeatMs must be at most half of ttlMs (${ttlMs}) so a renewal lands before the lock could lapse, received ${heartbeatMs}`
-    );
-  }
-  return heartbeatMs;
-}
-
-function positiveMs(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new ValidationError(
-      `lock ${name} must be a positive integer, received ${value}`
-    );
-  }
-  return value;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

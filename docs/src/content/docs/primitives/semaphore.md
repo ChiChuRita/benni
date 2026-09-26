@@ -45,7 +45,12 @@ To queue instead of shedding:
 
 ```ts
 await slots.run("openai", work, { retries: 100, retryDelayMs: 50 });
+
+// Or bound the wait by time: retry until a slot frees or two seconds pass.
+await slots.run("openai", work, { waitTimeoutMs: 2_000 });
 ```
+
+`waitTimeoutMs` alone means "keep retrying until then"; with `retries` as well, whichever runs out first stops the wait, and a last attempt is made at the deadline. Each wait between attempts is jittered over half to one and a half times `retryDelayMs`, so callers that found the pool full together do not all come back at the same instant.
 
 Retries are a bounded spin, not a fair queue: callers do not get slots in arrival order, and a heavily contended semaphore can starve an unlucky one. If strict ordering matters, that is a job for the [queue](/benni/primitives/queue/), which is built for it.
 
@@ -164,7 +169,7 @@ If `fn` rejects with the abort reason itself (as `fetch` does), that error propa
 
 ### Renewing By Hand
 
-**An `acquire`d handle is not renewed in the background.** Nothing watches the lease on your behalf: if the work can outlive `leaseMs`, call `extend()` yourself. That also means `held.signal` cannot fire unless you do, because your own `extend()` resolving `false` is the only thing that can abort it. If you want renewal, use `run`.
+**An `acquire`d handle is not renewed in the background.** Nothing watches the lease on your behalf: if the work can outlive `leaseMs`, call `extend()` yourself. With no argument it re-applies the lease this acquisition was taken with, not the store default. That also means `held.signal` cannot fire unless you do, because your own `extend()` resolving `false` is the only thing that can abort it. If you want renewal, use `run`.
 
 ```ts
 const held = await slots.acquire("openai", { leaseMs: 5_000 });
@@ -192,8 +197,9 @@ This is [`lock`](/benni/primitives/lock/) with a number: same handle shape, same
 | `limit` | `semaphore(client, …)` | required | How many holders at once. |
 | `prefix` | `semaphore(client, …)` | `"semaphore"` | Key namespace; keys are `<prefix>:<id>`. |
 | `leaseMs` | `semaphore` / `acquire` / `run` | `60000` | How long a slot is held without an `extend`. With `run` it is also the renewal window. |
-| `retries` | `acquire` / `run` | `0` | Attempts when every slot is taken. `0` fails fast. |
-| `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries. |
+| `retries` | `acquire` / `run` | `0` | Attempts when every slot is taken. `0` fails fast; unlimited when only `waitTimeoutMs` is set. |
+| `retryDelayMs` | `acquire` / `run` | `100` | Delay between retries, jittered over 0.5 to 1.5 times this. |
+| `waitTimeoutMs` | `acquire` / `run` | none | The most time to spend waiting for a slot, across all retries. |
 | `heartbeatMs` | `run` | `leaseMs / 4` | Renewal interval while `fn` runs. Must be at most half of `leaseMs` when set explicitly. `false` disables renewal. |
 | `onRenewError` | `run` | none | Called when a renewal round trip fails. Not a lost slot. |
 
