@@ -14,7 +14,10 @@ import type {
 
 const DEFAULT_PREFIX = "queue";
 const DEFAULT_LEASE_MS = 60_000;
-const DEFAULT_HEARTBEAT_MS = 15_000;
+// The worker renews on a quarter of the lease, the ratio `lock` and `semaphore`
+// use (leaseMs 60000 / heartbeatMs 15000 by default): three renewals in a row
+// may fail outright before the lease could lapse.
+const HEARTBEAT_DIVISOR = 4;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS = 1_000;
 const DEFAULT_MAX_BACKOFF_MS = 60_000;
@@ -41,7 +44,11 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-/** A job record as stored in Redis. */
+/**
+ * A job record as stored in Redis. Every timestamp is Redis server time (`TIME`
+ * inside the scripts), in epoch milliseconds, so records written by workers
+ * with different clocks still order correctly.
+ */
 export type Job<TPayload, TResult> = {
   readonly id: string;
   readonly status: JobStatus;
@@ -73,9 +80,18 @@ export type Job<TPayload, TResult> = {
  * `restarted` is the one to handle deliberately: the job is being re-attempted,
  * so everything streamed before it belongs to a generation that failed. Clear
  * whatever you have rendered and start again from the chunks that follow.
+ *
+ * `truncated` means events are missing between the previous event (or your
+ * `after` cursor) and the next one: the stream keeps only the newest
+ * `eventsMaxLen` events, and the ones you had not read yet were trimmed. What
+ * you have rendered is incomplete, and the chunks that follow continue from
+ * mid-output. The terminal `completed` event still carries the whole result,
+ * so render that, or call `get()`. Its `id` is the position *before* the gap,
+ * so storing it as your cursor is safe.
  */
 export type JobEvent<TResult> =
   | { readonly id: string; readonly type: "chunk"; readonly data: string }
+  | { readonly id: string; readonly type: "truncated" }
   | {
       readonly id: string;
       readonly type: "restarted";
@@ -114,18 +130,67 @@ export class JobNotFoundError extends Error {
 }
 
 /**
- * Thrown inside a handler when this worker no longer owns the job — its lease
- * expired and another worker reclaimed it. Keep working and you are burning
- * tokens on a run whose result will be discarded, so `emit()`, `progress()`,
- * and the automatic heartbeat all abort the job's signal and throw this.
+ * Thrown inside a handler when this worker no longer owns the job: Redis
+ * reported another token on it, or the lease could not be renewed before it
+ * would lapse (a partition, a stalled event loop), so another worker may
+ * already be running it. Keep working and you are burning tokens on a run
+ * whose result will likely be discarded, so `emit()`, `progress()`, and the
+ * automatic heartbeat all abort the job's signal with this. The worker also
+ * reports it to `onError`.
  */
 export class JobLeaseLostError extends Error {
   readonly jobId: string;
   constructor(jobId: string) {
     super(
-      `Lost the lease on job "${jobId}" — another worker has reclaimed it. Raise leaseMs or lower heartbeatMs if this recurs.`
+      `Lost the lease on job "${jobId}" — another worker may be running it now. Raise leaseMs or lower heartbeatMs if this recurs.`
     );
     this.name = "JobLeaseLostError";
+    this.jobId = jobId;
+  }
+}
+
+/**
+ * The reason on a job's signal when `worker.stop({ timeoutMs })` ran out of
+ * time and handed the job back to the queue. Another worker re-runs it from the
+ * top; nothing this run does from here on is recorded.
+ */
+export class WorkerStoppedError extends Error {
+  readonly jobId: string;
+  constructor(jobId: string) {
+    super(
+      `The worker stopped before job "${jobId}" finished; it was requeued for another worker`
+    );
+    this.name = "WorkerStoppedError";
+    this.jobId = jobId;
+  }
+}
+
+// TODO(consistency pass): the queue errors extend Error directly because there
+// is no shared BenniError base yet. Rebase all of them onto it once it lands.
+
+/**
+ * Thrown by `wait()` for a job that failed for good: dead-lettered after its
+ * last attempt, or failed by a `TerminalJobError`. `message` is the recorded
+ * failure, verbatim.
+ */
+export class JobFailedError extends Error {
+  readonly jobId: string;
+  constructor(jobId: string, message: string) {
+    super(message);
+    this.name = "JobFailedError";
+    this.jobId = jobId;
+  }
+}
+
+/**
+ * Thrown by `wait()` for a job that was cancelled, and the reason on a
+ * handler's signal when `cancel()` reaches its running job.
+ */
+export class JobCancelledError extends Error {
+  readonly jobId: string;
+  constructor(jobId: string) {
+    super(`Job "${jobId}" was cancelled`);
+    this.name = "JobCancelledError";
     this.jobId = jobId;
   }
 }
@@ -180,8 +245,10 @@ export type JobContext<TPayload> = {
   readonly priority: number;
   readonly createdAt: number;
   /**
-   * Aborts when the job is cancelled or its lease is lost. Pass it straight to
-   * `fetch`, the AI SDK, or any `AbortSignal`-aware call so a user pressing
+   * Aborts when the job is cancelled, its lease is lost, or `stop()` hands it
+   * back to the queue; `signal.reason` is a `JobCancelledError`,
+   * `JobLeaseLostError`, or `WorkerStoppedError` respectively. Pass it straight
+   * to `fetch`, the AI SDK, or any `AbortSignal`-aware call so a user pressing
    * stop actually stops the model.
    */
   readonly signal: AbortSignal;
@@ -253,7 +320,13 @@ export type QueueOptions<TPayload, TResult> = {
    * `3600000` (one hour) — long enough for a client to reconnect and replay.
    */
   readonly resultTtlMs?: number;
-  /** Cap on retained events per job. Default `10000`. */
+  /**
+   * Events retained per job; older ones are trimmed, in batches of a tenth of
+   * the cap. Default `10000`. Emitting a token per event, a long generation
+   * can outgrow it: batch several tokens per `emit()`, or raise this. A
+   * `watch()` resuming from before the retained window gets a `truncated`
+   * event rather than a silent skip.
+   */
   readonly eventsMaxLen?: number;
 };
 
@@ -262,7 +335,13 @@ export type WorkerOptions = {
   readonly concurrency?: number;
   /** Override the queue's lease length for this worker. */
   readonly leaseMs?: number;
-  /** Automatic heartbeat interval. Default `15000`. */
+  /**
+   * Automatic heartbeat interval. Default a quarter of `leaseMs` (`15000` at
+   * the default lease). Must be at most half of `leaseMs`, so a renewal and a
+   * retry both fit before the lease could lapse; a larger value throws a
+   * `ValidationError`. Also bounds how long a `cancel()` takes to reach a
+   * handler that does not `emit()`.
+   */
   readonly heartbeatMs?: number;
   /** Poll interval when no blocking connection is available. Default `1000`. */
   readonly pollMs?: number;
@@ -275,12 +354,32 @@ export type WorkerOptions = {
   readonly onError?: (error: unknown) => void;
 };
 
+export type WorkerStopOptions = {
+  /**
+   * How long to let in-flight jobs finish, in milliseconds. Once it elapses,
+   * every job still running has its signal aborted with a `WorkerStoppedError`
+   * and is handed back to the queue, attempt refunded, so another worker starts
+   * it straight away rather than after its lease lapses. The re-run starts
+   * from the top: whatever the interrupted run generated is paid for again.
+   * `0` hands everything back immediately. Default: no limit, wait for every
+   * in-flight job however long it takes.
+   */
+  readonly timeoutMs?: number;
+};
+
 export type Worker = {
   /**
-   * Stop reserving new jobs and wait for in-flight ones to finish. In-flight
-   * jobs are never killed — they keep their lease, so nothing is double-run.
+   * Stop reserving new jobs and wait for in-flight ones to finish, or, with
+   * `timeoutMs`, until that elapses and the rest are requeued. Resolves once
+   * every in-flight job has finished or been handed back; a handler that
+   * ignores its aborted signal may keep running, but can no longer write
+   * anything.
+   *
+   * Without a timeout, a platform that kills the process after its grace
+   * period (SIGTERM, then SIGKILL) leaves the job to be reclaimed when its
+   * lease lapses, up to `leaseMs` later, and that re-run consumes an attempt.
    */
-  stop(): Promise<void>;
+  stop(options?: WorkerStopOptions): Promise<void>;
   /** Jobs currently running on this worker. */
   readonly active: number;
 };
@@ -288,7 +387,9 @@ export type Worker = {
 export type WatchOptions = {
   /**
    * Resume after this stream entry id — pass the last id the client saw. Use
-   * `"0"` (the default) to replay from the beginning.
+   * `"0"` (the default) to replay from the beginning. Usually straight from an
+   * SSE `Last-Event-ID` header, so it is validated: anything but a stream id
+   * throws a `ValidationError`.
    */
   readonly after?: string;
   /** Stop watching when this aborts. */
@@ -309,14 +410,65 @@ export type QueueStats = {
 // ---------------------------------------------------------------------------
 
 // Every queue key shares one hash tag, so a queue occupies a single Cluster
-// slot and these scripts may build per-job key names from a base prefix.
+// slot. Scripts declare every key they can name up front in KEYS. Three cannot:
+// `reserve` discovers the ids it promotes, reclaims, and pops inside the
+// script, and `enqueue` and `cancel` release an idempotency key whose name is
+// read from the job record. Those derive key names from the `base` in ARGV[1],
+// which Redis and Redis Cluster allow because every derived key hashes to the
+// same slot as the declared ones.
+//
+// Dragonfly refuses undeclared keys unless the script opts in, and it only
+// reads the opt-in from a comment that precedes the first line of code, so the
+// flag has to lead the script. Redis sees an ordinary comment. Verified against
+// dragonfly v2.0: without the line the script fails with "script tried
+// accessing undeclared key"; with it, it runs.
+const UNDECLARED_KEYS = "--!df flags=allow-undeclared-keys\n";
+
+// Server time for every timestamp and lease: TIME inside the script, never the
+// caller's Date.now(). A worker whose clock ran fast used to reclaim leases
+// other workers still held, running a paid generation twice, and a skewed
+// producer made delayed jobs fire early or late. Writing after TIME needs
+// effects replication, which is the default from Redis 5 and the only mode from
+// Redis 7; the queue already requires 6.2 (exclusive XRANGE, XTRIM MINID), so
+// no `redis.replicate_commands()` call is needed.
+//
 // `n()` formats doubles without scientific notation — Lua would render a
 // 13-digit millisecond timestamp as "1.7e+12" and Redis would reject it.
-const LUA_PRELUDE = `
-local base = ARGV[1]
+//
+// `append` is the only way an event reaches a job's stream. It numbers each
+// entry (`n`, one per job, contiguous) so a watcher can tell a gap from a
+// quiet spell, and trims the retention cap itself rather than with XADD
+// MAXLEN ~, because it has to record how far the trim went: the id of the last
+// entry removed goes on the record as `eventsTrimmedThrough`, which is what
+// lets `watch()` report a resumed cursor that fell off the retained window
+// instead of silently skipping ahead. Trimming in batches of a tenth of the cap
+// keeps the XRANGE that finds the cut amortized O(1) per append.
+const LUA_CORE = `
 local function n(v) return string.format("%.0f", v) end
+local function serverNow()
+  local t = redis.call("TIME")
+  return tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+end
+local function append(jk, ek, kind, data, maxLen)
+  local seq = redis.call("HINCRBY", jk, "eventSeq", 1)
+  local entry = redis.call("XADD", ek, "*", "t", kind, "d", data, "n", seq)
+  local cap = tonumber(maxLen)
+  local excess = redis.call("XLEN", ek) - cap
+  if excess >= math.max(1, math.floor(cap / 10)) then
+    local head = redis.call("XRANGE", ek, "-", "+", "COUNT", excess + 1)
+    redis.call("XTRIM", ek, "MINID", head[#head][1])
+    redis.call("HSET", jk, "eventsTrimmedThrough", head[#head - 1][1])
+  end
+  return entry
+end
+`;
+
+/** Key-name derivation for the three scripts that cannot declare every key. */
+const LUA_DERIVED = `
+local base = ARGV[1]
 local function jobKey(id) return base .. ":job:" .. id end
 local function eventsKey(id) return base .. ":events:" .. id end
+local function idemKey(idem) return base .. ":idem:" .. idem end
 `;
 
 const enqueueScript = defineScript<
@@ -324,7 +476,6 @@ const enqueueScript = defineScript<
     base: string,
     id: string,
     payload: string,
-    now: string,
     delayMs: string,
     priority: string,
     maxAttempts: string,
@@ -334,20 +485,18 @@ const enqueueScript = defineScript<
   ],
   { id: string; deduplicated: boolean; liveStatus: string }
 >({
-  keyCount: 4,
-  lua: `${LUA_PRELUDE}
+  keyCount: 9,
+  lua: `${UNDECLARED_KEYS}${LUA_CORE}${LUA_DERIVED}
 -- @script enqueue
 local ready, scheduled, seqKey, signal = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local key, events, dead, leases, idemKey = KEYS[5], KEYS[6], KEYS[7], KEYS[8], KEYS[9]
 local id = ARGV[2]
-local now = tonumber(ARGV[4])
-local delay = tonumber(ARGV[5])
-local priority = tonumber(ARGV[6])
-local idem = ARGV[8]
-local key = jobKey(id)
+local now = serverNow()
+local delay = tonumber(ARGV[4])
+local priority = tonumber(ARGV[5])
+local idem = ARGV[7]
 
-local idemKey = ""
 if idem ~= "" then
-  idemKey = base .. ":idem:" .. idem
   local existing = redis.call("GET", idemKey)
   if existing then return {existing, 1, ""} end
 end
@@ -360,7 +509,7 @@ if prior == "waiting" or prior == "scheduled" or prior == "active" then
   return {id, 2, prior}
 end
 
-if idemKey ~= "" then
+if idem ~= "" then
   -- No expiry while the job is live. A mapping that lapsed mid-run let a
   -- duplicate request start a second, paid-for generation; settle starts its
   -- retention once there is a result to hand out, and frees it outright when
@@ -376,27 +525,29 @@ end
 -- while the id is still queued, and reserve pops an id with no payload). The
 -- previous generation also leaves an event stream whose terminal entry ends a
 -- watch() on the new job, a dead-letter entry, and its own idempotency mapping.
+-- That mapping's name comes from the old record, so it is the one key here
+-- that cannot be declared.
 local priorIdem = redis.call("HGET", key, "idempotencyKey")
 if priorIdem and priorIdem ~= "" and priorIdem ~= idem then
   redis.call("DEL", base .. ":idem:" .. priorIdem)
 end
 redis.call("ZREM", ready, id)
 redis.call("ZREM", scheduled, id)
-redis.call("ZREM", base .. ":dead", id)
-redis.call("ZREM", base .. ":leases", id)
-redis.call("DEL", key, eventsKey(id))
+redis.call("ZREM", dead, id)
+redis.call("ZREM", leases, id)
+redis.call("DEL", key, events)
 
 redis.call("HSET", key,
   "id", id,
   "payload", ARGV[3],
   "attempt", "0",
-  "maxAttempts", ARGV[7],
-  "priority", ARGV[6],
+  "maxAttempts", ARGV[6],
+  "priority", ARGV[5],
   "createdAt", n(now),
   "updatedAt", n(now),
   "progress", "0",
   "idempotencyKey", idem,
-  "idemTtlMs", ARGV[9])
+  "idemTtlMs", ARGV[8])
 
 if delay > 0 then
   redis.call("HSET", key, "status", "scheduled")
@@ -407,7 +558,7 @@ else
   redis.call("ZADD", ready, n((${MAX_PRIORITY} - priority) * ${PRIORITY_STRIDE} + seq), id)
   -- Doorbell: wake one blocked worker. Trimmed so an idle queue cannot grow it.
   redis.call("LPUSH", signal, "1")
-  redis.call("LTRIM", signal, 0, tonumber(ARGV[10]) - 1)
+  redis.call("LTRIM", signal, 0, tonumber(ARGV[9]) - 1)
 end
 return {id, 0, ""}
 `,
@@ -430,12 +581,13 @@ type ReservedRow = {
   readonly priority: number;
   readonly createdAt: number;
   readonly token: string;
+  /** `""` when the job has none. Lets the settling scripts declare its key. */
+  readonly idempotencyKey: string;
 };
 
 const reserveScript = defineScript<
   readonly [
     base: string,
-    now: string,
     leaseMs: string,
     token: string,
     eventsMaxLen: string,
@@ -444,19 +596,24 @@ const reserveScript = defineScript<
   { job: ReservedRow | null; wakeInMs: number }
 >({
   keyCount: 6,
-  lua: `${LUA_PRELUDE}
+  lua: `${UNDECLARED_KEYS}${LUA_CORE}${LUA_DERIVED}
 -- @script reserve
 local ready, scheduled, leases = KEYS[1], KEYS[2], KEYS[3]
 local seqKey, dead, signal = KEYS[4], KEYS[5], KEYS[6]
-local now = tonumber(ARGV[2])
-local leaseMs = tonumber(ARGV[3])
-local token = ARGV[4]
-local maxLen = ARGV[5]
-local deadTtl = tonumber(ARGV[6])
+local now = serverNow()
+local leaseMs = tonumber(ARGV[2])
+local token = ARGV[3]
+local maxLen = ARGV[4]
+local deadTtl = tonumber(ARGV[5])
 
 local function pushReady(id, priority)
   local seq = redis.call("INCR", seqKey)
   redis.call("ZADD", ready, n((${MAX_PRIORITY} - priority) * ${PRIORITY_STRIDE} + seq), id)
+end
+
+local function releaseIdem(key)
+  local idem = redis.call("HGET", key, "idempotencyKey")
+  if idem and idem ~= "" then redis.call("DEL", idemKey(idem)) end
 end
 
 -- 1. Promote every job whose delay (or backoff) has elapsed.
@@ -468,9 +625,11 @@ for _, id in ipairs(due) do
   pushReady(id, priority)
 end
 
--- 2. Reclaim jobs whose lease expired — a worker crashed mid-run. Attempts
---    were already counted at reserve, so a crash loop dead-letters rather
---    than spinning forever.
+-- 2. Reclaim jobs whose lease expired — a worker crashed mid-run, or lost its
+--    connection long enough that its own deadline aborted the handler. Server
+--    time decides expiry, so a worker with a fast clock cannot reclaim a lease
+--    its holder still renews. Attempts were already counted at reserve, so a
+--    crash loop dead-letters rather than spinning forever.
 local stalled = redis.call("ZRANGEBYSCORE", leases, "-inf", n(now), "LIMIT", 0, 100)
 for _, id in ipairs(stalled) do
   redis.call("ZREM", leases, id)
@@ -488,12 +647,10 @@ for _, id in ipairs(stalled) do
     redis.call("ZREM", scheduled, id)
     redis.call("HSET", key, "status", "cancelled", "updatedAt", n(now),
       "finishedAt", n(now))
-    redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
-      "t", "cancelled", "d", "")
+    append(key, eventsKey(id), "cancelled", "", maxLen)
     redis.call("PEXPIRE", key, n(deadTtl))
     redis.call("PEXPIRE", eventsKey(id), n(deadTtl))
-    local idem = redis.call("HGET", key, "idempotencyKey")
-    if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+    releaseIdem(key)
   elseif attempt < maxAttempts then
     redis.call("HSET", key, "status", "waiting", "updatedAt", n(now),
       "error", "Worker lease expired before the job finished")
@@ -504,12 +661,11 @@ for _, id in ipairs(stalled) do
       "error", "Worker lease expired before the job finished")
     redis.call("ZADD", dead, n(now), id)
     redis.call("ZREMRANGEBYSCORE", dead, 0, n(now - deadTtl))
-    redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
-      "t", "failed", "d", "Worker lease expired before the job finished")
+    append(key, eventsKey(id), "failed",
+      "Worker lease expired before the job finished", maxLen)
     redis.call("PEXPIRE", key, n(deadTtl))
     redis.call("PEXPIRE", eventsKey(id), n(deadTtl))
-    local idem = redis.call("HGET", key, "idempotencyKey")
-    if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+    releaseIdem(key)
   end
 end
 
@@ -534,19 +690,21 @@ end
 
 local id = head[1]
 local key = jobKey(id)
+local events = eventsKey(id)
 local attempt = tonumber(redis.call("HGET", key, "attempt") or "0") + 1
 
--- A re-attempt regenerates from scratch, so its output starts over too.
--- Leaving the previous attempt's partial chunks in place would make a resuming
--- client concatenate two generations. Announce the restart, then trim
--- everything before the marker: deleting the stream instead would reset the
+-- A re-run regenerates from scratch, so its output starts over too. Leaving
+-- the previous run's partial chunks in place would make a resuming client
+-- concatenate two generations. Announce the restart, then trim everything
+-- before the marker: deleting the stream instead would reset the
 -- last-generated id, and a marker recreated in the same millisecond can land
 -- at or below the cursor a watcher already holds, which drops the restart
--- boundary and every chunk sharing that millisecond.
-if attempt > 1 then
-  local marker = redis.call("XADD", eventsKey(id), "MAXLEN", "~", maxLen, "*",
-    "t", "restarted", "d", n(attempt))
-  redis.call("XTRIM", eventsKey(id), "MINID", marker)
+-- boundary and every chunk sharing that millisecond. A run that stop()
+-- requeued gets its attempt back, so "re-run" is output on the stream, not an
+-- attempt number above one.
+if attempt > 1 or redis.call("XLEN", events) > 0 then
+  local marker = append(key, events, "restarted", n(attempt), maxLen)
+  redis.call("XTRIM", events, "MINID", marker)
 end
 
 redis.call("HSET", key,
@@ -565,7 +723,8 @@ return {1, id,
   redis.call("HGET", key, "maxAttempts") or "1",
   redis.call("HGET", key, "priority") or "0",
   redis.call("HGET", key, "createdAt") or n(now),
-  token}
+  token,
+  redis.call("HGET", key, "idempotencyKey") or ""}
 `,
   decode: (reply) => {
     const row = expectArray(reply, "reserve");
@@ -581,7 +740,9 @@ return {1, id,
         maxAttempts: toNumber(row[4]),
         priority: toNumber(row[5]),
         createdAt: toNumber(row[6]),
-        token: expectString(row[7], "reserve")
+        token: expectString(row[7], "reserve"),
+        idempotencyKey:
+          row[8] === undefined ? "" : expectString(row[8], "reserve")
       }
     };
   }
@@ -593,10 +754,8 @@ return {1, id,
  */
 const touchScript = defineScript<
   readonly [
-    base: string,
     id: string,
     token: string,
-    now: string,
     leaseMs: string,
     type: string,
     data: string,
@@ -604,24 +763,22 @@ const touchScript = defineScript<
   ],
   { held: boolean; cancelRequested: boolean; eventId: string }
 >({
-  keyCount: 1,
-  lua: `${LUA_PRELUDE}
+  keyCount: 3,
+  lua: `${LUA_CORE}
 -- @script touch
-local leases = KEYS[1]
-local id, token = ARGV[2], ARGV[3]
-local now = tonumber(ARGV[4])
-local key = jobKey(id)
+local leases, key, events = KEYS[1], KEYS[2], KEYS[3]
+local id, token = ARGV[1], ARGV[2]
 
 if redis.call("HGET", key, "token") ~= token then return {0, 0, ""} end
-redis.call("ZADD", leases, n(now + tonumber(ARGV[5])), id)
+local now = serverNow()
+redis.call("ZADD", leases, n(now + tonumber(ARGV[3])), id)
 
 local eventId = ""
-local kind = ARGV[6]
+local kind = ARGV[4]
 if kind ~= "" then
-  eventId = redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
-    "t", kind, "d", ARGV[7])
+  eventId = append(key, events, kind, ARGV[5], ARGV[6])
   if kind == "progress" then
-    redis.call("HSET", key, "progress", ARGV[7])
+    redis.call("HSET", key, "progress", ARGV[5])
   end
 end
 redis.call("HSET", key, "updatedAt", n(now))
@@ -645,10 +802,8 @@ return {1, cancelled and 1 or 0, eventId}
  */
 const settleScript = defineScript<
   readonly [
-    base: string,
     id: string,
     token: string,
-    now: string,
     status: string,
     payload: string,
     ttlMs: string,
@@ -656,16 +811,19 @@ const settleScript = defineScript<
   ],
   number
 >({
-  keyCount: 3,
-  lua: `${LUA_PRELUDE}
+  keyCount: 6,
+  lua: `${LUA_CORE}
 -- @script settle
 local leases, dead, ready = KEYS[1], KEYS[2], KEYS[3]
-local id, token = ARGV[2], ARGV[3]
-local now = tonumber(ARGV[4])
-local status = ARGV[5]
-local key = jobKey(id)
+local key, events, idemKey = KEYS[4], KEYS[5], KEYS[6]
+local id, token = ARGV[1], ARGV[2]
+local status = ARGV[3]
 
+-- The fence: only the holder of the current lease may write an outcome. A
+-- worker whose lease lapsed and was reclaimed finds its token gone, so its
+-- late result is refused rather than overwriting the run that replaced it.
 if redis.call("HGET", key, "token") ~= token then return 0 end
+local now = serverNow()
 
 -- Cancellation wins the race with the handler's own outcome. cancel() already
 -- promised the caller no result is coming, but the worker only learns of the
@@ -686,27 +844,24 @@ redis.call("HSET", key,
   "finishedAt", n(now))
 
 if status == "completed" then
-  redis.call("HSET", key, "result", ARGV[6])
-  redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
-    "t", "completed", "d", ARGV[6])
+  redis.call("HSET", key, "result", ARGV[4])
+  append(key, events, "completed", ARGV[4], ARGV[6])
 elseif status == "cancelled" then
-  redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
-    "t", "cancelled", "d", "")
+  append(key, events, "cancelled", "", ARGV[6])
 else
-  redis.call("HSET", key, "error", ARGV[6])
+  redis.call("HSET", key, "error", ARGV[4])
   redis.call("ZADD", dead, n(now), id)
   -- The job record expires after resultTtlMs but its dead-letter entry did
   -- not, so the set grew for the life of the deployment and dead() listed ids
   -- whose records were long gone. Trim to the same horizon.
-  redis.call("ZREMRANGEBYSCORE", dead, 0, n(now - tonumber(ARGV[7])))
-  redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
-    "t", "failed", "d", ARGV[6])
+  redis.call("ZREMRANGEBYSCORE", dead, 0, n(now - tonumber(ARGV[5])))
+  append(key, events, "failed", ARGV[4], ARGV[6])
 end
 
-local ttlMs = tonumber(ARGV[7])
+local ttlMs = tonumber(ARGV[5])
 local ttl = n(ttlMs)
 redis.call("PEXPIRE", key, ttl)
-redis.call("PEXPIRE", eventsKey(id), ttl)
+redis.call("PEXPIRE", events, ttl)
 
 -- An idempotency key points at a job that is in flight or succeeded, so a
 -- duplicate request gets the finished answer instead of paying again. A job
@@ -721,9 +876,9 @@ if idem and idem ~= "" then
     -- has already expired.
     local hold = tonumber(redis.call("HGET", key, "idemTtlMs") or "0")
     if hold <= 0 or hold > ttlMs then hold = ttlMs end
-    redis.call("PEXPIRE", base .. ":idem:" .. idem, n(hold))
+    redis.call("PEXPIRE", idemKey, n(hold))
   else
-    redis.call("DEL", base .. ":idem:" .. idem)
+    redis.call("DEL", idemKey)
   end
 end
 if cancelled == 1 then return 2 end
@@ -738,10 +893,8 @@ return 1
  */
 const retryScript = defineScript<
   readonly [
-    base: string,
     id: string,
     token: string,
-    now: string,
     delayMs: string,
     error: string,
     ttlMs: string,
@@ -749,14 +902,13 @@ const retryScript = defineScript<
   ],
   number
 >({
-  keyCount: 2,
-  lua: `${LUA_PRELUDE}
+  keyCount: 5,
+  lua: `${LUA_CORE}
 -- @script retry
 local leases, scheduled = KEYS[1], KEYS[2]
-local id, token = ARGV[2], ARGV[3]
-local now = tonumber(ARGV[4])
-local delay = tonumber(ARGV[5])
-local key = jobKey(id)
+local key, events, idemKey = KEYS[3], KEYS[4], KEYS[5]
+local id, token = ARGV[1], ARGV[2]
+local delay = tonumber(ARGV[3])
 
 if redis.call("HGET", key, "token") ~= token then return 0 end
 
@@ -768,6 +920,7 @@ if not (delay and delay >= 0 and delay < math.huge) then
   return redis.error_reply(
     "benni queue: retry delay must be a finite, non-negative number of milliseconds")
 end
+local now = serverNow()
 
 redis.call("ZREM", leases, id)
 redis.call("HDEL", key, "token")
@@ -779,22 +932,80 @@ if redis.call("HGET", key, "cancelRequested") == "1" then
     "status", "cancelled",
     "updatedAt", n(now),
     "finishedAt", n(now),
-    "error", ARGV[6])
-  redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[8], "*",
-    "t", "cancelled", "d", "")
-  local ttl = n(tonumber(ARGV[7]))
+    "error", ARGV[4])
+  append(key, events, "cancelled", "", ARGV[6])
+  local ttl = n(tonumber(ARGV[5]))
   redis.call("PEXPIRE", key, ttl)
-  redis.call("PEXPIRE", eventsKey(id), ttl)
+  redis.call("PEXPIRE", events, ttl)
   local idem = redis.call("HGET", key, "idempotencyKey")
-  if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+  if idem and idem ~= "" then redis.call("DEL", idemKey) end
   return 2
 end
 
 redis.call("HSET", key,
   "status", "scheduled",
   "updatedAt", n(now),
-  "error", ARGV[6])
+  "error", ARGV[4])
 redis.call("ZADD", scheduled, n(now + delay), id)
+return 1
+`,
+  decode: (reply) => toNumber(reply)
+});
+
+/**
+ * Hand a running job back to the queue because its worker is stopping.
+ * 0 = lease already lost, 1 = requeued, 2 = settled `cancelled` instead
+ * because a cancel had landed during the run.
+ */
+const requeueScript = defineScript<
+  readonly [
+    id: string,
+    token: string,
+    signalCap: string,
+    ttlMs: string,
+    eventsMaxLen: string
+  ],
+  number
+>({
+  keyCount: 7,
+  lua: `${LUA_CORE}
+-- @script requeue
+local leases, ready, seqKey, signal = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local key, events, idemKey = KEYS[5], KEYS[6], KEYS[7]
+local id, token = ARGV[1], ARGV[2]
+
+if redis.call("HGET", key, "token") ~= token then return 0 end
+local now = serverNow()
+redis.call("ZREM", leases, id)
+redis.call("HDEL", key, "token")
+
+-- A cancelled job has no business going back on the queue: the next worker
+-- would start a paid generation only to abort it on its first heartbeat.
+if redis.call("HGET", key, "cancelRequested") == "1" then
+  redis.call("HSET", key, "status", "cancelled", "updatedAt", n(now),
+    "finishedAt", n(now))
+  append(key, events, "cancelled", "", ARGV[5])
+  local ttl = n(tonumber(ARGV[4]))
+  redis.call("PEXPIRE", key, ttl)
+  redis.call("PEXPIRE", events, ttl)
+  local idem = redis.call("HGET", key, "idempotencyKey")
+  if idem and idem ~= "" then redis.call("DEL", idemKey) end
+  return 2
+end
+
+-- A deploy is not the job's fault, so the interrupted run gives its attempt
+-- back: three rolling restarts must not dead-letter a healthy job. The next
+-- reserve writes a restart marker because the stream is non-empty, not
+-- because the attempt number grew.
+local attempt = tonumber(redis.call("HGET", key, "attempt") or "1") - 1
+if attempt < 0 then attempt = 0 end
+redis.call("HSET", key, "status", "waiting", "attempt", n(attempt),
+  "updatedAt", n(now))
+-- Front of its priority band: whoever is waiting on it has waited longest.
+local priority = tonumber(redis.call("HGET", key, "priority") or "0")
+redis.call("ZADD", ready, n((${MAX_PRIORITY} - priority) * ${PRIORITY_STRIDE}), id)
+redis.call("LPUSH", signal, "1")
+redis.call("LTRIM", signal, 0, tonumber(ARGV[3]) - 1)
 return 1
 `,
   decode: (reply) => toNumber(reply)
@@ -806,28 +1017,22 @@ return 1
  * for the running worker to abort.
  */
 const cancelScript = defineScript<
-  readonly [
-    base: string,
-    id: string,
-    now: string,
-    ttlMs: string,
-    eventsMaxLen: string
-  ],
+  readonly [base: string, id: string, ttlMs: string, eventsMaxLen: string],
   number
 >({
-  keyCount: 3,
-  lua: `${LUA_PRELUDE}
+  keyCount: 5,
+  lua: `${UNDECLARED_KEYS}${LUA_CORE}${LUA_DERIVED}
 -- @script cancel
 local ready, scheduled, leases = KEYS[1], KEYS[2], KEYS[3]
+local key, events = KEYS[4], KEYS[5]
 local id = ARGV[2]
-local now = tonumber(ARGV[3])
-local key = jobKey(id)
 
 local status = redis.call("HGET", key, "status")
 if not status then return 0 end
 if status == "completed" or status == "failed" or status == "cancelled" then
   return 2
 end
+local now = serverNow()
 
 redis.call("HSET", key, "cancelRequested", "1", "updatedAt", n(now))
 
@@ -839,13 +1044,14 @@ redis.call("ZREM", ready, id)
 redis.call("ZREM", scheduled, id)
 redis.call("ZREM", leases, id)
 redis.call("HSET", key, "status", "cancelled", "finishedAt", n(now))
-redis.call("XADD", eventsKey(id), "MAXLEN", "~", ARGV[5], "*",
-  "t", "cancelled", "d", "")
-local ttl = n(tonumber(ARGV[4]))
+append(key, events, "cancelled", "", ARGV[4])
+local ttl = n(tonumber(ARGV[3]))
 redis.call("PEXPIRE", key, ttl)
-redis.call("PEXPIRE", eventsKey(id), ttl)
+redis.call("PEXPIRE", events, ttl)
+-- The caller names the job, not its idempotency key, so this key comes from
+-- the record and is the reason this script needs the undeclared-keys flag.
 local idem = redis.call("HGET", key, "idempotencyKey")
-if idem and idem ~= "" then redis.call("DEL", base .. ":idem:" .. idem) end
+if idem and idem ~= "" then redis.call("DEL", idemKey(idem)) end
 return 1
 `,
   decode: (reply) => toNumber(reply)
@@ -853,46 +1059,67 @@ return 1
 
 /** Move a dead-lettered job back to the ready set. 0 = not dead, 1 = requeued. */
 const retryDeadScript = defineScript<
-  readonly [
-    base: string,
-    id: string,
-    now: string,
-    maxAttempts: string,
-    signalCap: string
-  ],
+  readonly [id: string, maxAttempts: string, signalCap: string],
   number
 >({
-  keyCount: 4,
-  lua: `${LUA_PRELUDE}
+  keyCount: 6,
+  lua: `${LUA_CORE}
 -- @script retryDead
 local ready, dead, seqKey, signal = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
-local id = ARGV[2]
-local now = tonumber(ARGV[3])
-local key = jobKey(id)
+local key, events = KEYS[5], KEYS[6]
+local id = ARGV[1]
 
 if redis.call("ZREM", dead, id) == 0 then return 0 end
 if redis.call("EXISTS", key) == 0 then return 0 end
+local now = serverNow()
 
 redis.call("HSET", key,
   "status", "waiting",
   "attempt", "0",
-  "maxAttempts", ARGV[4],
+  "maxAttempts", ARGV[2],
   "updatedAt", n(now))
-redis.call("HDEL", key, "finishedAt", "token", "result")
+-- The stream starts over below, so its numbering and trim watermark do too:
+-- a stale watermark would report the fresh stream as truncated.
+redis.call("HDEL", key, "finishedAt", "token", "result", "eventSeq",
+  "eventsTrimmedThrough")
 -- The record carried a result TTL from when it died; it is live again now.
 redis.call("PERSIST", key)
 -- Discard the failed attempt's output, terminal event included: a watcher
 -- must not stop on the old "failed" event, nor render two generations.
-redis.call("DEL", eventsKey(id))
+redis.call("DEL", events)
 local priority = tonumber(redis.call("HGET", key, "priority") or "0")
 local seq = redis.call("INCR", seqKey)
 redis.call("ZADD", ready, n((${MAX_PRIORITY} - priority) * ${PRIORITY_STRIDE} + seq), id)
 -- Ring the doorbell, or an idle worker sleeps out its full block first.
 redis.call("LPUSH", signal, "1")
-redis.call("LTRIM", signal, 0, tonumber(ARGV[5]) - 1)
+redis.call("LTRIM", signal, 0, tonumber(ARGV[3]) - 1)
 return 1
 `,
   decode: (reply) => toNumber(reply)
+});
+
+/**
+ * Read a job's backlog and its trim watermark in one atomic step. Read
+ * separately, a trim landing between the two would make a complete read look
+ * truncated, or a truncated one look complete.
+ */
+const readEventsScript = defineScript<
+  readonly [start: string],
+  { trimmedThrough: string; entries: RedisReply }
+>({
+  keyCount: 2,
+  lua: `
+-- @script readEvents
+local watermark = redis.call("HGET", KEYS[1], "eventsTrimmedThrough")
+return {watermark or "", redis.call("XRANGE", KEYS[2], ARGV[1], "+")}
+`,
+  decode: (reply) => {
+    const row = expectArray(reply, "readEvents");
+    return {
+      trimmedThrough: typeof row[0] === "string" ? row[0] : "",
+      entries: row[1] ?? null
+    };
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -915,6 +1142,12 @@ return 1
  * - **Cancellation is first-class.** `queue.cancel(id)` aborts the handler's
  *   `AbortSignal`, so the in-flight `fetch` to the provider actually stops, and
  *   the job settles `cancelled` rather than `failed`.
+ *
+ * Delivery is **at-least-once**. A handler can run more than once for one job:
+ * after a worker crash, a network partition, an event-loop stall longer than
+ * the lease, or `stop({ timeoutMs })` requeueing it. What is exactly-once is
+ * the *outcome*: only the holder of the current lease can append output or
+ * settle the job, so a stale run's result is refused, never recorded twice.
  *
  * Job lifecycle lives in sorted sets (`ready`, `scheduled`, `leases`, `dead`) —
  * which is what gives delays, exponential backoff, priority, and dead-lettering
@@ -1001,6 +1234,9 @@ function createQueue<TPayload, TResult = unknown>(
   const signalKey = `${base}:signal`;
   const jobKey = (id: string) => `${base}:job:${id}`;
   const eventsKey = (id: string) => `${base}:events:${id}`;
+  // With an empty key this names a key no script ever touches: the scripts
+  // only use it once the record says the job has an idempotency key.
+  const idemKey = (key: string) => `${base}:idem:${key}`;
 
   const scripts = createScriptRunner(client);
 
@@ -1025,12 +1261,21 @@ function createQueue<TPayload, TResult = unknown>(
     );
     const outcome = await scripts.run(
       enqueueScript,
-      [readyKey, scheduledKey, seqKey, signalKey],
+      [
+        readyKey,
+        scheduledKey,
+        seqKey,
+        signalKey,
+        jobKey(id),
+        eventsKey(id),
+        deadKey,
+        leasesKey,
+        idemKey(idempotencyKey)
+      ],
       [
         base,
         id,
         codec.encode(payload),
-        String(Date.now()),
         String(delayMs),
         String(priority),
         String(attempts),
@@ -1057,8 +1302,8 @@ function createQueue<TPayload, TResult = unknown>(
   async function cancel(id: string): Promise<boolean> {
     const outcome = await scripts.run(
       cancelScript,
-      [readyKey, scheduledKey, leasesKey],
-      [base, id, String(Date.now()), String(resultTtlMs), String(eventsMaxLen)]
+      [readyKey, scheduledKey, leasesKey, jobKey(id), eventsKey(id)],
+      [base, id, String(resultTtlMs), String(eventsMaxLen)]
     );
     // 1 = cancelled outright, 3 = flagged for the running worker. Both mean the
     // job will not produce a result; 0 (unknown) and 2 (already done) do not.
@@ -1099,26 +1344,13 @@ function createQueue<TPayload, TResult = unknown>(
     );
     const outcome = await scripts.run(
       retryDeadScript,
-      [readyKey, deadKey, seqKey, signalKey],
-      [base, id, String(Date.now()), String(attempts), SIGNAL_CAP]
+      [readyKey, deadKey, seqKey, signalKey, jobKey(id), eventsKey(id)],
+      [id, String(attempts), SIGNAL_CAP]
     );
     return outcome === 1;
   }
 
   // -- event stream ---------------------------------------------------------
-
-  async function readEvents(
-    id: string,
-    after: string
-  ): Promise<Array<{ id: string; type: string; data: string }>> {
-    const reply = await client.send([
-      "XRANGE",
-      eventsKey(id),
-      exclusive(after),
-      "+"
-    ]);
-    return decodeRawEntries(reply, "XRANGE");
-  }
 
   /** The id of the newest event on a job's stream, or `"0"` if it has none. */
   async function lastEventId(id: string): Promise<string> {
@@ -1136,7 +1368,14 @@ function createQueue<TPayload, TResult = unknown>(
   /**
    * Async-iterate a job's output, ending after its terminal event. Resumable:
    * pass the last entry id the client received as `after` and nothing is
-   * replayed twice and nothing is missed.
+   * replayed twice.
+   *
+   * Nothing is skipped silently either. A job's stream keeps its newest
+   * `eventsMaxLen` events, so a long generation streamed a token at a time can
+   * outgrow it, and a cursor from before the retained window cannot be served
+   * in full. When that happens the iterator yields a `truncated` event where
+   * the missing events would have been, then carries on with what is left; the
+   * terminal `completed` event still carries the whole result.
    */
   async function* watch(
     id: string,
@@ -1147,7 +1386,13 @@ function createQueue<TPayload, TResult = unknown>(
       "pollMs"
     );
     const signal = watchOptions?.signal;
-    let cursor = watchOptions?.after ?? "0";
+    let cursor = streamCursor(watchOptions?.after ?? "0");
+    const fromStart = cursor === "0" || cursor === "-";
+    // The `n` of the last entry seen, so the next one can be checked for
+    // contiguity. Numbering starts at 1 per stream, so replaying from the start
+    // expects entry 1; resuming mid-stream learns it from the first entry read.
+    // `null` means unknown, which checks nothing rather than guess.
+    let lastSeq: number | null = fromStart ? 0 : null;
     let session: RedisSession | null = null;
     // Adapters without a dedicated connection (HTTP/edge) leave `session`
     // undefined; one that has it but cannot lease now falls back the same way
@@ -1156,10 +1401,22 @@ function createQueue<TPayload, TResult = unknown>(
 
     /** Yields decoded events; resolves true once a terminal one is seen. */
     async function* emitAll(
-      entries: Array<{ id: string; type: string; data: string }>
+      entries: readonly RawEvent[],
+      startIntact?: boolean
     ): AsyncGenerator<JobEvent<TResult>, boolean, undefined> {
-      for (const entry of entries) {
+      for (const [index, entry] of entries.entries()) {
+        // A restart marker opens a fresh generation, so whatever preceded it
+        // was discarded on purpose and nothing before it is owed to anyone.
+        const intact =
+          entry.type === "restarted" ||
+          (index === 0 && startIntact !== undefined
+            ? startIntact
+            : lastSeq === null ||
+              entry.seq === null ||
+              entry.seq === lastSeq + 1);
+        if (!intact) yield { id: cursor, type: "truncated" };
         cursor = entry.id;
+        lastSeq = entry.seq;
         const event = decodeEvent(entry, resultCodec);
         if (event === null) continue;
         yield event;
@@ -1169,8 +1426,33 @@ function createQueue<TPayload, TResult = unknown>(
     }
 
     try {
-      // Backlog first — everything already written after the caller's cursor.
-      if (yield* emitAll(await readEvents(id, cursor))) return;
+      // Backlog first — everything already written after the caller's cursor,
+      // read with the trim watermark in one step. Inclusive of the cursor: if
+      // that entry is still retained, nothing after it can have been trimmed,
+      // and its `n` is what the next entry must follow.
+      const backlog = await scripts.run(
+        readEventsScript,
+        [jobKey(id), eventsKey(id)],
+        [fromStart ? "-" : cursor]
+      );
+      let entries = decodeRawEntries(backlog.entries, "XRANGE");
+      let startIntact: boolean | undefined;
+      const head = entries[0];
+      if (!fromStart && head && compareStreamIds(head.id, cursor) === 0) {
+        lastSeq = head.seq;
+        entries = entries.slice(1);
+      } else if (!fromStart) {
+        // The cursor's own entry is gone. It was trimmed by the retention cap
+        // exactly when the watermark (the last entry the cap removed) is at or
+        // past it; only strictly past it means an entry the caller never saw
+        // went with it. Otherwise it went with a restart or a fresh generation,
+        // and whatever follows is complete.
+        startIntact = !(
+          backlog.trimmedThrough !== "" &&
+          compareStreamIds(cursor, backlog.trimmedThrough) < 0
+        );
+      }
+      if (yield* emitAll(entries, startIntact)) return;
 
       // Then tail. A dedicated connection makes this a blocking read; on an
       // adapter without one (HTTP/edge) it degrades to polling.
@@ -1185,9 +1467,9 @@ function createQueue<TPayload, TResult = unknown>(
           }
         }
 
-        let entries: Array<{ id: string; type: string; data: string }>;
+        let batch: RawEvent[];
         if (session !== null && !session.closed) {
-          entries = decodeXread(
+          batch = decodeXread(
             await session.send([
               "XREAD",
               "BLOCK",
@@ -1198,18 +1480,18 @@ function createQueue<TPayload, TResult = unknown>(
             ])
           );
         } else {
-          entries = decodeXread(
+          batch = decodeXread(
             await client.send(["XREAD", "STREAMS", eventsKey(id), cursor])
           );
-          if (entries.length === 0) await sleep(pollMs);
+          if (batch.length === 0) await sleep(pollMs);
         }
 
-        if (yield* emitAll(entries)) return;
+        if (yield* emitAll(batch)) return;
 
         // Nothing arrived. If the record is gone the job finished long enough
         // ago that its result TTL elapsed — no terminal event is ever coming.
         if (
-          entries.length === 0 &&
+          batch.length === 0 &&
           (await client.send(["EXISTS", jobKey(id)])) === 0
         ) {
           throw new JobNotFoundError(id);
@@ -1225,8 +1507,9 @@ function createQueue<TPayload, TResult = unknown>(
 
   /**
    * Resolve once the job reaches a terminal state. Returns the completed
-   * result, or throws with the failure message. Rejects with `JobNotFoundError`
-   * if the job is unknown or its result TTL has elapsed.
+   * result; rejects with `JobFailedError` (message: the recorded failure) or
+   * `JobCancelledError`. Rejects with `JobNotFoundError` if the job is unknown
+   * or its result TTL has elapsed.
    */
   async function wait(
     id: string,
@@ -1240,11 +1523,9 @@ function createQueue<TPayload, TResult = unknown>(
     if (existing === null) throw new JobNotFoundError(id);
     if (existing.status === "completed") return existing.result as TResult;
     if (existing.status === "failed") {
-      throw new Error(existing.error ?? `Job "${id}" failed`);
+      throw new JobFailedError(id, existing.error ?? `Job "${id}" failed`);
     }
-    if (existing.status === "cancelled") {
-      throw new Error(`Job "${id}" was cancelled`);
-    }
+    if (existing.status === "cancelled") throw new JobCancelledError(id);
 
     for await (const event of watch(id, {
       after: cursor,
@@ -1252,10 +1533,8 @@ function createQueue<TPayload, TResult = unknown>(
       pollMs: waitOptions?.pollMs
     })) {
       if (event.type === "completed") return event.result;
-      if (event.type === "failed") throw new Error(event.error);
-      if (event.type === "cancelled") {
-        throw new Error(`Job "${id}" was cancelled`);
-      }
+      if (event.type === "failed") throw new JobFailedError(id, event.error);
+      if (event.type === "cancelled") throw new JobCancelledError(id);
     }
     // The iterator only ends early when the caller's signal aborted.
     throw new Error(`Stopped waiting for job "${id}"`);
@@ -1270,6 +1549,9 @@ function createQueue<TPayload, TResult = unknown>(
    * exponential backoff until `maxAttempts`, then dead-letters — except
    * `TerminalJobError` (dead-letter immediately) and `RetryJobError` (retry
    * after an explicit delay, for provider `Retry-After`).
+   *
+   * @throws ValidationError if an option is out of range, including a
+   * `heartbeatMs` above half the effective `leaseMs`.
    */
   function worker(
     handler: (job: JobContext<TPayload>) => Promise<TResult> | TResult,
@@ -1283,9 +1565,9 @@ function createQueue<TPayload, TResult = unknown>(
       workerOptions?.leaseMs ?? leaseMs,
       "leaseMs"
     );
-    const heartbeatMs = positiveInt(
-      workerOptions?.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
-      "heartbeatMs"
+    const heartbeatMs = renewalInterval(
+      workerOptions?.heartbeatMs,
+      workerLeaseMs
     );
     const pollMs = positiveInt(
       workerOptions?.pollMs ?? DEFAULT_POLL_MS,
@@ -1302,6 +1584,8 @@ function createQueue<TPayload, TResult = unknown>(
 
     let running = true;
     const inFlight = new Set<Promise<void>>();
+    /** How to hand each running job back to the queue, keyed by lease token. */
+    const interrupts = new Map<string, () => Promise<void>>();
     let doorbell: RedisSession | null = null;
     let doorbellUnavailable = client.session === undefined;
     let slotFreed: (() => void) | null = null;
@@ -1312,24 +1596,55 @@ function createQueue<TPayload, TResult = unknown>(
       notify?.();
     }
 
+    /** The keys a settling script declares for one reserved job. */
+    function jobKeys(reserved: ReservedRow) {
+      return {
+        job: jobKey(reserved.id),
+        events: eventsKey(reserved.id),
+        idem: idemKey(reserved.idempotencyKey)
+      };
+    }
+
     /** Renew the lease, optionally appending an event. */
     async function touch(
-      id: string,
-      token: string,
+      reserved: ReservedRow,
       type: "" | "chunk" | "progress",
       data: string
     ) {
+      const keys = jobKeys(reserved);
       return scripts.run(
         touchScript,
-        [leasesKey],
+        [leasesKey, keys.job, keys.events],
         [
-          base,
-          id,
-          token,
-          String(Date.now()),
+          reserved.id,
+          reserved.token,
           String(workerLeaseMs),
           type,
           data,
+          String(eventsMaxLen)
+        ]
+      );
+    }
+
+    /** Hand a job back to the ready set. Resolves the script's outcome. */
+    async function requeue(reserved: ReservedRow): Promise<number> {
+      const keys = jobKeys(reserved);
+      return scripts.run(
+        requeueScript,
+        [
+          leasesKey,
+          readyKey,
+          seqKey,
+          signalKey,
+          keys.job,
+          keys.events,
+          keys.idem
+        ],
+        [
+          reserved.id,
+          reserved.token,
+          SIGNAL_CAP,
+          String(resultTtlMs),
           String(eventsMaxLen)
         ]
       );
@@ -1358,7 +1673,10 @@ function createQueue<TPayload, TResult = unknown>(
       }
     }
 
-    async function run(reserved: ReservedRow): Promise<void> {
+    async function run(
+      reserved: ReservedRow,
+      reservedAt: number
+    ): Promise<void> {
       // Decode before the heartbeat starts. A throw here used to escape past
       // the try/finally below with the interval already running, leaving a
       // zombie timer renewing the lease forever — the job stayed `active` and
@@ -1376,30 +1694,111 @@ function createQueue<TPayload, TResult = unknown>(
 
       const controller = new AbortController();
       let cancelled = false;
+      /** The lease is gone, proven by Redis or by the local deadline. */
       let leaseLost = false;
+      /** `stop()` handed the job back to the queue. */
+      let interrupted = false;
+      /** The handler has returned or thrown; its outcome is being written. */
+      let handlerDone = false;
+      let heartbeating = false;
+      // Monotonic, and measured from before the reserve round trip: the server
+      // stamped the lease at some point during it, so this is the earliest the
+      // lease can lapse, and a wall-clock jump cannot move it.
+      let leaseDeadline = reservedAt + workerLeaseMs;
+      let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
 
+      function stopTimers() {
+        clearInterval(heartbeatTimer);
+        if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
       function onCancelled() {
+        if (leaseLost || interrupted) return;
         cancelled = true;
-        controller.abort(new Error(`Job "${reserved.id}" was cancelled`));
+        controller.abort(new JobCancelledError(reserved.id));
       }
       function onLeaseLost() {
+        if (leaseLost || interrupted) return;
         leaseLost = true;
+        stopTimers();
         controller.abort(new JobLeaseLostError(reserved.id));
+        // Paid work was just abandoned, possibly to a run that is already
+        // underway elsewhere: that belongs in the operator's telemetry.
+        onError(new JobLeaseLostError(reserved.id));
+      }
+
+      /** One renewal, with the deadline pushed out only on proof. */
+      async function renew(type: "" | "chunk" | "progress", data: string) {
+        const sentAt = performance.now();
+        const state = await touch(reserved, type, data);
+        if (!state.held) {
+          onLeaseLost();
+        } else {
+          // Max, not assignment: renewals can overlap (an emit alongside the
+          // automatic heartbeat) and finish out of order, and whichever ran
+          // last on the server stamped a lease no earlier than either sentAt.
+          leaseDeadline = Math.max(leaseDeadline, sentAt + workerLeaseMs);
+          if (state.cancelRequested) onCancelled();
+        }
+        return state;
+      }
+
+      // The local deadline. A heartbeat that fails over the network proves
+      // nothing, so it used to go to onError and the handler kept generating
+      // while another worker reclaimed the job and paid for it again. Once the
+      // lease can no longer have been renewed in time, give it up here: abort
+      // the signal so the provider call stops. Re-armed lazily, so a renewal
+      // per token costs nothing but a number.
+      function armDeadline() {
+        deadlineTimer = setTimeout(
+          () => {
+            deadlineTimer = null;
+            if (handlerDone || leaseLost || interrupted) return;
+            if (performance.now() >= leaseDeadline) onLeaseLost();
+            else armDeadline();
+          },
+          Math.max(0, leaseDeadline - performance.now())
+        );
+        (deadlineTimer as { unref?: () => void }).unref?.();
       }
 
       // Automatic heartbeat: a handler that never emits still keeps its lease,
-      // and cancellation still reaches it within one interval.
-      const timer = setInterval(() => {
-        void touch(reserved.id, reserved.token, "", "").then(
-          (state) => {
-            if (!state.held) onLeaseLost();
-            else if (state.cancelRequested) onCancelled();
-          },
-          (error) => onError(error)
-        );
+      // and cancellation still reaches it within one interval. One renewal at
+      // a time: a round trip slower than the interval would otherwise stack
+      // up calls that all re-apply the same lease.
+      const heartbeatTimer = setInterval(() => {
+        if (heartbeating || leaseLost || interrupted) return;
+        heartbeating = true;
+        renew("", "")
+          .catch((error: unknown) => onError(error))
+          .finally(() => {
+            heartbeating = false;
+          });
       }, heartbeatMs);
       // Never keep the process alive for a heartbeat alone.
-      (timer as { unref?: () => void }).unref?.();
+      (heartbeatTimer as { unref?: () => void }).unref?.();
+      armDeadline();
+
+      interrupts.set(reserved.token, async () => {
+        // A handler that already finished is writing its outcome; requeueing
+        // under it would throw away a result that was paid for.
+        if (handlerDone || interrupted) return;
+        interrupted = true;
+        stopTimers();
+        controller.abort(new WorkerStoppedError(reserved.id));
+        try {
+          await requeue(reserved);
+        } catch (error) {
+          // The lease is the backstop: the job is reclaimed when it lapses.
+          onError(error);
+        }
+      });
+
+      /** Why this run can write nothing more, as the error to throw. */
+      const stopped = () =>
+        controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new JobLeaseLostError(reserved.id);
 
       const context: JobContext<TPayload> = {
         id: reserved.id,
@@ -1410,76 +1809,79 @@ function createQueue<TPayload, TResult = unknown>(
         createdAt: reserved.createdAt,
         signal: controller.signal,
         async emit(chunk: string) {
-          const state = await touch(
-            reserved.id,
-            reserved.token,
-            "chunk",
-            chunk
-          );
-          if (!state.held) {
-            onLeaseLost();
-            throw new JobLeaseLostError(reserved.id);
-          }
-          if (state.cancelRequested) onCancelled();
+          // Once the signal is aborted for loss or shutdown there is nothing to
+          // renew, and a round trip would only be refused by the token check.
+          if (leaseLost || interrupted) throw stopped();
+          const state = await renew("chunk", chunk);
+          if (!state.held) throw stopped();
           return state.eventId;
         },
         async progress(fraction: number) {
+          if (leaseLost || interrupted) throw stopped();
           const clamped = Math.min(1, Math.max(0, fraction));
-          const state = await touch(
-            reserved.id,
-            reserved.token,
-            "progress",
-            String(clamped)
-          );
-          if (!state.held) {
-            onLeaseLost();
-            throw new JobLeaseLostError(reserved.id);
-          }
-          if (state.cancelRequested) onCancelled();
+          const state = await renew("progress", String(clamped));
+          if (!state.held) throw stopped();
         },
         async heartbeat() {
-          const state = await touch(reserved.id, reserved.token, "", "");
-          if (!state.held) onLeaseLost();
-          else if (state.cancelRequested) onCancelled();
-          return state.held;
+          if (leaseLost || interrupted) return false;
+          return (await renew("", "")).held;
         }
       };
 
       try {
         const result = await handler(context);
+        handlerDone = true;
+        if (interrupted) return; // stop() requeued it; another worker runs it.
         // A cancel that lands during the final tokens still wins: the user
         // asked to stop, so do not record a result they will not see.
         if (cancelled) {
           await settle(reserved, "cancelled", "");
           return;
         }
-        await settle(reserved, "completed", encodeResult(reserved.id, result));
+        // Attempted even after a lease loss: the write is fenced by the token,
+        // so it lands only if nobody reclaimed the job — a partition that
+        // healed in time — and a result that was paid for is kept.
+        const outcome = await settle(
+          reserved,
+          "completed",
+          encodeResult(reserved.id, result)
+        );
+        if (outcome === 0 && !leaseLost) {
+          onError(new JobLeaseLostError(reserved.id));
+        }
       } catch (error) {
-        if (leaseLost) return; // Another worker owns it; touching it would race.
+        handlerDone = true;
+        // Another worker owns it (or stop() handed it back); touching it would
+        // race that owner.
+        if (leaseLost || interrupted) return;
         if (cancelled) {
           await settle(reserved, "cancelled", "");
           return;
         }
-        await failed(reserved, error);
+        if ((await failed(reserved, error)) === 0) {
+          onError(new JobLeaseLostError(reserved.id));
+        }
       } finally {
-        clearInterval(timer);
+        handlerDone = true;
+        stopTimers();
+        interrupts.delete(reserved.token);
       }
     }
 
+    /** Resolves the settle script's outcome, or `null` if the call failed. */
     async function settle(
       reserved: ReservedRow,
       status: "completed" | "cancelled" | "failed",
       payload: string
-    ) {
+    ): Promise<number | null> {
+      const keys = jobKeys(reserved);
       try {
-        await scripts.run(
+        return await scripts.run(
           settleScript,
-          [leasesKey, deadKey, readyKey],
+          [leasesKey, deadKey, readyKey, keys.job, keys.events, keys.idem],
           [
-            base,
             reserved.id,
             reserved.token,
-            String(Date.now()),
             status,
             payload,
             String(resultTtlMs),
@@ -1490,30 +1892,31 @@ function createQueue<TPayload, TResult = unknown>(
         // The lease is the backstop: an unsettled job is reclaimed and retried
         // rather than lost, so a failed settle must not take down the worker.
         onError(error);
+        return null;
       }
     }
 
-    async function failed(reserved: ReservedRow, error: unknown) {
+    /** Resolves the outcome of whichever script ran, or `null` on failure. */
+    async function failed(
+      reserved: ReservedRow,
+      error: unknown
+    ): Promise<number | null> {
       const message = errorMessage(error);
       const retry =
         reserved.attempt < reserved.maxAttempts && isRetryable(error);
-      if (!retry) {
-        await settle(reserved, "failed", message);
-        return;
-      }
+      if (!retry) return settle(reserved, "failed", message);
       const delayMs =
         error instanceof RetryJobError
           ? error.retryAfterMs
           : backoffFor(reserved.attempt, backoffMs, maxBackoffMs);
+      const keys = jobKeys(reserved);
       try {
-        await scripts.run(
+        return await scripts.run(
           retryScript,
-          [leasesKey, scheduledKey],
+          [leasesKey, scheduledKey, keys.job, keys.events, keys.idem],
           [
-            base,
             reserved.id,
             reserved.token,
-            String(Date.now()),
             String(delayMs),
             message,
             String(resultTtlMs),
@@ -1522,6 +1925,7 @@ function createQueue<TPayload, TResult = unknown>(
         );
       } catch (scheduleError) {
         onError(scheduleError);
+        return null;
       }
     }
 
@@ -1572,13 +1976,13 @@ function createQueue<TPayload, TResult = unknown>(
         }
         let reserved: ReservedRow | null = null;
         let wakeInMs = -1;
+        const reservedAt = performance.now();
         try {
           const outcome = await scripts.run(
             reserveScript,
             [readyKey, scheduledKey, leasesKey, seqKey, deadKey, signalKey],
             [
               base,
-              String(Date.now()),
               String(workerLeaseMs),
               globalThis.crypto.randomUUID(),
               String(eventsMaxLen),
@@ -1599,7 +2003,15 @@ function createQueue<TPayload, TResult = unknown>(
           continue;
         }
 
-        const task = run(reserved)
+        if (!running) {
+          // stop() landed while this reserve was in flight. Starting the job
+          // now would begin paid work that stop() may not wait for, so hand it
+          // straight back, attempt refunded, for another worker.
+          await requeue(reserved).catch(onError);
+          break;
+        }
+
+        const task = run(reserved, reservedAt)
           .catch(onError)
           .finally(() => {
             inFlight.delete(task);
@@ -1615,7 +2027,11 @@ function createQueue<TPayload, TResult = unknown>(
       get active() {
         return inFlight.size;
       },
-      async stop() {
+      async stop(stopOptions?: WorkerStopOptions) {
+        const timeoutMs =
+          stopOptions?.timeoutMs === undefined
+            ? undefined
+            : nonNegativeInt(stopOptions.timeoutMs, "timeoutMs");
         running = false;
         doorbellUnavailable = true; // never lease a replacement while stopping
         releaseSlot();
@@ -1624,8 +2040,27 @@ function createQueue<TPayload, TResult = unknown>(
         const blocked = doorbell;
         doorbell = null;
         await blocked?.close().catch(() => {});
-        await loop;
-        await Promise.allSettled([...inFlight]);
+        const drained = (async () => {
+          await loop;
+          await Promise.allSettled([...inFlight]);
+        })();
+        if (timeoutMs === undefined) return drained;
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expired = new Promise<true>((resolve) => {
+          timer = setTimeout(() => resolve(true), timeoutMs);
+        });
+        const timedOut = await Promise.race([
+          drained.then(() => false),
+          expired
+        ]);
+        clearTimeout(timer);
+        if (!timedOut) return;
+        // Out of time: abort what is still running and hand it back now, so
+        // another worker starts it at once instead of after the lease lapses.
+        await Promise.allSettled(
+          [...interrupts.values()].map((interrupt) => interrupt())
+        );
       }
     };
   }
@@ -1666,13 +2101,39 @@ function isTerminalType(type: string): boolean {
   return type === "completed" || type === "failed" || type === "cancelled";
 }
 
-/** XRANGE is inclusive; `(id` asks for strictly-after (Redis 6.2+). */
-function exclusive(cursor: string): string {
-  return cursor === "0" || cursor === "-" ? "-" : `(${cursor}`;
+/** One raw entry of a job's stream. `seq` is `null` on entries without one. */
+type RawEvent = {
+  readonly id: string;
+  readonly type: string;
+  readonly data: string;
+  readonly seq: number | null;
+};
+
+const STREAM_ID = /^\d{1,20}(-\d{1,20})?$/;
+
+/**
+ * Validate a caller's cursor. It usually arrives from an SSE `Last-Event-ID`
+ * header, so it is untrusted input bound for XRANGE/XREAD arguments.
+ */
+function streamCursor(cursor: string): string {
+  if (cursor === "-" || STREAM_ID.test(cursor)) return cursor;
+  throw new ValidationError(
+    `queue watch cursor must be a stream entry id such as "1700000000000-0", or "0" for the beginning, received ${JSON.stringify(cursor)}`
+  );
+}
+
+/** Order two stream ids (`ms` or `ms-seq`) numerically. */
+function compareStreamIds(a: string, b: string): number {
+  const [aMs = "0", aSeq = "0"] = a.split("-");
+  const [bMs = "0", bSeq = "0"] = b.split("-");
+  const byMs = BigInt(aMs) - BigInt(bMs);
+  if (byMs !== 0n) return byMs < 0n ? -1 : 1;
+  const bySeq = BigInt(aSeq) - BigInt(bSeq);
+  return bySeq === 0n ? 0 : bySeq < 0n ? -1 : 1;
 }
 
 function decodeEvent<TResult>(
-  entry: { id: string; type: string; data: string },
+  entry: RawEvent,
   resultCodec: Codec<TResult>
 ): JobEvent<TResult> | null {
   switch (entry.type) {
@@ -1706,10 +2167,7 @@ function decodeEvent<TResult>(
   }
 }
 
-function decodeRawEntries(
-  reply: RedisReply,
-  command: string
-): Array<{ id: string; type: string; data: string }> {
+function decodeRawEntries(reply: RedisReply, command: string): RawEvent[] {
   if (reply === null) return [];
   if (!Array.isArray(reply)) {
     throw new ReplyShapeError(`Expected ${command} to return an array`, reply);
@@ -1730,17 +2188,20 @@ function decodeRawEntries(
     }
     let type = "";
     let data = "";
+    let seq: number | null = null;
     for (let index = 0; index < fields.length - 1; index += 2) {
       if (fields[index] === "t") type = String(fields[index + 1] ?? "");
       if (fields[index] === "d") data = String(fields[index + 1] ?? "");
+      if (fields[index] === "n") {
+        const parsed = Number(fields[index + 1]);
+        seq = Number.isSafeInteger(parsed) ? parsed : null;
+      }
     }
-    return { id: expectString(entry[0], command), type, data };
+    return { id: expectString(entry[0], command), type, data, seq };
   });
 }
 
-function decodeXread(
-  reply: RedisReply
-): Array<{ id: string; type: string; data: string }> {
+function decodeXread(reply: RedisReply): RawEvent[] {
   if (reply === null) return [];
   const pairs = xreadStreamPairs(reply);
   return pairs.flatMap(([, entries]) => decodeRawEntries(entries, "XREAD"));
@@ -1903,6 +2364,36 @@ function priorityOf(value: number): number {
     );
   }
   return value;
+}
+
+/**
+ * The worker's heartbeat interval: a quarter of the lease unless the caller
+ * chose one, floored at 1ms so a tiny lease still renews rather than spinning.
+ *
+ * A caller's value has to leave room for a renewal *and* a retry, so half the
+ * lease is the ceiling, as in `lock` and `semaphore`. At or above the lease the
+ * first heartbeat lands on or after expiry: `leaseMs: 10_000` with the old
+ * fixed 15000 default had every job longer than ten seconds reclaimed before
+ * its first renewal, a misconfiguration that passes every quick test.
+ *
+ * The derived default is exempt: for a `leaseMs` of 1 the 1ms floor is the
+ * whole lease and can satisfy no ratio, and a working configuration must not
+ * start throwing.
+ */
+function renewalInterval(
+  requested: number | undefined,
+  leaseMs: number
+): number {
+  if (requested === undefined) {
+    return Math.max(1, Math.floor(leaseMs / HEARTBEAT_DIVISOR));
+  }
+  const heartbeatMs = positiveInt(requested, "heartbeatMs");
+  if (heartbeatMs * 2 > leaseMs) {
+    throw new ValidationError(
+      `queue heartbeatMs must be at most half of leaseMs (${leaseMs}) so a renewal lands before the lease could lapse, received ${heartbeatMs}`
+    );
+  }
+  return heartbeatMs;
 }
 
 function positiveInt(value: number, name: string): number {

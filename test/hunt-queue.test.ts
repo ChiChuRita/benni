@@ -218,7 +218,7 @@ describeRedis("queue: hunt regressions (live)", () => {
         await finish.opened;
         return "expensive result";
       },
-      { pollMs: 5, heartbeatMs: 60_000, onError: () => {} }
+      { pollMs: 5, heartbeatMs: 30_000, onError: () => {} }
     );
 
     const { id } = await jobs.enqueue(null);
@@ -254,7 +254,7 @@ describeRedis("queue: hunt regressions (live)", () => {
         await finish.opened;
         throw new Error("provider is overloaded");
       },
-      { pollMs: 5, heartbeatMs: 60_000, onError: () => {} }
+      { pollMs: 5, heartbeatMs: 30_000, onError: () => {} }
     );
 
     const { id } = await jobs.enqueue(null);
