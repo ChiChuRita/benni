@@ -16,17 +16,17 @@ const sample = `
 import { benni } from "../src/index.js";
 import type { RedisClient } from "../src/core/types.js";
 import type { InferInput } from "../src/schema.js";
-import { hash, number, stream, string } from "../src/schema.js";
+import { hash, number, optional, stream, string } from "../src/schema.js";
 
 declare const client: RedisClient;
-const users = hash("user", { name: string(), score: number() });
+const users = hash("user", { name: string(), score: number(), bio: optional(string()) });
 const events = stream("event", { kind: string(), at: number() });
 const redis = benni(client, { schema: { users, events } });
 
 export async function probe() {
   const whole = await redis.query.users.hget("42");
   const all = await redis.query.users.hgetall("42");
-  const picked = await redis.query.users.hmget("42", ["name", "score"]);
+  const picked = await redis.query.users.hmget("42", ["name", "bio"]);
   const entries = await redis.query.events.xrange("1");
   for await (const scanned of redis.scan.hash(users, "42")) void scanned;
   const input: InferInput<typeof users> = { name: "Ada", score: 1 };
@@ -84,22 +84,22 @@ describe("editor hovers print flat value types", () => {
   it("shows hash and stream values as object literals, not the aliases that build them", () => {
     const hovers = quickInfo();
     expect(hovers.get("whole")).toBe(
-      "const whole: { name: string; score: number; } | null"
+      "const whole: { name: string; score: number; bio?: string | undefined; } | null"
     );
     expect(hovers.get("all")).toBe(
-      "const all: { name?: string | undefined; score?: number | undefined; } | null"
+      "const all: { name?: string | undefined; score?: number | undefined; bio?: string | undefined; } | null"
     );
     expect(hovers.get("picked")).toBe(
-      "const picked: { name?: string | null | undefined; score?: number | null | undefined; }"
+      "const picked: { name?: string | undefined; bio?: string | undefined; }"
     );
     expect(hovers.get("entries")).toBe(
       "const entries: { id: string; value: { kind?: string | undefined; at?: number | undefined; }; }[]"
     );
     expect(hovers.get("scanned")).toBe(
-      'const scanned: { readonly field: "name"; readonly value: string; } | { readonly field: "score"; readonly value: number; }'
+      'const scanned: { readonly field: "name"; readonly value: string; } | { readonly field: "score"; readonly value: number; } | { readonly field: "bio"; readonly value: string; }'
     );
     expect(hovers.get("input")).toBe(
-      "const input: { name: string; score: number; }"
+      "const input: { name: string; score: number; bio?: string | undefined; }"
     );
   }, 30_000);
 });

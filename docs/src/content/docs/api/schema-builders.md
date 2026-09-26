@@ -69,9 +69,12 @@ redis.kv(profiles);
 ```ts
 const users = hash("user", {
   name: string(),
-  score: number()
+  score: number(),
+  bio: optional(string())
 });
 ```
+
+`optional(codec)` marks a field a stored record may lack: whole-record reads leave it off (typed `bio?: string`) instead of throwing `PartialRecordError`, and whole-record writes may omit it. Only hash schemas read the marker. See [Optional Fields](/benni/data-structures/hashes/#optional-fields).
 
 Use with:
 

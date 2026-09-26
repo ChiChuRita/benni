@@ -103,14 +103,13 @@ describe("createHashStore getAll", () => {
 });
 
 describe("createHashStore getFields", () => {
-  it("emits HMGET and decodes present fields, nulls for missing", async () => {
+  it("emits HMGET and decodes present fields, leaving missing ones off", async () => {
     const commands: RedisCommand[] = [];
     const store = userStore(commands, [["benni", null]]);
 
-    await expect(store.hmget("42", ["name", "score"])).resolves.toEqual({
-      name: "benni",
-      score: null
-    });
+    const fields = await store.hmget("42", ["name", "score"]);
+    expect(fields).toStrictEqual({ name: "benni" });
+    expect("score" in fields).toBe(false);
 
     expect(commands).toEqual([["HMGET", "user:42", "name", "score"]]);
   });
@@ -456,9 +455,8 @@ describe("createHashStore getFieldsEx", () => {
     const commands: RedisCommand[] = [];
     const store = userStore(commands, [["benni", null]]);
 
-    await expect(store.hgetex("42", ["name", "score"])).resolves.toEqual({
-      name: "benni",
-      score: null
+    await expect(store.hgetex("42", ["name", "score"])).resolves.toStrictEqual({
+      name: "benni"
     });
 
     expect(commands).toEqual([
@@ -493,14 +491,13 @@ describe("createHashStore getFieldsEx", () => {
 });
 
 describe("createHashStore getDelFields", () => {
-  it("emits HGETDEL and decodes positionally with nulls for missing", async () => {
+  it("emits HGETDEL and decodes positionally, leaving missing fields off", async () => {
     const commands: RedisCommand[] = [];
     const store = userStore(commands, [["benni", null]]);
 
-    await expect(store.hgetdel("42", ["name", "score"])).resolves.toEqual({
-      name: "benni",
-      score: null
-    });
+    await expect(store.hgetdel("42", ["name", "score"])).resolves.toStrictEqual(
+      { name: "benni" }
+    );
 
     expect(commands).toEqual([
       ["HGETDEL", "user:42", "FIELDS", 2, "name", "score"]
@@ -612,9 +609,9 @@ type PersistFieldsValue = Awaited<ReturnType<typeof typedStore.hpersist>>;
 type _GetAllValue = Expect<
   Equal<GetAllValue, { name?: string; score?: number } | null>
 >;
-type _GetNameValue = Expect<Equal<GetNameValue, { name?: string | null }>>;
+type _GetNameValue = Expect<Equal<GetNameValue, { name?: string }>>;
 type _GetBothValue = Expect<
-  Equal<GetBothValue, { name?: string | null; score?: number | null }>
+  Equal<GetBothValue, { name?: string; score?: number }>
 >;
 type _FieldNamesValue = Expect<Equal<FieldNamesValue, string[]>>;
 type _SizeValue = Expect<Equal<SizeValue, number>>;
@@ -635,16 +632,14 @@ type FieldExpireTimeValue = Awaited<ReturnType<typeof typedStore.hexpiretime>>;
 type SetFieldsExResult = Awaited<ReturnType<typeof typedStore.hsetex>>;
 type SetFieldsExValues = Parameters<typeof typedStore.hsetex>[1];
 
-type _GetFieldsExValue = Expect<
-  Equal<GetFieldsExValue, { name?: string | null }>
->;
+type _GetFieldsExValue = Expect<Equal<GetFieldsExValue, { name?: string }>>;
 type _GetDelFieldsValue = Expect<
-  Equal<GetDelFieldsValue, { name?: string | null; score?: number | null }>
+  Equal<GetDelFieldsValue, { name?: string; score?: number }>
 >;
 type _FieldExpireTimeValue = Expect<Equal<FieldExpireTimeValue, number>>;
 type _SetFieldsExResult = Expect<Equal<SetFieldsExResult, boolean>>;
 type _SetFieldsExValues = Expect<
-  Equal<SetFieldsExValues, Partial<{ name: string; score: number }>>
+  Equal<SetFieldsExValues, { name?: string; score?: number }>
 >;
 
 function expectTypeErrorsOnly() {

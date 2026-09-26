@@ -37,7 +37,7 @@ import { redis } from "./redis";
 
 await redis.query.users.hset("42", { name: "Ada", score: 10 });
 
-const user = await redis.query.users.hgetall("42");
+const user = await redis.query.users.hget("42");
 //    ^? { name: string; score: number } | null
 
 await redis.query.leaderboard.zadd("daily", [{ member: "ada", score: 100 }]);

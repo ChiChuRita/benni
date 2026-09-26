@@ -254,6 +254,15 @@ export type Keyspace<
 export type FieldCodecs = Record<string, Codec<any, any>>;
 
 /**
+ * A hash field codec marked with `optional()`: the field may be absent from a
+ * stored record. Only hash schemas read the marker; everywhere else it is the
+ * wrapped codec unchanged.
+ */
+export type OptionalCodec<TInput, TOutput = TInput> = Codec<TInput, TOutput> & {
+  readonly optional: true;
+};
+
+/**
  * Flattens an alias instantiation or an intersection into one object literal
  * type. Type-only: it changes what an editor hover prints (`{ name: string }`
  * rather than `InferHashOutput<{ name: Codec<string, string> }>`), never what
@@ -317,27 +326,70 @@ export type InferOutput<TSchema> = typeof inferTypes extends keyof TSchema
     ? TOutput
     : never;
 
-type FieldInput<TCodec> = TCodec extends Codec<infer TInput, any>
-  ? TInput
-  : never;
+type FieldInput<TCodec> =
+  TCodec extends Codec<infer TInput, any> ? TInput : never;
 
-type FieldOutput<TCodec> = TCodec extends Codec<any, infer TOutput>
-  ? TOutput
-  : never;
+type FieldOutput<TCodec> =
+  TCodec extends Codec<any, infer TOutput> ? TOutput : never;
 
-export type InferHashInput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]: FieldInput<TFields[K]>;
-} & {};
+type OptionalFieldName<TFields extends FieldCodecs> = {
+  [K in keyof TFields]: TFields[K] extends { readonly optional: true }
+    ? K
+    : never;
+}[keyof TFields];
 
-export type InferHashOutput<TFields extends FieldCodecs> = {
-  [K in keyof TFields]: FieldOutput<TFields[K]>;
-} & {};
+type RequiredFieldName<TFields extends FieldCodecs> = Exclude<
+  keyof TFields,
+  OptionalFieldName<TFields>
+>;
 
-/** One declared field's read-side type. */
+/**
+ * What a whole-record hash write takes: every required field, and the
+ * `optional()` ones as `?:`.
+ */
+export type InferHashInput<TFields extends FieldCodecs> = [
+  OptionalFieldName<TFields>
+] extends [never]
+  ? InferFieldsInput<TFields>
+  : Simplify<
+      { [K in RequiredFieldName<TFields>]: FieldInput<TFields[K]> } & {
+        [K in OptionalFieldName<TFields>]?: FieldInput<TFields[K]>;
+      }
+    >;
+
+/**
+ * What a whole-record hash read returns: every required field, and the
+ * `optional()` ones as `?:`, absent from the object when not stored.
+ */
+export type InferHashOutput<TFields extends FieldCodecs> = [
+  OptionalFieldName<TFields>
+] extends [never]
+  ? { [K in keyof TFields]: FieldOutput<TFields[K]> } & {}
+  : Simplify<
+      { [K in RequiredFieldName<TFields>]: FieldOutput<TFields[K]> } & {
+        [K in OptionalFieldName<TFields>]?: FieldOutput<TFields[K]>;
+      }
+    >;
+
+/** One declared field's write-side type, whether or not it is optional. */
+export type HashFieldInput<
+  TFields extends FieldCodecs,
+  TField extends keyof TFields
+> = FieldInput<TFields[TField]>;
+
+/** One declared field's read-side type, whether or not it is optional. */
 export type HashFieldOutput<
   TFields extends FieldCodecs,
   TField extends keyof TFields
 > = FieldOutput<TFields[TField]>;
+
+/**
+ * Any subset of a hash's fields, each at its own write-side type: what
+ * `hmset` and `hsetex` take.
+ */
+export type PartialHashInput<TFields extends FieldCodecs> = {
+  [K in keyof TFields]?: FieldInput<TFields[K]>;
+} & {};
 
 /**
  * Any subset of a hash's fields, each at its own read-side type, absent when
@@ -345,6 +397,15 @@ export type HashFieldOutput<
  */
 export type PartialHashOutput<TFields extends FieldCodecs> = {
   [K in keyof TFields]?: FieldOutput<TFields[K]>;
+} & {};
+
+/**
+ * A record of field codecs read with every field required, ignoring any
+ * `optional()` marker: a stream entry written by `xadd`, a script's args.
+ * Only hash schemas give `optional()` a meaning.
+ */
+export type InferFieldsInput<TFields extends FieldCodecs> = {
+  [K in keyof TFields]: FieldInput<TFields[K]>;
 } & {};
 
 export type HashSchema<

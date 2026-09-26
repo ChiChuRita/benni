@@ -68,10 +68,10 @@ This is deliberate, and it is worth knowing that it is the **opposite** policy f
 | | Missing declared field |
 | --- | --- |
 | Stream entry (`xrange`, `xread`, group reads) | Reads as `undefined`; you supply the fallback |
-| Hash whole-record read (`hget(id)`) | Throws `PartialRecordError` |
-| Hash tolerant read (`hgetall(id)`) | Reads as `undefined` (also `Partial`) |
+| Hash whole-record read (`hget(id)`) | Throws `PartialRecordError`, unless the field is declared `optional()` (then absent) |
+| Hash tolerant read (`hgetall(id)`) | Absent (every field is `?:`) |
 
-The difference follows from who writes the key. A hash under `hash("user", …)` is a record your schema owns, so a declared field that has gone missing is a bug worth a loud `PartialRecordError` from `hget`, with `hgetall` as the explicit tolerant read for records that use per-field TTLs. See [Hashes](/benni/data-structures/hashes/).
+The difference follows from who writes the key. A hash under `hash("user", …)` is a record your schema owns, so a required field that has gone missing is a bug worth a loud `PartialRecordError` from `hget`, with `optional()` for fields a record may lack and `hgetall` as the explicit tolerant read for records that use per-field TTLs. See [Hashes](/benni/data-structures/hashes/).
 
 A stream is an append-only log, and any producer can append to it: an older service, a `redis-cli XADD`, a version of your code that predates the field you just added to the schema. Entries already written are immutable, so a schema can never be retrofitted onto them. Typing entry values as complete records would be a claim about every past and future writer that Benni cannot check, so it stays a `Partial` and the fallback stays visible at the read.
 

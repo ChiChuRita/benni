@@ -26,9 +26,30 @@ await redis.hash(users).hset("42", {
 Reads return decoded values:
 
 ```ts
-const user = await redis.hash(users).hgetall("42");
+const user = await redis.hash(users).hget("42");
 //    ^? { name: string; score: number; active: boolean } | null
 ```
+
+That comment is also what your editor shows. Inferred value types are flattened, so hovering `user` prints the object type itself, not the `InferHashOutput<{ name: Codec<string, string>; … }>` that computes it. The same goes for `hgetall`, `hmget`, stream entries, and `redis.scan.hash` entries.
+
+A field a stored record may lack is declared `optional()`, and the types say so on both sides:
+
+```ts
+import { optional } from "benni/schema";
+
+export const accounts = hash("account", {
+  email: string(),
+  nickname: optional(string())
+});
+
+await redis.hash(accounts).hset("7", { email: "ada@example.com" }); // nickname may be left out
+await redis.hash(accounts).hset("7", { nickname: "ada" });           // compile error: email is required
+
+const account = await redis.hash(accounts).hget("7");
+//    ^? { email: string; nickname?: string } | null
+```
+
+A missing optional field is absent from the object; `nickname` is never present as `undefined` or `null`. See [Optional Fields](/benni/data-structures/hashes/#optional-fields).
 
 Hash field methods are typed by field name:
 

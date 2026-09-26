@@ -5,7 +5,7 @@ import { type BlockingWait, blockingTimeoutMilliseconds } from "./session.js";
 import type {
   FieldCodecs,
   InferAnchors,
-  InferHashInput,
+  InferFieldsInput,
   PartialHashOutput,
   RedisClient,
   RedisCommandArgument,
@@ -20,7 +20,7 @@ export type StreamSchema<
   TPrefix extends string = string,
   TId extends RedisKeyPart = RedisKeyPart,
   THashTag extends HashTagLayout | undefined = HashTagLayout | undefined
-> = InferAnchors<InferHashInput<TFields>, PartialHashOutput<TFields>> & {
+> = InferAnchors<InferFieldsInput<TFields>, PartialHashOutput<TFields>> & {
   readonly kind: "stream";
   readonly prefix: TPrefix;
   readonly hashTag?: THashTag;
@@ -185,7 +185,7 @@ export function createStreamStore<
   TFields extends FieldCodecs,
   TId extends RedisKeyPart = RedisKeyPart
 >(client: RedisClient, schema: StreamSchema<TFields, string, TId>) {
-  type Input = InferHashInput<TFields>;
+  type Input = InferFieldsInput<TFields>;
   const declaredFields = Object.keys(schema.fields) as Array<
     keyof TFields & string
   >;

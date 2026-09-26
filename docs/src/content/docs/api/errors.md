@@ -55,16 +55,16 @@ Most messages read `Expected Redis <COMMAND> to return <expected>, got <actual>`
 
 ### `PartialRecordError`
 
-Extends `ReplyShapeError`. Thrown when a whole-record hash read (`hget(id)` on a `hash()` schema) finds some, but not all, of the declared fields.
+Extends `ReplyShapeError`. Thrown when a whole-record hash read (`hget(id)` on a `hash()` schema) finds a record that lacks one or more required fields. Fields declared `optional()` never cause it.
 
 | Property | Type | Meaning |
 |---|---|---|
-| `missing` | `readonly string[]` | The declared fields that were absent |
+| `missing` | `readonly string[]` | The required fields that were absent |
 | `reply` | `unknown` | Inherited: the raw `HMGET` array |
 
-The reply is well formed here, so this is not a protocol or adapter fault. It means the stored record is incomplete, most often because individual fields were given their own TTLs with `hexpire` and some have since lapsed, or because `hdel` removed a declared field.
+The reply is well formed here, so this is not a protocol or adapter fault. It means the stored record is incomplete, most often because individual fields were given their own TTLs with `hexpire` and some have since lapsed, or because `hdel` removed a required field.
 
-It extends `ReplyShapeError` so code that already catches that keeps working. Catch `PartialRecordError` specifically to tell an ordinary incomplete record apart from a genuine shape violation, and reach for `hgetall` (which types its result as `Partial`) when incompleteness is expected. See [Hashes](/benni/data-structures/hashes/).
+It extends `ReplyShapeError` so code that already catches that keeps working. Catch `PartialRecordError` specifically to tell an ordinary incomplete record apart from a genuine shape violation, and declare a field `optional()` or reach for `hgetall` (which types every field as optional) when incompleteness is expected. See [Hashes](/benni/data-structures/hashes/).
 
 ### `UnsupportedCapabilityError`
 
@@ -279,7 +279,7 @@ Order your `catch` branches most specific first: `PartialRecordError` before `Re
 ## See Also
 
 - [JSON values](/benni/data-structures/json-values/) for why `json(validator)` throws where `json<T>()` stays quiet
-- [Hashes](/benni/data-structures/hashes/#missing-declared-fields-throw) for `PartialRecordError` and the tolerant `hgetall` read
+- [Hashes](/benni/data-structures/hashes/#missing-required-fields-throw) for `PartialRecordError` and the tolerant `hgetall` read
 - [Optimistic Transactions](/benni/advanced/optimistic-transactions/) for `WatchRetriesExceededError` and the retry loop around it
 - [Redis Cluster](/benni/advanced/cluster/) for `CrossSlotError` and the slot guard
 - [Philosophy](/benni/getting-started/philosophy/) for the "nothing is silent" rule these classes implement

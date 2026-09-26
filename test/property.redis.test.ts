@@ -271,7 +271,7 @@ describeRedis("differential properties against live Redis", () => {
                 await expect(store.hget(id)).resolves.toEqual(expected);
               } else {
                 await expect(store.hget(id)).rejects.toThrow(
-                  "missing declared field"
+                  "missing required field"
                 );
               }
               await expect(store.hget(id, "name")).resolves.toBe(

@@ -167,10 +167,7 @@ describeRedis("node feature modules against real Redis", () => {
       );
       await expect(
         userStore.hmget("fresh", ["name", "score"])
-      ).resolves.toEqual({
-        name: "first",
-        score: null
-      });
+      ).resolves.toStrictEqual({ name: "first" });
     });
 
     it("expires and persists individual hash fields", async ({ skip }) => {
@@ -258,9 +255,9 @@ describeRedis("node feature modules against real Redis", () => {
         userStore.hgetdel("modes", ["name", "score"])
       ).resolves.toEqual({ name: "ada", score: 1 });
       await expect(userStore.hgetall("modes")).resolves.toBeNull();
-      await expect(userStore.hgetdel("modes", ["name"])).resolves.toEqual({
-        name: null
-      });
+      await expect(userStore.hgetdel("modes", ["name"])).resolves.toStrictEqual(
+        {}
+      );
     });
   });
 
