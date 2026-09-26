@@ -69,11 +69,34 @@ jobs:
         run: pnpm docs:build
 
   integration:
-    name: Integration (Node + Bun + HTTP) against Redis
+    name: Integration (Node + HTTP) against ${{ matrix.server }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every server the README's compatibility table claims, except
+        # Dragonfly (checked by hand; see the README for why). Tests for
+        # commands newer than a server are gated on the server reporting the
+        # command, so the older rows run the suite for real rather than
+        # skipping it: see test/server-commands.ts.
+        include:
+          - server: Redis 8
+            image: redis:8-alpine
+          # The lockfile pins ioredis 6, which every other row runs. ioredis 5
+          # is still in the peer range and speaks only RESP2, where 6 has to
+          # be pinned to it, so the lowest supported major gets its own run.
+          - server: Redis 8, ioredis 5
+            image: redis:8-alpine
+            ioredis: "5"
+          - server: Redis 7.4
+            image: redis:7.4-alpine
+          - server: Redis 7.2
+            image: redis:7.2-alpine
+          - server: Valkey 8
+            image: valkey/valkey:8-alpine
     services:
       redis:
-        image: redis:8-alpine
+        image: ${{ matrix.image }}
         ports:
           - 6379:6379
         options: >-
@@ -106,25 +129,31 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Throwaway: the lockfile on disk changes for this run only.
+      - name: Swap in ioredis ${{ matrix.ioredis }}
+        if: matrix.ioredis
+        run: |
+          pnpm add --save-dev --workspace-root "ioredis@${{ matrix.ioredis }}"
+          node -e "console.log('ioredis', require('ioredis/package.json').version)"
 
       # A cluster-enabled node, started as a step rather than a `services:`
       # entry because cluster mode is a server flag and a service container
       # cannot override the image's command. Built from Dockerfile.cluster so
-      # CI and `pnpm redis:cluster:run` are the same node.
+      # CI and `pnpm redis:cluster:run` are the same node, on the same server
+      # as this row's standalone one.
       #
       # Without BENNI_REDIS_CLUSTER_URL the cluster suites skip, and a skipped
       # suite reads as a passing one: that is how an adapter bug that broke
       # every adopted ioredis.Cluster reached main. Slots are assigned here so
       # the cluster is routable before any file runs, rather than depending on
       # which suite happens to go first.
-      - name: Start cluster-enabled Redis
+      - name: Start cluster-enabled ${{ matrix.server }}
         run: |
-          docker build -f Dockerfile.cluster -t benni-redis-cluster .
+          docker build -f Dockerfile.cluster \
+            --build-arg REDIS_IMAGE=${{ matrix.image }} -t benni-redis-cluster .
           docker run -d --name benni-redis-cluster -p 6381:6379 benni-redis-cluster
           for _ in $(seq 1 60); do
             docker exec benni-redis-cluster redis-cli ping >/dev/null 2>&1 && break
@@ -151,7 +180,51 @@ jobs:
         run: pnpm test
 
       - name: Runnable Node example
+        if: matrix.image == 'redis:8-alpine' && !matrix.ioredis
         run: pnpm example:node
+
+  bun:
+    name: Bun ${{ matrix.bun }} contract tests against Redis
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned, not "latest": Bun 1.4.0 changed the error code a server
+        # reply carries, and an unpinned runner would have surfaced that as a
+        # red main with no change on our side. The lowest supported version
+        # and the current one; bump the second when a new Bun is verified.
+        bun: ["1.3.14", "1.4.2"]
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      BENNI_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Bun contract tests
         run: pnpm test:bun
@@ -199,7 +272,7 @@ jobs:
   release:
     name: Version or publish after all gates pass
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [compatibility, check, integration, deno]
+    needs: [compatibility, check, integration, bun, deno]
     runs-on: ubuntu-latest
     permissions:
       contents: write

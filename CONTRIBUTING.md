@@ -49,6 +49,12 @@ BENNI_UPSTASH_URL=http://127.0.0.1:8079 BENNI_UPSTASH_TOKEN=example_token pnpm t
 CI sets all of these, so the only suite that skips there is one whose service
 failed to start.
 
+CI also runs the suite against Redis 7.4, Redis 7.2, and Valkey 8, and against
+ioredis 5 as well as the locked ioredis 6. A test for a command newer than
+Redis 7.2 must gate itself on the server having it, with `serverCommands()`
+from `test/server-commands.ts` and the test context's `skip(condition, note)`,
+rather than assume Redis 8.
+
 ## Pull requests
 
 - Keep the public API Redis-shaped. Prefer the Redis command name when a

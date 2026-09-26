@@ -45,8 +45,10 @@ Deno needs no separate adapter: it runs node-redis directly through npm compatib
 
 ## Server Compatibility
 
-CI runs the integration suite against Redis 8 and an Upstash-REST-compatible
-endpoint. The other rows are verified manually against the same suite:
+CI runs the integration suite against every row except Dragonfly, plus an
+Upstash-REST-compatible endpoint. Tests for a command a server lacks are gated
+on that server reporting the command, so the older rows run the rest of the
+suite for real. Dragonfly is checked by hand against the same suite:
 
 | Server | Coverage |
 | --- | --- |
@@ -54,7 +56,7 @@ endpoint. The other rows are verified manually against the same suite:
 | Redis 7.4 | Everything except `hsetex`/`hgetex`/`hgetdel` (Redis 8 commands). |
 | Redis 7.2 | Additionally no hash field TTLs (`hexpire`/`httl`/…, introduced in 7.4). |
 | Valkey 8 | Same profile as Redis 7.2 (Valkey forked pre-7.4). |
-| Dragonfly | The common surface works (kv, hashes, sets, lists, sorted sets, streams, geo, HyperLogLog, bitmaps, Pub/Sub, transactions, scripts); `LCS`, `GEOSEARCHSTORE`, and hash field TTLs are not implemented by Dragonfly. |
+| Dragonfly | Not in CI; last checked by hand on Dragonfly 2.0. Most of the surface works (kv, hashes, sets, lists, sorted sets, streams, geo, HyperLogLog, bitmaps, Pub/Sub, transactions, scripts). Dragonfly does not implement `LCS`, and implements only part of the hash field TTL family (`HEXPIRE`, `HTTL`, `HSETEX`, `HGETEX`, but not `HPERSIST`, `HGETDEL`, `HEXPIRETIME`, or the millisecond variants); `ZRANDMEMBER` without a count and a consumer group's view of `XDEL`-deleted entries reply in a different shape; and the [queue](/benni/primitives/queue/) needs Dragonfly started with `--default_lua_flags=allow-undeclared-keys`, because its scripts touch job keys they do not declare. |
 
 Everything else (streams, sorted sets, `lmpop`, `sintercard`, geo, bitfields) works from Redis 7.2 up.
 

@@ -247,8 +247,10 @@ Pattern subscriptions are Node-only for now; Bun 1.3.14's `psubscribe` hangs
 upstream, so the Bun adapter reports patterns as unsupported instead of
 deadlocking.
 
-**Server compatibility.** CI runs the integration suite against Redis 8 and an
-Upstash-REST-compatible endpoint; the other rows are verified manually.
+**Server compatibility.** CI runs the integration suite against every row
+but Dragonfly, plus an Upstash-REST-compatible endpoint; tests for a command a
+server lacks are gated on that server, not skipped wholesale. Dragonfly is
+checked by hand.
 
 | Server | Result |
 |---|---|
@@ -256,7 +258,7 @@ Upstash-REST-compatible endpoint; the other rows are verified manually.
 | Redis 7.4 | All but `hsetex`/`hgetex`/`hgetdel` (Redis 8 commands). |
 | Redis 7.2 | Additionally no hash field TTLs (`hexpire`/`httl`/…, added in 7.4). |
 | Valkey 8 | Same profile as Redis 7.2 (Valkey forked pre-7.4). |
-| Dragonfly | Common surface works; no `LCS`, `GEOSEARCHSTORE`, or hash field TTLs. |
+| Dragonfly | Not in CI; checked by hand on 2.0. Most of the surface works, but no `LCS`, only part of the hash field TTL family (`hexpire`/`httl`, not `hpersist`/`hgetdel`/ms variants), `ZRANDMEMBER` and stream-tombstone replies differ, and the queue needs `--default_lua_flags=allow-undeclared-keys`. |
 
 ## Primitives
 
