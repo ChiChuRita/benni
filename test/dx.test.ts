@@ -178,8 +178,8 @@ describe("compile-time exclusive options", () => {
 
 describe("typed lock error", () => {
   it("run() throws LockNotAcquiredError carrying the key", async () => {
-    // SET NX loses (null reply) and there are no retries.
-    const locks = lock(fakeClient([], [null]));
+    // The acquire script loses (0, no fence) and there are no retries.
+    const locks = lock(fakeClient([], ["sha", 0]));
     const failure = locks.run("order:1", async () => 1);
     await expect(failure).rejects.toBeInstanceOf(LockNotAcquiredError);
     await expect(failure).rejects.toMatchObject({ key: "lock:order:1" });

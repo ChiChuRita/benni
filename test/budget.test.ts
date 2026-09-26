@@ -1,19 +1,45 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { slotOf } from "../src/cluster.js";
 import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
 import { BudgetWindowRolledError, budget } from "../src/primitives/index.js";
 
+describe("budget keys", () => {
+  it("keeps every budget key for one id in a single slot", () => {
+    // budget touches three keys per id in one script (two window buckets and
+    // the reservation set), so they must co-locate or the script is illegal
+    // on a cluster. Different ids still spread.
+    const bucket = 29_753;
+    const keys = [
+      `budget:{u1}:${bucket}`,
+      `budget:{u1}:${bucket - 1}`,
+      "budget:{u1}:holds"
+    ];
+    expect(new Set(keys.map(slotOf)).size).toBe(1);
+    expect(slotOf("budget:{u1}:holds")).not.toBe(slotOf("budget:{u2}:holds"));
+  });
+});
+
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
-describeRedis("budget (hunt regressions)", () => {
+describeRedis("budget (live)", () => {
   let client: RedisClient;
   const run = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const uid = () => `${run}:${Math.random().toString(36).slice(2)}`;
   const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  /** Land just past a bucket boundary, so a test's arithmetic is predictable. */
-  const alignToBucket = (windowMs: number) =>
-    pause(windowMs - (Date.now() % windowMs) + 15);
+  /**
+   * Land just past a bucket boundary, so a test's arithmetic is predictable.
+   * Buckets come from the server's `TIME`, so align to that clock: aligning to
+   * our own put the test on the wrong side of the boundary whenever the two
+   * disagreed by more than the margin (a container VM's clock, say).
+   */
+  const alignToBucket = async (windowMs: number) => {
+    const reply = (await client.send(["TIME"])) as [string, string];
+    const serverNow =
+      Number(reply[0]) * 1000 + Math.floor(Number(reply[1]) / 1000);
+    await pause(windowMs - (serverNow % windowMs) + 15);
+  };
 
   beforeAll(async () => {
     client = await node({ url: redisUrl });

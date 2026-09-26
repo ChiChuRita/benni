@@ -77,11 +77,11 @@ export async function POST(request: Request): Promise<Response> {
   };
 
   // Layer 1: requests per minute, sliding window.
-  const { success, resetMs } = await limiter.check(userId);
+  const { success, retryAfterMs } = await limiter.check(userId);
   if (!success) {
     return new Response("Too Many Requests", {
       status: 429,
-      headers: { "Retry-After": String(Math.ceil((resetMs - Date.now()) / 1000)) }
+      headers: { "Retry-After": String(Math.ceil(retryAfterMs / 1000)) }
     });
   }
 
@@ -141,7 +141,7 @@ const text = await responses.get(id, async () => {
 });
 ```
 
-Only cache calls that are deterministic enough to reuse: classification, extraction, and RAG-style answers at low temperature, not open-ended chat. Anything that changes the output belongs in the hash (temperature, retrieval context, output schema version), and set `lockTtlMs` above your slowest generation so waiters don't fail open into a duplicate model call mid-load.
+Only cache calls that are deterministic enough to reuse: classification, extraction, and RAG-style answers at low temperature, not open-ended chat. Anything that changes the output belongs in the hash (temperature, retrieval context, output schema version), and set `waitTimeoutMs` above your slowest generation so waiters wait for it rather than giving up with `CacheWaitTimeoutError`; the fill lock is renewed while the generation runs, so it never hands the call to a second loader mid-load.
 
 ## Resumable Generation State
 

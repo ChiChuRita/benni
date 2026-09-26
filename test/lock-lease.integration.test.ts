@@ -147,4 +147,88 @@ describeRedis("lock lease (live)", () => {
       expect(outcome.reason).toBeInstanceOf(LockNotAcquiredError);
     }
   });
+
+  it("serializes concurrent callers with waitTimeoutMs alone", async () => {
+    const locks = lock(client, { prefix: `${run}:deadline`, ttlMs: 2_000 });
+    let inside = 0;
+    let maxInside = 0;
+
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        locks.run(
+          "res",
+          async () => {
+            inside += 1;
+            maxInside = Math.max(maxInside, inside);
+            await pause(20);
+            inside -= 1;
+          },
+          { waitTimeoutMs: 5_000, retryDelayMs: 10 }
+        )
+      )
+    );
+
+    expect(maxInside).toBe(1);
+  });
+
+  it("hands out strictly increasing fences, and each run sees its own", async () => {
+    // The fence is what lets a downstream store reject a paused holder that
+    // wakes up after its lock was re-granted: it must rise with every grant,
+    // including grants that follow an expiry rather than a release.
+    const prefix = `${run}:fence`;
+    const locks = lock(client, { prefix, ttlMs: 2_000 });
+    const fences: number[] = [];
+
+    await Promise.all(
+      Array.from({ length: 5 }, () =>
+        locks.run(
+          "order",
+          async (handle) => {
+            fences.push(handle.fence);
+            await pause(10);
+          },
+          { retries: 200, retryDelayMs: 5 }
+        )
+      )
+    );
+    const expired = await locks.acquire("order", { ttlMs: 50 });
+    await pause(100); // Lapses without a release.
+    const next = await locks.acquire("order");
+
+    const all = [...fences, expired?.fence ?? 0, next?.fence ?? 0];
+    expect(all).toEqual([...all].sort((a, b) => a - b));
+    expect(new Set(all).size).toBe(all.length);
+    expect(all[0]).toBeGreaterThanOrEqual(1);
+    await next?.release();
+    await client.send(["DEL", `{${prefix}:order}:fence`]);
+  });
+});
+
+const clusterUrl = process.env.BENNI_REDIS_CLUSTER_URL;
+const describeCluster = clusterUrl ? describe : describe.skip;
+
+describeCluster("lock on a cluster-enabled node", () => {
+  let client: RedisClient;
+  const run = `lock-cluster:${Date.now()}`;
+
+  beforeAll(async () => {
+    client = await node({ url: clusterUrl });
+  });
+  afterAll(async () => {
+    await client.close();
+  });
+
+  it("takes the lock and its fence in one script without CROSSSLOT", async () => {
+    // The acquire script touches the lock and its fence counter; Redis rejects
+    // it unless both share a slot, whether or not the id carries a tag.
+    for (const [prefix, id] of [
+      [run, "order:42"],
+      [`${run}:tagged`, "{u1}"]
+    ] as const) {
+      const locks = lock(client, { prefix });
+      const first = await locks.run(id, (handle) => handle.fence);
+      const second = await locks.run(id, (handle) => handle.fence);
+      expect(second).toBe(first + 1);
+    }
+  });
 });

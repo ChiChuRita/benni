@@ -201,13 +201,19 @@ describe("benni() call shapes", () => {
 describe("primitives take a handle, a client, or a config object", () => {
   it("accepts the benni handle in the config form", async () => {
     const commands: RedisCommand[] = [];
-    const redis = benni(fakeClient(commands, ["OK"]));
+    // The acquire script's SCRIPT LOAD, then its EVALSHA returning the fence.
+    const redis = benni(fakeClient(commands, ["sha", 1]));
 
     const locks = lock({ client: redis, ttlMs: 10_000 });
     const handle = await locks.acquire("order:42");
 
     expect(handle?.key).toBe("lock:order:42");
-    expect(commands[0]?.slice(0, 2)).toEqual(["SET", "lock:order:42"]);
+    expect(commands[1]?.slice(0, 4)).toEqual([
+      "EVALSHA",
+      "sha",
+      2,
+      "lock:order:42"
+    ]);
   });
 
   it("still accepts the positional client", async () => {

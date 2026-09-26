@@ -131,7 +131,7 @@ Lines of implementation code, blank lines excluded. For plain typed reads and
 writes the two are within a rounding error of each other, and we would rather
 say so than have you find out. The gap opens where an app needs a *primitive*:
 the raw column includes a sliding-window limiter, a read-through cache with
-single-flight, a token-fenced lock, and a job queue with heartbeat leases, which
+single-flight, a token-checked lock, and a job queue with heartbeat leases, which
 is six hand-written Lua scripts we would rather you did not maintain. Install
 BullMQ and a limiter package instead and the line count comes back down, at the
 price of four more dependencies that still hand you `string | null`.
@@ -194,8 +194,8 @@ editor down. It speeds it up.
 - **Nothing is silent.** Unexpected replies throw `ReplyShapeError` with the raw
   value on `.reply`; Redis error replies throw `RedisServerError` with `.code`
   parsed, so a `WRONGTYPE` handler written on Node still matches on the edge.
-- **Batteries only for what's easy to get wrong.** A correct lock, an accurate
-  sliding window, a stampede-proof cache. Not a search engine.
+- **Batteries only for what's easy to get wrong.** A fenced lock, an exact
+  sliding window, a single-flight cache. Not a search engine.
 
 [Read the full philosophy →](https://chichurita.github.io/benni/getting-started/philosophy/)
 
@@ -280,8 +280,9 @@ export const generate = queue<{ prompt: string }, string>("generate");
 
 ```ts
 // app.ts
-// Never frees a lock that expired and was re-acquired. Fail-fast by default;
-// pass retries when callers legitimately contend for the same id.
+// Never frees a lock that expired and was re-acquired, and hands each holder a
+// fencing token (handle.fence) for the stores it writes to. Fail-fast by
+// default; pass retries or waitTimeoutMs when callers contend for the same id.
 await redis.query.orderLocks.run("42", async () => { /* critical section */ }, {
   retries: 20,
   retryDelayMs: 100

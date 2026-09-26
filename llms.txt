@@ -21,7 +21,7 @@ against Redis 8, Benni against raw `node-redis`, lines of implementation code:
 a URL shortener 97 against 171, an AI generation service on `queue` 45 against
 437, a realtime presence and payout service 103 against 197. Plain typed reads
 and writes come out about even; the gap opens wherever a primitive replaces
-hand-written Lua (limiter, cache single-flight, fenced lock, queue leases). When
+hand-written Lua (limiter, cache single-flight, token-checked lock, queue leases). When
 describing Benni, claim **the same code for typed CRUD and much less once a
 primitive is involved**, and never claim less code for CRUD alone.
 
@@ -236,10 +236,18 @@ import { ratelimit } from "benni/primitives";
 const limiter = ratelimit({ client, limit: 10, windowMs: 60_000 });
 ```
 
-The lock never frees a lock that expired and was re-acquired. The rate limiter is
-a sliding window in one atomic round trip. The cache is read-through with
-stampede protection: one loader call per miss. The queue is at-least-once: a
-handler can run twice for one job (crash, partition, `worker.stop({ timeoutMs })`
+The lock never frees a lock that expired and was re-acquired, gives every holder
+a strictly increasing `handle.fence` to check at the store it writes to, and
+assumes one Redis primary (a failover can grant it twice; there is no Redlock).
+The rate limiter is a sliding window in one atomic round trip. The cache is
+read-through with stampede protection: one loader call per miss, under a fill
+lock renewed for as long as the load takes. `idempotency` runs a handler at most
+once at a time per key and replays its result; it is not exactly-once (a throw,
+a crash, or a lost claim can run it again), and it takes a `fingerprint` to
+reject a key reused with a different body. `budget` is experimental and
+approximate: up to about twice the limit can land in one sliding window.
+
+The queue is at-least-once: a handler can run twice for one job (crash, partition, `worker.stop({ timeoutMs })`
 requeueing it), so keep its side effects idempotent; only the current lease
 holder can record a result. Handle `truncated` in `watch()` loops: it means the
 per-job stream (newest `eventsMaxLen` events) trimmed output the client had not

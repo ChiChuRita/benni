@@ -409,10 +409,23 @@ export type BudgetHold = {
  * once its hold lapses, with no sweeper to run. Works over any adapter,
  * including `benni/upstash` on the edge.
  *
- * The window is a two-bucket sliding estimate, so usage can drift slightly
- * over the limit at a bucket boundary. That is the deliberate trade for O(1)
- * accounting: an exact log would keep one entry per request alive for the
- * whole window, which for a daily token budget is the wrong shape entirely.
+ * **Experimental**, and approximate by design; know the worst case before you
+ * rely on it:
+ *
+ * - The window is a two-bucket sliding estimate. Spend the whole limit just
+ *   before a bucket boundary and the estimate lets the next bucket spend it
+ *   again as the old spend decays, so up to **about twice the limit** can land
+ *   inside one true sliding window. It is a guardrail, not a ledger.
+ * - Buckets are aligned to the Unix epoch, not to the caller: a daily window's
+ *   buckets turn over at 00:00 UTC, and the previous day's spend then decays
+ *   linearly over the next day.
+ * - Every `charge`, `reserve`, and `check` walks the id's live holds, so each
+ *   costs O(holds) inside Redis, up to `maxHolds` (10000) per call.
+ *
+ * The trade is O(1) memory for spend: an exact log would keep one entry per
+ * request alive for the whole window, the wrong shape for a daily budget.
+ *
+ * @experimental
  */
 function createBudget(client: RedisClient, options: BudgetOptions) {
   const limit = positiveInt(options.limit, "limit");
@@ -649,7 +662,11 @@ function positiveInt(value: number, name: string): number {
   return value;
 }
 
-/** The budget {@link budget} returns. */
+/**
+ * The budget {@link budget} returns.
+ *
+ * @experimental
+ */
 export type BudgetStore = ReturnType<typeof createBudget>;
 
 /** {@link BudgetOptions} plus the client, for the single-argument form. */
@@ -658,6 +675,15 @@ export type BudgetConfig = BudgetOptions & {
   readonly client: ClientSource;
 };
 
+/**
+ * A cost-weighted spend limit: tokens, cents, or credits per window.
+ *
+ * Experimental and approximate: up to about twice the limit can land inside
+ * one sliding window, buckets turn over on Unix-epoch (UTC) boundaries, and
+ * every call walks the id's live holds (up to `maxHolds`).
+ *
+ * @experimental
+ */
 export function budget(config: BudgetConfig): BudgetStore;
 export function budget(
   client: ClientSource,
@@ -691,7 +717,12 @@ const budgetBinding: StoreBinding = {
   resource: (ctx, schema: BudgetSchema) => createBudget(ctx.client, schema)
 };
 
-/** Build a {@link BudgetSchema}. Exported as `budget` from `benni/schema`. */
+/**
+ * Build a {@link BudgetSchema}. Exported as `budget` from `benni/schema`.
+ *
+ * @experimental Approximate: up to about twice the limit can land in one
+ * sliding window. See the `budget` docs page.
+ */
 export function defineBudget(
   prefix: string,
   options: BudgetOptions
