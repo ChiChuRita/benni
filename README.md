@@ -292,7 +292,9 @@ no handle, such as a middleware factory: `ratelimit({ client, limit, windowMs })
 
 The queue is built for model calls: heartbeat leases so a ten-minute generation
 is ordinary, a resumable output stream per job, and cancellation that aborts the
-provider call instead of just marking a row.
+provider call instead of just marking a row. It is at-least-once: a crash or a
+deploy re-runs the job on another worker, and only the current lease holder can
+record the result.
 
 ```ts
 const jobs = redis.query.generate;

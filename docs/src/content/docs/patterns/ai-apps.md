@@ -147,7 +147,7 @@ Only cache calls that are deterministic enough to reuse: classification, extract
 
 Streamed responses die with the connection: a mobile client drops mid-generation and has to start (and you have to pay) from scratch. Append chunks to a stream as the model produces them, and a reconnecting client replays everything after the last entry ID it saw.
 
-If the generation should also survive the *server* going away (a deploy, a crash, a serverless invocation timing out), reach for the [`queue` primitive](/benni/primitives/queue/) instead. It runs the generation on a worker, gives every job this same resumable stream, and adds the lifecycle this recipe leaves to you: retries, cancellation, and dead-lettering.
+If the generation should also survive the *server* going away (a deploy, a crash, a serverless invocation timing out), reach for the [`queue` primitive](/benni/primitives/queue/) instead. It runs the generation on a worker, gives every job this same resumable stream, and adds the lifecycle this recipe leaves to you: retries, cancellation, and dead-lettering. Surviving means re-running, not resuming: the queue is [at-least-once](/benni/primitives/queue/#what-is-and-isnt-guaranteed), so a generation cut off by a crash or a deploy starts over on another worker and is paid for again. Its stream reports what it trimmed with a `truncated` event rather than skipping ahead, which a hand-rolled stream like the one below does not.
 
 ```ts
 export const generation = stream("generation", { chunk: string() });

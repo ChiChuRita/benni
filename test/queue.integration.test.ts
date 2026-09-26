@@ -1,18 +1,46 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RedisClient } from "../src/core/index.js";
 import { node } from "../src/node/index.js";
 import {
+  JobLeaseLostError,
   JobNotFoundError,
   queue,
   RetryJobError,
-  TerminalJobError
+  TerminalJobError,
+  WorkerStoppedError
 } from "../src/primitives/index.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
+const clusterUrl = process.env.BENNI_REDIS_CLUSTER_URL;
+const describeCluster = clusterUrl ? describe : describe.skip;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A client whose link to Redis can be cut: while cut, every command rejects
+ * the way a dropped connection does. It exposes no session, so a worker on it
+ * polls.
+ */
+function partitionable(inner: RedisClient) {
+  let cut = false;
+  const refuse = () => Promise.reject(new Error("partitioned from Redis"));
+  const client: RedisClient = {
+    send: (command) => (cut ? refuse() : inner.send(command)),
+    pipeline: (commands) => (cut ? refuse() : inner.pipeline(commands)),
+    async close() {}
+  };
+  return {
+    client,
+    cut() {
+      cut = true;
+    },
+    heal() {
+      cut = false;
+    }
+  };
 }
 
 describeRedis("queue (live)", () => {
@@ -351,11 +379,16 @@ describeRedis("queue (live)", () => {
 
   it("settles a cancelled job on reclaim instead of running it again", async () => {
     // cancel() on an *active* job only flags the record and leaves the owning
-    // worker to abort its own signal. If that worker then dies, the reclaim
-    // path saw an ordinary stalled job and pushed it back to ready, starting a
-    // fresh, paid-for generation of work the caller had already stopped.
+    // worker to abort its own signal. If that worker then drops off the
+    // network, the reclaim path saw an ordinary stalled job and pushed it back
+    // to ready, starting a fresh, paid-for generation of work the caller had
+    // already stopped.
     const prefix = nextPrefix();
-    const stalling = queue<string, string>(client, { prefix, leaseMs: 300 });
+    const link = partitionable(client);
+    const stalling = queue<string, string>(link.client, {
+      prefix,
+      leaseMs: 300
+    });
     const rescuing = queue<string, string>(client, { prefix, leaseMs: 30_000 });
 
     let firstRuns = 0;
@@ -364,18 +397,20 @@ describeRedis("queue (live)", () => {
     const dying = stalling.worker(
       async () => {
         firstRuns += 1;
-        await sleep(3_000); // never finishes within the test
+        await sleep(1_500); // never finishes within the test
         return "never";
       },
-      { heartbeatMs: 60_000, onError: () => {} }
+      { pollMs: 20, onError: () => {} }
     );
 
     const { id } = await stalling.enqueue("stop-me");
     while (firstRuns === 0) await sleep(10);
+    // The worker can no longer hear about the cancel, or renew its lease.
+    link.cut();
 
     // Cancel while it is active: returns true, flags the record, leaves the
-    // job in leases for the (now doomed) worker to notice.
-    await expect(stalling.cancel(id)).resolves.toBe(true);
+    // job in leases for the (now unreachable) worker to notice.
+    await expect(rescuing.cancel(id)).resolves.toBe(true);
 
     // Let the lease lapse, then bring up a second worker to do the reclaiming.
     await sleep(400);
@@ -392,45 +427,73 @@ describeRedis("queue (live)", () => {
     await expect(rescuing.stats()).resolves.toMatchObject({ dead: 0 });
 
     await rescuer.stop();
+    link.heal();
     await dying.stop();
   });
 
-  it("reclaims a job whose worker stopped heartbeating", async () => {
+  it("aborts a partitioned worker's job at its lease deadline, before another worker reclaims it", async () => {
+    // A heartbeat that fails over the network proves nothing, so it used to go
+    // to onError while the handler kept generating: another worker reclaimed
+    // the job and both ran the paid generation at once. The worker now gives
+    // the lease up itself once it can no longer have been renewed in time.
     const prefix = nextPrefix();
-    // A worker that cannot heartbeat in time: the lease is far shorter than the
-    // heartbeat interval, so its lease lapses mid-run the way a crash would.
-    const stalling = queue<string, string>(client, { prefix, leaseMs: 300 });
+    const link = partitionable(client);
+    const stalling = queue<string, string>(link.client, {
+      prefix,
+      leaseMs: 300
+    });
     const healthy = queue<string, string>(client, { prefix, leaseMs: 30_000 });
 
     let stalledRuns = 0;
     let healthyRuns = 0;
+    let abortedAt = 0;
+    let abortReason: unknown;
+    let rescuedAt = 0;
+    const errors: unknown[] = [];
 
     const stalled = stalling.worker(
-      async () => {
+      async (job) => {
         stalledRuns += 1;
+        job.signal.addEventListener("abort", () => {
+          abortedAt = performance.now();
+          abortReason = job.signal.reason;
+        });
+        // Ignores its signal on purpose, so the late result reaches settle.
         await sleep(1_200);
         return "stalled result";
       },
-      { heartbeatMs: 60_000, onError: () => {} }
+      { pollMs: 20, onError: (error) => errors.push(error) }
     );
 
     const { id } = await stalling.enqueue("recover-me");
     while (stalledRuns === 0) await sleep(10);
+    link.cut();
 
-    // Second worker joins after the first lease has lapsed and takes over.
-    await sleep(400);
-    const rescuer = healthy.worker(async () => {
-      healthyRuns += 1;
-      return "rescued";
-    });
+    // Up immediately: it sleeps until the lease expiry the server reports, so
+    // it reclaims the moment the lease lapses.
+    const rescuer = healthy.worker(
+      async () => {
+        rescuedAt = performance.now();
+        healthyRuns += 1;
+        return "rescued";
+      },
+      { pollMs: 20 }
+    );
 
     await expect(healthy.wait(id)).resolves.toBe("rescued");
     expect(healthyRuns).toBe(1);
     expect((await healthy.get(id))?.attempt).toBe(2);
+    expect(abortReason).toBeInstanceOf(JobLeaseLostError);
+    expect(abortedAt).toBeGreaterThan(0);
+    expect(abortedAt).toBeLessThanOrEqual(rescuedAt);
+    expect(errors.some((error) => error instanceof JobLeaseLostError)).toBe(
+      true
+    );
 
     await rescuer.stop();
-    // The original worker eventually finishes, but its token is stale: the
-    // rescuer's result stands and the late settle is discarded.
+    // The partition heals before the stalled handler returns. Its settle is
+    // attempted and refused by the token fence: the rescuer's result stands.
+    link.heal();
     await stalled.stop();
     const final = await healthy.get(id);
     expect(final?.status).toBe("completed");
@@ -590,6 +653,187 @@ describeRedis("queue (live)", () => {
     const leaseScore = await client.send(["ZSCORE", `{${prefix}}:leases`, id]);
     expect(leaseScore).toBeNull();
   });
+  it("decides leases and delays on Redis time, not the caller's clock", async () => {
+    // Every script took `now` from the caller's Date.now(). A worker whose
+    // clock ran fast reclaimed leases their holders were still renewing, and a
+    // producer whose clock ran slow scheduled delayed jobs in the past.
+    const prefix = nextPrefix();
+    const jobs = queue<string, string>(client, { prefix, leaseMs: 2_000 });
+    let holderRuns = 0;
+    let skewedRuns = 0;
+    const holder = jobs.worker(
+      async (job) => {
+        holderRuns += 1;
+        if (job.payload === "long") await sleep(900);
+        return job.payload;
+      },
+      { pollMs: 20 }
+    );
+    const { id } = await jobs.enqueue("long");
+    while (holderRuns === 0) await sleep(10);
+
+    const realNow = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, "now");
+    try {
+      // An hour fast: to this worker, the holder's 2s lease expired long ago.
+      clock.mockImplementation(() => realNow() + 3_600_000);
+      const skewed = jobs.worker(
+        async () => {
+          skewedRuns += 1;
+          return "stolen";
+        },
+        { pollMs: 20 }
+      );
+      await sleep(300);
+      expect(skewedRuns).toBe(0);
+      const held = await jobs.get(id);
+      expect(held).toMatchObject({ status: "active", attempt: 1 });
+      // The record's timestamps are the server's, not the skewed caller's.
+      expect(Math.abs((held?.createdAt ?? 0) - realNow())).toBeLessThan(60_000);
+
+      // An hour slow: a 400ms delay must not come due immediately.
+      clock.mockImplementation(() => realNow() - 3_600_000);
+      const enqueuedAt = performance.now();
+      const delayed = await jobs.enqueue("later", { delayMs: 400 });
+      await sleep(150);
+      expect((await jobs.get(delayed.id))?.status).toBe("scheduled");
+      clock.mockRestore();
+      await expect(jobs.wait(delayed.id)).resolves.toBe("later");
+      expect(performance.now() - enqueuedAt).toBeGreaterThanOrEqual(380);
+
+      await expect(jobs.wait(id)).resolves.toBe("long");
+      expect(skewedRuns).toBe(0);
+      await skewed.stop();
+    } finally {
+      clock.mockRestore();
+      await holder.stop();
+    }
+  });
+
+  it("reports output the retention cap trimmed instead of skipping it", async () => {
+    const jobs = queue<null, string>(client, {
+      prefix: nextPrefix(),
+      eventsMaxLen: 10
+    });
+    let firstChunkId = "";
+    const worker = jobs.worker(async (job) => {
+      for (let index = 0; index < 50; index++) {
+        const entryId = await job.emit(`t${index}`);
+        if (index === 0) firstChunkId = entryId;
+      }
+      return "all 50";
+    });
+    const { id } = await jobs.enqueue(null);
+    await expect(jobs.wait(id)).resolves.toBe("all 50");
+    await worker.stop();
+
+    // Full replay: the first 41 chunks are gone, and the watcher is told so.
+    const replay = [];
+    for await (const event of jobs.watch(id)) replay.push(event);
+    expect(replay[0]).toEqual({ id: "0", type: "truncated" });
+    expect(
+      replay.flatMap((event) => (event.type === "chunk" ? [event.data] : []))
+    ).toEqual(Array.from({ length: 9 }, (_, index) => `t${index + 41}`));
+    expect(replay.at(-1)).toMatchObject({
+      type: "completed",
+      result: "all 50"
+    });
+
+    // A client resuming from the first chunk it rendered gets the same news.
+    const resumed = [];
+    for await (const event of jobs.watch(id, { after: firstChunkId })) {
+      resumed.push(event);
+    }
+    expect(resumed[0]).toEqual({ id: firstChunkId, type: "truncated" });
+
+    // One whose cursor is exactly the last entry trimmed missed nothing.
+    const watermark = String(
+      await client.send(["HGET", jobs.jobKey(id), "eventsTrimmedThrough"])
+    );
+    const exact = [];
+    for await (const event of jobs.watch(id, { after: watermark })) {
+      exact.push(event);
+    }
+    expect(exact[0]).toMatchObject({ type: "chunk", data: "t41" });
+    expect(exact.some((event) => event.type === "truncated")).toBe(false);
+  });
+
+  it("requeues a running job on stop({ timeoutMs }) so another worker takes it at once", async () => {
+    // Default 60s lease: without the requeue the next worker would wait out
+    // the whole lease before it could reclaim the job.
+    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    let emitted = false;
+    let reason: unknown;
+    const first = jobs.worker(
+      async (job) => {
+        await job.emit("partial");
+        emitted = true;
+        await new Promise((resolve) =>
+          job.signal.addEventListener("abort", resolve)
+        );
+        reason = job.signal.reason;
+        throw reason;
+      },
+      { onError: () => {} }
+    );
+    const { id } = await jobs.enqueue(null);
+    while (!emitted) await sleep(10);
+
+    const stoppedAt = performance.now();
+    await first.stop({ timeoutMs: 50 });
+    expect(reason).toBeInstanceOf(WorkerStoppedError);
+    // Handed back with its attempt refunded: a deploy is not the job's fault.
+    expect(await jobs.get(id)).toMatchObject({ status: "waiting", attempt: 0 });
+
+    let attemptSeen = 0;
+    const second = jobs.worker(async (job) => {
+      attemptSeen = job.attempt;
+      return "finished";
+    });
+    await expect(jobs.wait(id)).resolves.toBe("finished");
+    expect(performance.now() - stoppedAt).toBeLessThan(5_000);
+    expect(attemptSeen).toBe(1);
+    await second.stop();
+
+    // The interrupted run's partial output is replaced, announced by a marker
+    // even though the attempt number did not grow.
+    const types = [];
+    for await (const event of jobs.watch(id)) types.push(event.type);
+    expect(types).toEqual(["restarted", "completed"]);
+  });
+
+  it("settles a cancelled job instead of requeueing it on stop", async () => {
+    const jobs = queue<null, string>(client, { prefix: nextPrefix() });
+    let started = false;
+    const worker = jobs.worker(
+      async (job) => {
+        started = true;
+        await new Promise((resolve) =>
+          job.signal.addEventListener("abort", resolve)
+        );
+        throw job.signal.reason;
+      },
+      { onError: () => {} }
+    );
+    const { id } = await jobs.enqueue(null, { idempotencyKey: "req-stop" });
+    while (!started) await sleep(10);
+    // Flagged, but the worker's next heartbeat is seconds away.
+    await expect(jobs.cancel(id)).resolves.toBe(true);
+    await worker.stop({ timeoutMs: 0 });
+
+    expect((await jobs.get(id))?.status).toBe("cancelled");
+    expect(await jobs.stats()).toEqual({
+      waiting: 0,
+      scheduled: 0,
+      active: 0,
+      dead: 0
+    });
+    // Freed like any cancellation, so the caller may retry with the key.
+    const again = await jobs.enqueue(null, { idempotencyKey: "req-stop" });
+    expect(again.deduplicated).toBe(false);
+    await jobs.cancel(again.id);
+  });
+
   it("trims dead-letter entries once their records have expired", async () => {
     // The job record expires after resultTtlMs but its entry in the dead ZSET
     // did not, so the set grew for the life of the deployment and dead()
@@ -622,5 +866,64 @@ describeRedis("queue (live)", () => {
     expect(dead).not.toContain(first.id);
 
     await worker.stop();
+  });
+});
+
+describeCluster("queue (live, cluster-enabled node)", () => {
+  let client: RedisClient;
+
+  beforeAll(async () => {
+    client = await node({ url: clusterUrl });
+    await client
+      .send(["CLUSTER", "ADDSLOTSRANGE", 0, 16383])
+      .catch(() => undefined);
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const info = String(await client.send(["CLUSTER", "INFO"]));
+      if (info.includes("cluster_state:ok")) break;
+      await sleep(100);
+    }
+  }, 60_000);
+  afterAll(async () => {
+    await client.close();
+  });
+
+  it("runs every script inside one slot, derived keys included", async () => {
+    // The scripts declare what they can and derive the rest from the hash
+    // tag. Cluster mode rejects any key outside the script's slot, so this
+    // walks every script, including each one that derives a key.
+    const jobs = queue<string, string>(client, {
+      prefix: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      maxAttempts: 1
+    });
+    const worker = jobs.worker(
+      async (job) => {
+        if (job.payload === "fail") throw new Error("boom");
+        await job.emit("chunk");
+        await job.progress(0.5);
+        return job.payload;
+      },
+      { onError: () => {} }
+    );
+
+    const done = await jobs.enqueue("ok", { idempotencyKey: "k1" });
+    await expect(jobs.wait(done.id)).resolves.toBe("ok");
+
+    const failed = await jobs.enqueue("fail");
+    await expect(jobs.wait(failed.id)).rejects.toThrow("boom");
+    await expect(jobs.retryDead(failed.id)).resolves.toBe(true);
+    await expect(jobs.wait(failed.id)).rejects.toThrow("boom");
+
+    // cancel() frees an idempotency key it only learns from the record.
+    const delayed = await jobs.enqueue("later", {
+      delayMs: 60_000,
+      idempotencyKey: "k2"
+    });
+    await expect(jobs.cancel(delayed.id)).resolves.toBe(true);
+
+    // Re-enqueuing a finished id drops the old record's idempotency key.
+    await jobs.enqueue("again", { id: done.id, idempotencyKey: "k3" });
+    await expect(jobs.wait(done.id)).resolves.toBe("again");
+
+    await worker.stop({ timeoutMs: 1_000 });
   });
 });
