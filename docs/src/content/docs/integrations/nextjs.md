@@ -41,22 +41,45 @@ export default nextConfig;
 | --- | --- | --- |
 | `client` | - | A `RedisClient`, a promise of one, or a lazy factory (awaited once). |
 | `prefix` | `"next-cache"` | Key namespace. |
-| `defaultTtlSeconds` | - | Safety-cap TTL for entries without a `revalidate` period. |
+| `defaultTtlSeconds` | - | TTL for entries Next.js gives no lifetime (`revalidate: false`), which otherwise never expire. |
 
-The handler matches the cache-handler shape of Next.js 14.1+; the Next.js 15 `resetRequestCache()` hook is a no-op on this handler (it keeps no request-local state). Reads fail open: an entry that does not decode is treated as a miss, never an error.
+**Supported: Next.js 15 and 16.** Verified end to end on 15.5 and 16.3 with a real app, two `next start` instances sharing one Redis. 15.0 to 15.2 pass the revalidate period in a different field, which the handler also reads. Next.js 14 is not supported. Reads fail open: an entry that does not decode is treated as a miss, never an error.
+
+### What is stored, and for how long
+
+Each entry lives under `{<prefix>}:entry:<key>`. Next.js values carry binary data: an App Router page has its RSC payload in a `Buffer` and its prefetch segments in a `Map` of Buffers, and a route handler's body is a `Buffer`. Plain JSON turns a Buffer into `{ type, data }` and a Map into `{}`, so the handler uses a tagged JSON encoding, and every value comes back from `get()` exactly as Next.js handed it to `set()`. A binary route handler's response is byte-identical after a round trip through Redis.
+
+The TTL comes from what Next.js passes:
+
+| Entry | Redis TTL |
+| --- | --- |
+| Page or route handler, Next.js 16 | `cacheControl.expire` (one year unless you set `expireTime`) |
+| Page or route handler, Next.js 15 | `revalidate` |
+| `fetch` data | its `revalidate`, at most one year |
+| No lifetime (`revalidate: false`) | none, or `defaultTtlSeconds` |
+
+The entry has to outlive `revalidate`: between `revalidate` and `expire`, Next.js serves the stale entry and regenerates it in the background, which is what makes ISR fast. Next.js 15 never gives the handler `expire`, so there an entry goes at `revalidate` and the first request after that waits for a fresh render.
 
 ### How tags map to Redis keys
 
-Each entry is stored as JSON under `<prefix>:entry:<key>`, with `SET ... EX <revalidate>` when the page declares a numeric `revalidate`, without a TTL when it opts out (`revalidate: false`), unless `defaultTtlSeconds` caps it. Each tag keeps a set of the keys written under it:
+Next.js puts tags in two places, and the handler reads both: a `fetch` entry's `set()` carries its tags, while a page or route handler records its tags in the `x-next-cache-tags` header of the stored value. That header includes the implicit path tags (`_N_T_/blog`) that `revalidatePath` targets. Each tag keeps a set of the keys written under it:
 
 ```
-next-cache:entry:/blog          -> { value, lastModified, tags }
-next-cache:tag:posts            -> SMEMBERS { "/blog", "/blog/post-1" }
+{next-cache}:entry:/blog          -> the page, with its RSC payload and segments
+{next-cache}:tag:posts            -> SMEMBERS { "/blog", "<fetch cache key>" }
+{next-cache}:tag:_N_T_/blog       -> SMEMBERS { "/blog" }
+{next-cache}:revalidated:_N_T_/blog -> when that tag was last revalidated
 ```
+
+The `{next-cache}` hash tag keeps every key in one Cluster slot, so the multi-key commands below work on a cluster.
 
 A tag set is expired alongside the entries it names: every write extends the set to the entry's TTL, never shortens it, and an entry that never expires makes the set permanent. So a tag set is reclaimed once its last member has gone, instead of growing for the life of the deployment.
 
-`revalidateTag("posts")` is then one `SMEMBERS` per tag plus a chunked `DEL` of the matching entries, followed by an `SREM` of exactly the members it saw, with no scans. Only the tags Next.js passes on `set()` (`ctx.tags`) feed the index.
+`revalidateTag("posts")` and `revalidatePath("/blog")` (a tag underneath) take two round trips, with no scans: one pipeline of `SMEMBERS` per tag, then one pipeline that deletes the matching entries in chunks and `SREM`s exactly the members it saw.
+
+A fetch entry is indexed only under its own tags, so `revalidatePath` cannot reach the fetches a page made through the tag sets. Instead, `revalidateTag` also records when each tag was revalidated (kept for a year, the longest a fetch entry lives), and a fetch lookup checks its own tags and its route's implicit tags against those records in the same round trip as the `GET`. A fetch written before its route was revalidated is then a miss on every instance, not only the one that called `revalidatePath`.
+
+Next.js 16's `revalidateTag(tag, "max")` asks for stale-while-revalidate. This handler expires immediately either way: the next request renders fresh rather than being served the stale entry once.
 
 ## Rate limiting
 
@@ -86,6 +109,8 @@ export async function middleware(request: Request) {
 
 export const config = { matcher: "/api/:path*" };
 ```
+
+On Next.js 16, middleware is called proxy: the file is `proxy.ts` and the function is `export async function proxy(request: Request)`. The limiter is the same.
 
 The denial response carries `Retry-After` (seconds) plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds).
 

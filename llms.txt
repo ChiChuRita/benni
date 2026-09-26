@@ -240,6 +240,26 @@ The lock never frees a lock that expired and was re-acquired. The rate limiter i
 a sliding window in one atomic round trip. The cache is read-through with
 stampede protection: one loader call per miss.
 
+## Next.js
+
+`benni/next` supports Next.js 15 and 16 (not 14). `cacheHandler` is the ISR
+cache handler (`cacheHandler`, singular, in `next.config`; not `cacheHandlers`
+for `'use cache'`). `rateLimit` gates middleware (`proxy.ts` on 16), route
+handlers, and Server Actions (`.check(identity)`).
+
+```ts
+// cache-handler.mjs; next.config: cacheHandler: require.resolve("./cache-handler.mjs"), cacheMaxMemorySize: 0
+import { cacheHandler } from "benni/next";
+import { node } from "benni/node";
+
+export default cacheHandler({ client: () => node({ url: process.env.REDIS_URL }) });
+```
+
+Pass the client as a factory so `next build` opens no connection until it
+needs one. Values round-trip exactly (Buffers and Maps included), entries take
+their TTL from what Next.js passes, and `revalidateTag` / `revalidatePath`
+work across instances, including for `fetch` data.
+
 ## Runtime capabilities
 
 Everything works on every adapter **except** the four features that need a
