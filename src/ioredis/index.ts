@@ -173,6 +173,60 @@ function assertNoKeyPrefix(keyPrefix: unknown, where: string): void {
 }
 
 /**
+ * ioredis 6 speaks RESP3 by default, and RESP3 reshapes replies the typed
+ * stores decode even under its RESP2-compatible "legacy" mapping: XREAD and
+ * XREADGROUP answer with a map, which arrives as a flat key/entries list rather
+ * than RESP2's list of pairs, so every stream read failed with ReplyShapeError.
+ * Normalizing that per command is not a small table, and switching a borrowed
+ * client's connection with HELLO 2 would mutate a client we do not own and be
+ * undone by its next reconnect. So clients this adapter creates are pinned to
+ * RESP2, and an adopted RESP3 client is refused up front.
+ *
+ * `protocol` is the resolved option: ioredis 6 fills in its default of 3, while
+ * ioredis 5 has no such option and only speaks RESP2 (undefined reads as 2).
+ */
+function assertResp2(protocol: unknown, where: string): void {
+  if (protocol === undefined || Number(protocol) === 2) return;
+  throw new TypeError(
+    `benni/ioredis needs a RESP2 connection, but ${where} uses RESP${String(protocol)} ` +
+      "(RESP3 is the ioredis 6 default). RESP3 changes the shape of replies the typed " +
+      "stores decode, so stream reads and others would fail with ReplyShapeError. " +
+      "Create the client with protocol: 2, e.g. new Redis(url, { protocol: 2 }) or " +
+      "new Redis.Cluster(nodes, { redisOptions: { protocol: 2 } })."
+  );
+}
+
+/**
+ * The protocol an adopted client speaks. A plain `Redis` carries its resolved
+ * options. A `Cluster` only keeps the `redisOptions` it was given, and its node
+ * connections fill in the default later, so an unset one falls back to the
+ * default of the ioredis copy this adapter resolved.
+ *
+ * TODO: that fallback is wrong only when the app runs a Cluster from a different
+ * ioredis major than the one benni resolves; reading a connected node's
+ * `options.protocol` would cover it if that ever turns up.
+ */
+function protocolOf(client: AdoptableClient): unknown {
+  const options = (
+    client as {
+      options?: {
+        protocol?: unknown;
+        redisOptions?: { protocol?: unknown };
+      };
+    }
+  ).options;
+  if (!isCluster(client)) return options?.protocol;
+  return options?.redisOptions?.protocol ?? defaultProtocol();
+}
+
+function defaultProtocol(): unknown {
+  // `defaultOptions` is a private static in ioredis's typings but a plain
+  // property at runtime in both 5 and 6 (5 has no `protocol` key).
+  return (IORedis as unknown as { defaultOptions?: { protocol?: unknown } })
+    .defaultOptions?.protocol;
+}
+
+/**
  * The ioredis adapter: returns the `RedisClient` handle `benni()` binds to,
  * backed by [ioredis](https://www.npmjs.com/package/ioredis).
  *
@@ -194,8 +248,10 @@ function assertNoKeyPrefix(keyPrefix: unknown, where: string): void {
  * one, since silently swallowing errors on a client it does not own would hide
  * failures from the code that does.
  *
- * ioredis speaks RESP2, whose flat reply shapes are exactly what the typed
- * stores decode, so replies pass through without normalization. Sessions,
+ * The adapter speaks RESP2, whose flat reply shapes are exactly what the typed
+ * stores decode, so replies pass through without normalization. Clients it
+ * creates are pinned to `protocol: 2`; an adopted client must be created with
+ * `protocol: 2` too on ioredis 6, whose default is RESP3. Sessions,
  * `WATCH` transactions, and Pub/Sub — including pattern subscriptions — are all
  * supported.
  */
@@ -206,6 +262,7 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
       (source as { options?: RedisOptions }).options?.keyPrefix,
       "the adopted client"
     );
+    assertResp2(protocolOf(source), "the adopted client");
   }
   const client: AdoptableClient = adopted
     ? source
@@ -383,17 +440,37 @@ export async function ioredis(source?: IoredisSource): Promise<RedisClient> {
   };
 }
 
+/**
+ * Pins RESP2 the way `benni/node` pins node-redis, for the reason on
+ * `assertResp2`. Resolved, not spread under: an explicit `protocol: undefined`
+ * in the caller's options would otherwise overwrite the pin and ioredis 6 would
+ * fill in 3. An explicit `protocol: 3` is refused rather than overridden, and
+ * the check runs on the constructed client so a `?protocol=3` in the URL is
+ * caught too.
+ */
 function createFrom(
   source: string | IoredisOptions | undefined
 ): IORedisClient {
+  const client = construct(source);
+  assertResp2(
+    (client.options as { protocol?: unknown }).protocol,
+    "the options passed to ioredis()"
+  );
+  return client;
+}
+
+function construct(source: string | IoredisOptions | undefined): IORedisClient {
   if (typeof source === "string") {
-    return new IORedis(source, { lazyConnect: true });
+    return new IORedis(source, { lazyConnect: true, protocol: 2 });
   }
   const { url, ...options } = source ?? {};
   assertNoKeyPrefix(options.keyPrefix, "the options passed to ioredis()");
-  return url === undefined
-    ? new IORedis({ ...options, lazyConnect: true })
-    : new IORedis(url, { ...options, lazyConnect: true });
+  const pinned = {
+    ...options,
+    lazyConnect: true,
+    protocol: options.protocol ?? 2
+  };
+  return url === undefined ? new IORedis(pinned) : new IORedis(url, pinned);
 }
 
 /**

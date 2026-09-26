@@ -7,7 +7,7 @@ applications.
 
 Requirements:
 
-- Node.js 20 or newer
+- Node.js 22 or newer (the `engines` floor; pnpm 11 itself needs 22.13+)
 - pnpm 11
 - Docker for Redis-backed integration tests
 - Bun for the Bun adapter contract
@@ -48,6 +48,12 @@ BENNI_UPSTASH_URL=http://127.0.0.1:8079 BENNI_UPSTASH_TOKEN=example_token pnpm t
 
 CI sets all of these, so the only suite that skips there is one whose service
 failed to start.
+
+CI also runs the suite against Redis 7.4, Redis 7.2, and Valkey 8, and against
+ioredis 5 as well as the locked ioredis 6. A test for a command newer than
+Redis 7.2 must gate itself on the server having it, with `serverCommands()`
+from `test/server-commands.ts` and the test context's `skip(condition, note)`,
+rather than assume Redis 8.
 
 ## Pull requests
 

@@ -116,7 +116,10 @@ import { benni } from "benni";
 import { ioredis } from "benni/ioredis";
 import * as schema from "./schema";
 
-const existing = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379");
+// protocol: 2 is needed on ioredis 6, which defaults to RESP3.
+const existing = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", {
+  protocol: 2
+});
 
 const client = await ioredis(existing);
 export const redis = benni(client, { schema });

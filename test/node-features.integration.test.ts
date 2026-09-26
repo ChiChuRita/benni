@@ -38,9 +38,13 @@ import type { RedisClient } from "../src/core/types.js";
 import { type BenniSession, benni } from "../src/database.js";
 import { WatchRetriesExceededError } from "../src/index.js";
 import { node } from "../src/node/index.js";
+import { serverCommands } from "./server-commands.js";
 
 const redisUrl = process.env.BENNI_REDIS_URL ?? process.env.REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
+// Hash field expiry is Redis 7.4+ (Valkey 9+) and HSETEX/HGETEX/HGETDEL are
+// Redis 8.0+. CI also runs against Redis 7.2 and Valkey 8, which have neither.
+const commands = await serverCommands(redisUrl, ["HEXPIRE", "HSETEX"]);
 
 const runPrefix = `benni:feat:${Date.now()}:${Math.random()
   .toString(36)
@@ -158,6 +162,22 @@ describeRedis("node feature modules against real Redis", () => {
       );
       await expect(userStore.hget("main", "score")).resolves.toBe(7.5);
 
+      await expect(userStore.hsetnx("fresh", "name", "first")).resolves.toBe(
+        true
+      );
+      await expect(
+        userStore.hmget("fresh", ["name", "score"])
+      ).resolves.toEqual({
+        name: "first",
+        score: null
+      });
+    });
+
+    it("expires and persists individual hash fields", async ({ skip }) => {
+      skip(!commands.has("HEXPIRE"), "needs Redis 7.4+ (HEXPIRE)");
+      const userStore = createHashStore(client, users);
+      await userStore.hset("main", { name: "benni", score: 5 });
+
       await expect(userStore.hexpire("main", ["name"], 120)).resolves.toEqual([
         1
       ]);
@@ -173,16 +193,6 @@ describeRedis("node feature modules against real Redis", () => {
       await expect(userStore.hpersist("main", [])).resolves.toEqual([]);
 
       await expect(userStore.hexpire("main", [], 60)).resolves.toEqual([]);
-
-      await expect(userStore.hsetnx("fresh", "name", "first")).resolves.toBe(
-        true
-      );
-      await expect(
-        userStore.hmget("fresh", ["name", "score"])
-      ).resolves.toEqual({
-        name: "first",
-        score: null
-      });
     });
 
     it("reads, extends, and clears a whole-record TTL via the lifecycle ops", async () => {
@@ -204,7 +214,10 @@ describeRedis("node feature modules against real Redis", () => {
       await expect(userStore.exists("lifecycle")).resolves.toBe(true);
     });
 
-    it("sets, reads, and expires fields via HSETEX/HGETEX/HGETDEL and TTL modes", async () => {
+    it("sets, reads, and expires fields via HSETEX/HGETEX/HGETDEL and TTL modes", async ({
+      skip
+    }) => {
+      skip(!commands.has("HSETEX"), "needs Redis 8.0+ (HSETEX)");
       const userStore = createHashStore(client, users);
 
       await expect(

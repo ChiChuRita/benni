@@ -142,7 +142,7 @@
     "@vitest/coverage-v8": "^4.1.9",
     "fast-check": "^4.9.0",
     "hono": "^4.6.0",
-    "ioredis": "^5.11.1",
+    "ioredis": "^6.0.0",
     "publint": "^0.3.21",
     "redis": "^6.1.0",
     "tsdown": "^0.22.3",
@@ -152,7 +152,7 @@
   },
   "peerDependencies": {
     "hono": ">=4.0.0",
-    "ioredis": "^5.0.0",
+    "ioredis": "^5.0.0 || ^6.0.0",
     "redis": "^6.1.0",
     "zod": "^4.1.0"
   },
