@@ -10,12 +10,28 @@ import type {
 
 /**
  * Bun rejects with a `RedisError` for everything and tells the cases apart by
- * `code`: a server error reply is `ERR_REDIS_INVALID_RESPONSE`, while its own
- * client-side failures use codes of their own
- * (`ERR_REDIS_CONNECTION_CLOSED`, ...) — verified on 1.3.14. So the code, not
- * the class, is the signal for "the server answered with an error".
+ * `code`, so the code, not the class, is the signal for "the server answered
+ * with an error". Its own client-side failures use codes of their own
+ * (`ERR_REDIS_CONNECTION_CLOSED`, ...) on every version.
+ *
+ * Which code a server error reply carries depends on the Bun version:
+ * - 1.4.0 and later: `ERR_REDIS_SERVER_ERROR` (verified on 1.4.2). 1.4 keeps
+ *   `ERR_REDIS_INVALID_RESPONSE` for a malformed reply, which is a protocol
+ *   failure and must not be dressed up as a server error.
+ * - before 1.4.0: `ERR_REDIS_INVALID_RESPONSE` (verified on 1.3.14).
  */
-const SERVER_REPLY_CODE = "ERR_REDIS_INVALID_RESPONSE";
+const SERVER_ERROR_CODE = "ERR_REDIS_SERVER_ERROR";
+const LEGACY_SERVER_ERROR_CODE = "ERR_REDIS_INVALID_RESPONSE";
+const legacyServerErrorCode =
+  typeof Bun !== "undefined" && !Bun.semver.satisfies(Bun.version, ">=1.4.0");
+
+function isServerErrorReply(error: Error): boolean {
+  const code = (error as { code?: unknown }).code;
+  return (
+    code === SERVER_ERROR_CODE ||
+    (legacyServerErrorCode && code === LEGACY_SERVER_ERROR_CODE)
+  );
+}
 
 /**
  * The single normalization point for anything Bun's client rejects with: a
@@ -24,7 +40,7 @@ const SERVER_REPLY_CODE = "ERR_REDIS_INVALID_RESPONSE";
  */
 function normalizeError(error: unknown, command?: string): unknown {
   if (!(error instanceof Error)) return error;
-  if ((error as { code?: unknown }).code !== SERVER_REPLY_CODE) return error;
+  if (!isServerErrorReply(error)) return error;
   return redisServerError(error, command);
 }
 

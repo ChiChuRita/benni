@@ -4,6 +4,11 @@
 // and breaks type-level assertions elsewhere in the repo under
 // typescript@6 + @types/node@26.
 declare namespace Bun {
+  const version: string;
+  namespace semver {
+    function satisfies(version: string, range: string): boolean;
+  }
+
   interface RedisOptions {
     connectionTimeout?: number;
     idleTimeout?: number;
