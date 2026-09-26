@@ -83,13 +83,19 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-// The adapter's promise is taken unawaited: it resolves on the first command,
-// so this file needs no top-level await. `benni(client, { schema })` with an
-// already-awaited client is the same call.
+// node() returns its client synchronously and connects on the first command:
+// no top-level await, nothing opened at import. A failed connect fails the
+// commands waiting on it; a later command retries. benni() takes only this
+// config-object shape.
 export const redis = benni({ client: node({ url: process.env.REDIS_URL }), schema });
 
+// At shutdown (and at the end of tests and scripts): closes Pub/Sub, queue
+// workers, and sessions opened through the handle, then the client.
+// await redis.close();
+
 // Optional, once per app: the bare `Benni` type is then this handle, so no
-// signature has to repeat `typeof schema`.
+// signature has to repeat `typeof schema`. Apps only, never in a library: a
+// second declaration is a compile error (TS2717).
 declare module "benni" {
   interface Register {
     schema: typeof schema;
@@ -249,19 +255,21 @@ read, and the `completed` event still carries the full result.
 
 `benni/next` supports Next.js 15 and 16 (not 14). `cacheHandler` is the ISR
 cache handler (`cacheHandler`, singular, in `next.config`; not `cacheHandlers`
-for `'use cache'`). `rateLimit` gates middleware (`proxy.ts` on 16), route
-handlers, and Server Actions (`.check(identity)`).
+for `'use cache'`). `rateLimitMiddleware` gates middleware (`proxy.ts` on 16),
+route handlers, and Server Actions (`.check(identity)`). In `benni/hono` the
+middleware are `rateLimitMiddleware`, `cacheMiddleware`, and
+`sessionMiddleware`.
 
 ```ts
 // cache-handler.mjs; next.config: cacheHandler: require.resolve("./cache-handler.mjs"), cacheMaxMemorySize: 0
 import { cacheHandler } from "benni/next";
 import { node } from "benni/node";
 
-export default cacheHandler({ client: () => node({ url: process.env.REDIS_URL }) });
+export default cacheHandler({ client: node({ url: process.env.REDIS_URL }) });
 ```
 
-Pass the client as a factory so `next build` opens no connection until it
-needs one. Values round-trip exactly (Buffers and Maps included), entries take
+Adapters connect on the first command, so `next build` opens no connection
+until it needs one. Values round-trip exactly (Buffers and Maps included), entries take
 their TTL from what Next.js passes, and `revalidateTag` / `revalidatePath`
 work across instances, including for `fetch` data.
 
@@ -279,7 +287,11 @@ Those require `benni/node`, `benni/ioredis`, or `benni/bun`. The HTTP/edge
 adapter (`benni/upstash`) covers the whole stateless surface, including pub/sub
 **publishing** (a single `PUBLISH`). Pattern subscriptions work on `benni/node`
 and `benni/ioredis`: Bun's `psubscribe` hangs upstream, so the Bun adapter
-reports patterns as unsupported rather than deadlocking.
+leaves patterns out. The handle's type follows the adapter: over `upstash()`
+there is no `redis.session()`/`redis.watch()`/`subscribe()`, over `bun()` no
+`redis.pubsub.pattern()`. `Benni<typeof schema>` assumes a node/ioredis client;
+on another adapter write `Benni<typeof schema, UpstashClient>` (or `BunClient`),
+and take `AnyBenni` in a library.
 
 Subscribing needs no setup: the first subscription leases one subscriber
 connection from the client you already bound, multiplexes every channel onto it,
@@ -315,17 +327,19 @@ do. Single commands and pipelines are unaffected.
 1. **Never hand-cast a reply.** If you are writing `as T` on a Redis read, the
    schema is wrong or missing. That cast is the bug Benni exists to remove.
    `json<T>()` is the same cast with nicer syntax: prefer `json(validator)`.
-2. **Close the client.** `await redis.raw.close()`, otherwise Node never exits.
-   This matters in tests and scripts.
+2. **Close the handle.** `await redis.close()` (or `await using redis = …`),
+   otherwise Node never exits. This matters in tests and scripts.
 3. **Prefer declaring primitives in the schema module** (`cache("profile", …)`
    from `benni/schema`) and reaching them through `redis.query`. The
    client-taking form in `benni/primitives` is one options object whose
-   `client` accepts a client, a promise, a factory, or the `benni()` handle:
+   `client` accepts an adapter's client or the `benni()` handle:
    `cache({ client, ttlMs })`.
 4. **Keys are derived, not written.** `redis.query.users.key("42")` returns
    `"user:42"`. Do not build key strings by hand.
 5. **Don't reach for `benni/core`** unless you are writing an adapter. The public
    surface is `benni`, `benni/schema`, `benni/primitives`, and one adapter.
+   The client contract types (`RedisClient`, `RedisReply`, …), `resolveClient`,
+   `redisServerError`, and `defineScript`/`createScriptRunner` live there.
 6. **Binary args are TCP-only.** Over the edge adapter, use the `bytes()` codec
    (base64) instead of passing `Uint8Array`.
 7. **`redis.query` covers kinds, not views.** No `incr` on a `kv(_, number())`

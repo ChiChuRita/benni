@@ -21,8 +21,7 @@ const schema = {
   leaderboard: zset("example:leaderboard", string())
 };
 
-const client = await node({ url: redisUrl });
-const redis = benni(client, { schema });
+const redis = benni({ client: node({ url: redisUrl }), schema });
 const id = `demo:${Date.now()}`;
 
 try {
@@ -78,5 +77,5 @@ try {
     redis.list(schema.jobs).del(id),
     redis.zset(schema.leaderboard).del("daily")
   ]);
-  await client.close();
+  await redis.close();
 }

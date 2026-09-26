@@ -10,15 +10,16 @@ import { benni } from "benni";
 import { upstash } from "benni/upstash";
 import * as schema from "./schema";
 
-const client = upstash({
-  url: process.env.UPSTASH_REDIS_REST_URL as string,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN as string
+export const redis = benni({
+  client: upstash({
+    url: process.env.UPSTASH_REDIS_REST_URL as string,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN as string
+  }),
+  schema
 });
-
-export const redis = benni(client, { schema });
 ```
 
-There is no connection to open, so `upstash` is synchronous (no `await`). Command arrays are `POST`ed directly to the REST endpoint; `pipeline` uses `/pipeline` and `redis.multi()` uses `/multi-exec` (atomic `MULTI`/`EXEC`). A missing `url` or `token`, the usual symptom of an unset environment variable, throws `TypeError` right there instead of surfacing later as a 401.
+There is no connection to open, so `upstash` is synchronous like every adapter, and it sends nothing until the first command. Command arrays are `POST`ed directly to the REST endpoint; `pipeline` uses `/pipeline` and `redis.multi()` uses `/multi-exec` (atomic `MULTI`/`EXEC`). A missing `url` or `token`, the usual symptom of an unset environment variable, throws `TypeError` right there instead of surfacing later as a 401.
 
 ## Timeouts and cancellation
 
@@ -35,7 +36,9 @@ const client = upstash({
 
 A timed-out request rejects with a `DOMException` named `"TimeoutError"`; an aborted one rejects with the signal's reason, and so does every later request on that client. Neither is a `RedisServerError`. There is no default timeout. A timeout does not undo a command the server already received: a write that times out may still have been applied.
 
-`close()` has no connection to tear down, but it is final like every adapter's: requests already in flight finish, and any command issued afterwards rejects with "client is closed" instead of reaching the server.
+`redis.close()` has no connection to tear down, but it is final like every adapter's: requests already in flight finish, and any command issued afterwards rejects instead of reaching the server.
+
+Pass `onError` to see every request that failed in transit (a network error, an HTTP failure status, a timeout) in one place, for logging or metrics. The command still rejects with it; error replies from Redis and aborts through your own `signal` are not reported. There is no `onReconnect`, since there is no connection.
 
 ## Errors: what came from Redis and what did not
 
@@ -57,7 +60,7 @@ HTTP is stateless: one request, one response, no persistent exclusive connection
 | `redis.multi()` (atomic `/multi-exec`) | [Pub/Sub](/benni/data-structures/pubsub/) **subscribing** (there is no subscriber connection to hold) |
 | Pub/Sub **publishing** (`PUBLISH` is one stateless command) | |
 
-`redis.session()` and `redis.watch()` throw a clear `TypeError` on this client, because the adapter deliberately omits `session`. `redis.pubsub.channel(...).subscribe(...)` throws the same way, because it omits `subscriber` for the same reason. When you need those, use a TCP adapter ([Node](/benni/runtime/node/), [ioredis](/benni/runtime/ioredis/), or [Bun](/benni/runtime/bun-and-deno/)) on a long-lived server.
+A handle over this client has no `redis.session()` or `redis.watch()` in its type, because the adapter deliberately omits `session`, and its channels have `publish` but no `subscribe()`, because it omits `subscriber` for the same reason. Using one is a compile error; code that forces the call anyway gets `UnsupportedCapabilityError`. To type a handle by hand, name the client: `Benni<typeof schema, UpstashClient>`, with `import type { UpstashClient } from "benni/upstash"`. When you need those, use a TCP adapter ([Node](/benni/runtime/node/), [ioredis](/benni/runtime/ioredis/), or [Bun](/benni/runtime/bun-and-deno/)) on a long-lived server.
 
 Publishing is the useful half on the edge, and it needs nothing held open. An edge handler can fan an event out to long-lived workers that subscribe over TCP:
 

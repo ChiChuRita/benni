@@ -232,6 +232,8 @@ Be clear about what that buys. A requeued job **re-runs from the top at full pri
 
 `stop()` resolves once every in-flight job has finished or been handed back. A handler that ignores its aborted signal may keep running in the background, but it can no longer write anything to the job.
 
+A worker started through a handle (`redis.query.jobs.worker(...)`) is also stopped by `redis.close()`, after the Pub/Sub subscriptions and before the sessions and the client. That stop has no timeout, so when shutdown has a deadline, call `worker.stop({ timeoutMs })` yourself first and `redis.close()` after it.
+
 ## What is and isn't guaranteed
 
 The queue is **at-least-once**. Be precise about which part is exactly-once and which isn't.
@@ -264,7 +266,7 @@ if (job?.status === "completed") {
 
 The record also carries `attempt` / `maxAttempts`, `progress` (`0`-`1`), `error` (the last failure message, kept across retries), `priority`, the `createdAt` / `updatedAt` / `startedAt` / `finishedAt` timestamps, `idempotencyKey`, and `cancelRequested` (true from the moment `cancel()` is called, even while the job is still running).
 
-Two names worth spelling out, because they do not match each other: a `Worker` is shut down with `worker.stop()`, while the Redis client is shut down with `client.close()`. The worker is not a connection, so it does not get `close()`.
+Two names worth spelling out, because they do not match each other: a `Worker` is shut down with `worker.stop()`, while the handle is shut down with `redis.close()` (which stops its workers too). The worker is not a connection, so it does not get `close()`.
 
 ## Operating it
 

@@ -26,7 +26,7 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-export const redis = benni(await node(), { schema });
+export const redis = benni({ client: node(), schema });
 ```
 
 Then reach each store by its export name, with full inference:

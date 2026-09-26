@@ -91,7 +91,7 @@ Install the guard and every multi-key command is verified before it is sent:
 ```ts
 import { assertSameSlot } from "benni/cluster";
 
-const redis = benni(client, { cluster: assertSameSlot });
+const redis = benni({ client, schema, cluster: assertSameSlot });
 
 await redis.set(sessions).sunion("a1", ["b7"]);
 // CrossSlotError: SUNION spans two Redis Cluster hash slots, which the server

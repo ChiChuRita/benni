@@ -50,8 +50,8 @@ export const redis = benni({
   schema
 });
 
-// Optional, once per app: now the bare `Benni` type is this handle, so no
-// signature has to repeat `typeof schema`.
+// Optional, once per app (never in a library): now the bare `Benni` type is
+// this handle, so no signature has to repeat `typeof schema`.
 declare module "benni" {
   interface Register {
     schema: typeof schema;
@@ -59,14 +59,9 @@ declare module "benni" {
 }
 ```
 
-`benni()` takes the adapter's promise unawaited, so this file needs no top-level
-`await`. Note what that does and does not defer: `node()` starts connecting the
-moment you call it, so importing this module opens the connection; what `benni()`
-adopts unawaited is a connection already in flight, and a bad `REDIS_URL`
-surfaces at the first command rather than at import. Pass a client you already
-awaited (`benni(client, { schema })`) to find that out at startup instead, or a
-factory (`client: () => node({ url })`) to defer connecting until the first
-command actually needs it.
+`node()` returns its client synchronously and connects on the first command, so
+importing this file opens nothing; a failed connect fails the commands waiting on
+it and the next command retries. `await redis.close()` at shutdown.
 
 ```ts
 // app.ts: methods are named after the Redis commands they run
@@ -217,7 +212,7 @@ Already on ioredis? You don't have to switch clients. Hand your instance to
 ```ts
 import { ioredis } from "benni/ioredis";
 
-const client = await ioredis(myExistingRedis); // or a URL, or options
+const redis = benni({ client: ioredis(myExistingRedis), schema }); // or a URL, or options
 ```
 
 On ioredis 6, create the client you adopt with `protocol: 2`: its RESP3 default
@@ -243,9 +238,10 @@ await redis.pubsub.channel(userEvents).subscribe((message) => {
 });
 ```
 
-Pattern subscriptions work on `benni/node` and `benni/ioredis`; Bun 1.3.14's
-`psubscribe` hangs upstream, so the Bun adapter reports patterns as unsupported
-instead of deadlocking. A dropped subscriber connection is reconnected and
+The handle's type follows the adapter: over `benni/upstash` there is no
+`redis.session()`, `redis.watch()`, or `subscribe()` to call, and over `benni/bun`
+no `redis.pubsub.pattern()` (Bun 1.3.14's `psubscribe` hangs upstream), so these
+are compile errors rather than runtime surprises. A dropped subscriber connection is reconnected and
 resubscribed on every adapter, but messages published while it was down are
 lost: Redis Pub/Sub is at-most-once, so use a stream when that matters.
 

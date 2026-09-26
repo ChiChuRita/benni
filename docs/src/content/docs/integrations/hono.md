@@ -8,7 +8,7 @@ description: "Rate limiting, response caching, and sessions as Hono middleware: 
 ```ts
 import { Hono } from "hono";
 import { upstash } from "benni/upstash";
-import { ratelimit } from "benni/hono";
+import { rateLimitMiddleware } from "benni/hono";
 
 const client = upstash({
   url: process.env.UPSTASH_REDIS_REST_URL as string,
@@ -18,11 +18,18 @@ const client = upstash({
 const app = new Hono();
 app.use(
   "*",
-  ratelimit({ client, limit: 100, windowMs: 60_000, key: (c) => c.get("userId") })
+  rateLimitMiddleware({
+    client,
+    limit: 100,
+    windowMs: 60_000,
+    key: (c) => c.get("userId")
+  })
 );
 ```
 
-Every middleware accepts `client` as a `RedisClient`, a `Promise<RedisClient>`, or a `() => Promise<RedisClient>` factory, awaited once on first use and cached, so lazy connection setups just work.
+Every middleware accepts `client` as an adapter's client or a Benni handle. Adapters connect on the first command, so building the middleware at module scope opens nothing.
+
+The exports are named for what they are, `rateLimitMiddleware`, `cacheMiddleware`, and `sessionMiddleware`, so they cannot be confused with the `ratelimit`/`cache` schema builders or with `redis.session()`.
 
 ## Rate limiting
 
@@ -30,13 +37,13 @@ Sliding-window rate limiting, one atomic Lua round trip per request, the [`ratel
 
 ```ts
 import { Hono } from "hono";
-import { ratelimit } from "benni/hono";
+import { rateLimitMiddleware } from "benni/hono";
 
 const app = new Hono();
 
 app.use(
   "/api/*",
-  ratelimit({
+  rateLimitMiddleware({
     client,
     limit: 100,
     windowMs: 60_000,
@@ -78,21 +85,21 @@ A ranged request (`Range` header) also passes straight through. Beyond that, a r
 - the response is anything but a plain `200`;
 - the handler or an inner middleware set a cookie on the response;
 - the response carries a `no-store`, `no-cache`, or `private` `Cache-Control`, or a `Vary` naming a header you did not list in `vary` (`Vary: *` is never storable);
-- the handler read or wrote the [`session`](#sessions) in any way, including reading `id` or `isNew` (`cache()` asks the session bag directly, so this holds whichever order the two middlewares are composed in).
+- the handler read or wrote the [`session`](#sessions) in any way, including reading `id` or `isNew` (`cacheMiddleware()` asks the session bag directly, so this holds whichever order the two middlewares are composed in).
 
-That last rule keeps a route that reads Benni's own session safe even under `ignoreCookies`: a returning visitor already has their `sid`, so `session()` emits no `Set-Cookie` and there is nothing for a cookie check to see. If a route varies by anything else the cache cannot observe (a header you did not list in `vary` and the response does not declare in `Vary`), do not put `cache()` on it, or give it a `key` that includes the distinguishing value.
+That last rule keeps a route that reads Benni's own session safe even under `ignoreCookies`: a returning visitor already has their `sid`, so `sessionMiddleware()` emits no `Set-Cookie` and there is nothing for a cookie check to see. If a route varies by anything else the cache cannot observe (a header you did not list in `vary` and the response does not declare in `Vary`), do not put `cacheMiddleware()` on it, or give it a `key` that includes the distinguishing value.
 
 Stored entries keep `content-type`, `cache-control`, `vary`, `etag`, and `last-modified`, so a replay stays honest to the browser and to any CDN in front of you. Every other response header is dropped.
 
 ```ts
 import { Hono } from "hono";
-import { cache } from "benni/hono";
+import { cacheMiddleware } from "benni/hono";
 
 const app = new Hono();
 
 app.get(
   "/report",
-  cache({ client, ttlMs: 30_000, vary: ["accept-language"] }),
+  cacheMiddleware({ client, ttlMs: 30_000, vary: ["accept-language"] }),
   async (c) => c.json(await buildExpensiveReport())
 );
 ```
@@ -119,10 +126,10 @@ Call `regenerate()` on login and on any privilege change. It mints a fresh id, c
 
 ```ts
 import { Hono } from "hono";
-import { getSession, session } from "benni/hono";
+import { getSession, sessionMiddleware } from "benni/hono";
 
 const app = new Hono();
-app.use("*", session({ client, ttlSeconds: 86_400 }));
+app.use("*", sessionMiddleware({ client, ttlSeconds: 86_400 }));
 
 app.post("/login", async (c) => {
   const user = await authenticate(c);
@@ -159,9 +166,9 @@ Each middleware takes the side of the trade its job calls for:
 
 | Middleware | On a Redis error | Why |
 | --- | --- | --- |
-| `cache` | Fails open: a miss, the handler runs. Not configurable. | A cache is an optimization; an outage should cost latency, never availability. |
-| `ratelimit` | Fails closed by default: the error propagates, so Hono answers `500` (or your `app.onError`). `failOpen: true` lets the request through without `X-RateLimit-*` headers instead. | A limiter that cannot count should not silently stop limiting; choose availability explicitly when that is the better trade. |
-| `session` | Fails closed: the error propagates. Not configurable. | Failing open would treat a signed-in visitor as anonymous and silently drop whatever the handler wrote. |
+| `cacheMiddleware` | Fails open: a miss, the handler runs. Not configurable. | A cache is an optimization; an outage should cost latency, never availability. |
+| `rateLimitMiddleware` | Fails closed by default: the error propagates, so Hono answers `500` (or your `app.onError`). `failOpen: true` lets the request through without `X-RateLimit-*` headers instead. | A limiter that cannot count should not silently stop limiting; choose availability explicitly when that is the better trade. |
+| `sessionMiddleware` | Fails closed: the error propagates. Not configurable. | Failing open would treat a signed-in visitor as anonymous and silently drop whatever the handler wrote. |
 
 `failOpen` covers only the limiter's own Redis round trip: errors from `key` and from your handler propagate either way. It also swallows the Redis error, so watch Redis health somewhere else if you turn it on.
 
@@ -170,7 +177,12 @@ Each middleware takes the side of the trade its job calls for:
 ```ts
 import { Hono } from "hono";
 import { upstash } from "benni/upstash";
-import { cache, getSession, ratelimit, session } from "benni/hono";
+import {
+  cacheMiddleware,
+  getSession,
+  rateLimitMiddleware,
+  sessionMiddleware
+} from "benni/hono";
 
 const client = upstash({
   url: process.env.UPSTASH_REDIS_REST_URL as string,
@@ -181,14 +193,22 @@ const app = new Hono();
 
 app.use(
   "*",
-  ratelimit({ client, limit: 100, windowMs: 60_000, key: (c) => c.get("userId") })
+  rateLimitMiddleware({
+    client,
+    limit: 100,
+    windowMs: 60_000,
+    key: (c) => c.get("userId")
+  })
 );
-app.use("*", session({ client }));
+app.use("*", sessionMiddleware({ client }));
 
-// Returning visitors carry the sid cookie, which cache() bypasses by default.
-// This page depends on no cookie, and session() reads stay guarded, so opt in.
-app.get("/pricing", cache({ client, ttlMs: 60_000, ignoreCookies: true }), (c) =>
-  c.json({ plans: ["free", "pro"] })
+// Returning visitors carry the sid cookie, which cacheMiddleware() bypasses by
+// default. This page depends on no cookie, and session reads stay guarded, so
+// opt in.
+app.get(
+  "/pricing",
+  cacheMiddleware({ client, ttlMs: 60_000, ignoreCookies: true }),
+  (c) => c.json({ plans: ["free", "pro"] })
 );
 
 app.post("/login", (c) => {

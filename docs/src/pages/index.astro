@@ -40,11 +40,10 @@ export const profiles = kv("profile", json<UserProfile>());`
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
-});
-
-export const redis = benni(client, { schema });`
+export const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
+});`
   },
   {
     name: "app.ts",

@@ -21,8 +21,7 @@ import { benni } from "benni";
 import { node } from "benni/node";
 import * as schema from "./schema";
 
-const client = await node();
-export const redis = benni(client, { schema });
+export const redis = benni({ client: node(), schema });
 ```
 
 ## Publishing
@@ -52,7 +51,7 @@ await subscription.unsubscribe();
 
 Subscribing to the same channel twice costs one Redis subscription, not two: Benni registers a single listener per channel name and fans out to your handlers. Each `subscribe` call gets its own `unsubscribe`, and the channel is dropped from Redis when the last handler for it leaves.
 
-To tear everything down at once (on shutdown, or between tests), use `close`:
+To tear every subscription down at once (between tests, say), use `close`. On shutdown, `redis.close()` does this first and then closes the rest of the handle:
 
 ```ts
 await redis.pubsub.close();
@@ -196,7 +195,13 @@ Messages that arrive while your loop body is busy are buffered in memory, so a s
 
 If the subscriber connection drops (a network blip, a Redis restart, a `CLIENT KILL`), the adapter reconnects it and resubscribes every channel and pattern you hold, so your handlers start firing again with no code on your side. That holds on `benni/node`, `benni/ioredis`, and `benni/bun`.
 
-Subscriptions survive a reconnect; the messages published while the connection was down do not. Redis Pub/Sub is at-most-once: the server delivers to whoever is subscribed at that instant and keeps no copy, so anything published during the reconnect window is gone, and nothing tells you it happened. Benni does not try to paper over that, because a notice that *something* was missed would not tell you *what*, and you would still need a durable source to recover from.
+Subscriptions survive a reconnect; the messages published while the connection was down do not. Redis Pub/Sub is at-most-once: the server delivers to whoever is subscribed at that instant and keeps no copy, so anything published during the reconnect window is gone. Redis says nothing about it; the adapter's `onReconnect` option is called with `"subscriber"` once the connection is back, which tells you *that* something may have been missed but not *what*, so you still need a durable source to recover from:
+
+```ts
+node({ url, onReconnect: (connection) => {
+  if (connection === "subscriber") void refreshDashboard();
+} });
+```
 
 So if a missed message matters, use a [stream](/benni/data-structures/streams/) instead: a consumer reads from a remembered position and picks up where it left off after any outage. A common middle ground is to publish a cheap "this changed" signal and have subscribers reread the state from Redis on each one, so a missed signal is repaired by the next.
 
@@ -207,7 +212,8 @@ If the adapter gives up reconnecting altogether (its retry limit is exhausted: B
 Delivery continues to the other handlers no matter what one of them does. By default a handler that throws or rejects is rethrown asynchronously, so the failure surfaces as an unhandled error instead of being swallowed. Pass `onPubSubError` when you would rather route it somewhere:
 
 ```ts
-const redis = benni(client, {
+const redis = benni({
+  client,
   schema,
   onPubSubError: (error) => logger.error({ error }, "pubsub handler failed")
 });
@@ -224,4 +230,4 @@ Subscribing needs a connection the adapter can hold open, which is the one thing
 | [`benni/bun`](/benni/runtime/bun-and-deno/) | Yes | Yes | No (`psubscribe` is broken upstream in Bun 1.3.14) |
 | [`benni/upstash`](/benni/runtime/edge/) | Yes | No (HTTP is stateless) | No |
 
-Both gaps fail loudly rather than hanging. Subscribing on an adapter that cannot lease a connection throws `TypeError`, and so does `pattern(...).subscribe(...)` on Bun. An adapter advertises the capability by implementing the optional `subscriber?()` method on the [client contract](/benni/api/benni-client/#redispubsub), the same way `session?()` advertises sessions.
+Both gaps show up at compile time. A handle over an adapter that cannot lease a connection has channels with `publish` but no `subscribe` or `stream`, and a handle over Bun has no `redis.pubsub.pattern()` (and no pattern entries in `redis.query`). Code that forces the call anyway fails loudly with `UnsupportedCapabilityError` rather than hanging. An adapter advertises the capability by implementing the optional `subscriber?()` method on the [client contract](/benni/api/benni-client/#redispubsub), the same way `session?()` advertises sessions.

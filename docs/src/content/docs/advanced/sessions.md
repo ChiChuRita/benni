@@ -87,6 +87,6 @@ A boolean check is robust where cross-adapter error-class mapping is fragile; a 
 
 ## Requirements
 
-The bound client must implement the optional `session` method of the `RedisClient` interface (the Node and Bun adapters do). Otherwise `redis.session()` throws `TypeError: Redis client does not support sessions`, the same style as the `transaction` guard. Deno uses the Node adapter through npm compatibility, so session support follows the Node adapter there. The edge HTTP adapter omits sessions because it has no persistent connection.
+The bound client must implement the optional `session` method of the `RedisClient` interface (the Node, ioredis, and Bun adapters do). Deno uses the Node adapter through npm compatibility, so session support follows the Node adapter there. The edge HTTP adapter omits sessions because it has no persistent connection, and a handle over it has no `redis.session()` or `redis.watch()` in its type; forced through, they throw `UnsupportedCapabilityError: Redis client does not support sessions`.
 
-Sessions pin real connections. Prefer the scoped callback form or `await using` so a session cannot outlive its work; as a backstop the parent client tracks live sessions and force-closes any survivors when you close the client.
+Sessions pin real connections. Prefer the scoped callback form or `await using` so a session cannot outlive its work; as a backstop `redis.close()` closes every session the handle opened that is still open.

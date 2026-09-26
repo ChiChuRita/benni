@@ -3,7 +3,7 @@
 This example shows how an app uses Benni from Node:
 
 - declare Redis schemas as plain TypeScript values
-- bind a client once with `benni(client, { schema })`
+- bind a client once with `benni({ client, schema })`
 - store JSON objects, counters, hashes, sets, lists, and sorted sets, with
   every read decoded back to your declared type
 - clean up keys after the demo
@@ -72,12 +72,14 @@ comes back as `UserProfile | null`, with no casts.
 ## Bind A Client
 
 ```js
-const client = await node({
-  url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379"
+const redis = benni({
+  client: node({ url: process.env.REDIS_URL ?? "redis://127.0.0.1:6379" }),
+  schema
 });
-
-const redis = benni(client, { schema });
 ```
+
+`node()` returns its client at once and connects on the first command; close
+the handle with `await redis.close()` when you are done.
 
 ## Use Typed Operations
 

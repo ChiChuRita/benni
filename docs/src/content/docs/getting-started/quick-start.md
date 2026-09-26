@@ -62,14 +62,7 @@ export const redis = benni({
 });
 ```
 
-`node()` returns a promise, and `benni()` takes it unawaited: the connection opens on the first command instead of at module scope, so this file needs no top-level `await` and drops into a Next.js route or an edge bundle unchanged. The trade is that a connection failure surfaces at the first command rather than at construction. Pass a client you already awaited when you would rather find out at startup:
-
-```ts
-const client = await node({ url: process.env.REDIS_URL });
-export const redis = benni(client, { schema });
-```
-
-Both forms take the same options. `benni(client, options)` and `benni({ client, ...options })` are the same call.
+`node()` returns its client synchronously and connects on the first command, so this file needs no top-level `await`, opens nothing at import, and drops into a Next.js route or an edge bundle unchanged. A connect that fails rejects the commands waiting on it and a later command tries again. To find a bad `REDIS_URL` at startup instead, send one command when the app boots: `await redis.raw.send(["PING"])`.
 
 To pass the bound handle around, register the schema module once and the exported `Benni` type is already the fully typed handle:
 
@@ -90,10 +83,10 @@ export function makeHandlers(redis: Benni) { /* ... */ }
 
 Without the registration nothing breaks: `Benni` stays generic and `Benni<typeof schema>` still names the handle. Every accessor it exposes is listed in the [Benni Client reference](/benni/api/benni-client/).
 
-The client owns a connection, so close it when your process or test finishes, otherwise Node never exits:
+The handle owns a connection, so close it when your process or test finishes, otherwise Node never exits. `close()` also stops Pub/Sub subscriptions, queue workers, and sessions opened through the handle:
 
 ```ts
-await redis.raw.close();
+await redis.close();
 ```
 
 ## Read And Write

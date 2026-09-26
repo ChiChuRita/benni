@@ -121,11 +121,10 @@ const existing = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", {
   protocol: 2
 });
 
-const client = await ioredis(existing);
-export const redis = benni(client, { schema });
+export const redis = benni({ client: ioredis(existing), schema });
 ```
 
-An adopted client is borrowed, not taken over: `client.close()` reaps only the
+An adopted client is borrowed, not taken over: `redis.close()` reaps only the
 sessions and subscriber connections Benni leased from it, and leaves your client
 open. See [the ioredis adapter](/benni/runtime/ioredis/) for the details.
 

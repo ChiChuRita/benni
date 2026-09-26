@@ -51,10 +51,10 @@ A script can also return a `NOSCRIPT`-coded error of its own, and Redis passes i
 
 `returns` decodes scalar replies (strings and numbers) through its codec. A script that returns a table or nil throws `TypeError: Expected Redis script reply to decode from scalar`.
 
-For structured replies, drop to `defineScript` from the main entrypoint and decode the raw reply yourself:
+For structured replies, drop to `defineScript` from `benni/core` and decode the raw reply yourself:
 
 ```ts
-import { createScriptRunner, defineScript } from "benni";
+import { createScriptRunner, defineScript } from "benni/core";
 
 const topTwo = defineScript<[], string[]>({
   lua: `return redis.call("ZREVRANGE", KEYS[1], 0, 1)`,
@@ -71,4 +71,4 @@ const runner = createScriptRunner(client);
 const top = await runner.run(topTwo, ["leaderboard:global"], []);
 ```
 
-`defineScript` uses positional keys and args instead of named ones, but the same `EVALSHA` caching and `NOSCRIPT` recovery apply.
+`defineScript` uses positional keys and args instead of named ones, but the same `EVALSHA` caching and `NOSCRIPT` recovery apply: when the node that owns the keys has not got the script (after a restart, a `SCRIPT FLUSH`, or on a cluster node the load never reached), the runner runs it once with `EVAL`, which caches it there.

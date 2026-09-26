@@ -127,10 +127,10 @@ await redis
   .exec();
 ```
 
-Keys accumulate across calls, and the declared set is checked at compile time and, under a cluster guard such as `benni(client, { cluster: assertSameSlot })`, again before `EXEC` is sent. This is a declaration rather than a derivation: a key you queue but never declare is not checked. On a single-node Redis you can skip it entirely. See [Redis Cluster](/benni/advanced/cluster/).
+Keys accumulate across calls, and the declared set is checked at compile time and, under a cluster guard such as `benni({ client, cluster: assertSameSlot })`, again before `EXEC` is sent. This is a declaration rather than a derivation: a key you queue but never declare is not checked. On a single-node Redis you can skip it entirely. See [Redis Cluster](/benni/advanced/cluster/).
 
 ## Requirements And Limits
 
-The bound client must implement the optional `transaction` method of the `RedisClient` interface (the Node and Bun adapters do). Otherwise `exec()` throws `TypeError: Redis client does not support transactions`.
+The bound client must implement the optional `transaction` method of the `RedisClient` interface (every built-in adapter does). Otherwise `exec()` throws `UnsupportedCapabilityError: Redis client does not support transactions`.
 
 For check-and-set logic that reads before it writes, use [optimistic transactions](/benni/advanced/optimistic-transactions/): `redis.watch()` runs a `WATCH`/`MULTI`/`EXEC` loop that retries on conflict. Very hot keys are still better served by a [Lua script](/benni/advanced/scripts/), which runs atomically on the server without a retry loop.

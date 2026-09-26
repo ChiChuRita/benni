@@ -24,11 +24,11 @@ The first three are the important distinction, and they are mutually exclusive:
 
 Everything else is either a subclass of one of those or a primitive-specific outcome.
 
-One class is deliberately absent: connection and transport failures. A closed socket, a DNS failure, an ioredis `MaxRetriesPerRequestError`, an Upstash HTTP 502, a non-JSON REST body. Benni passes those through from the underlying client untouched, because it has nothing to add and wrapping them would only hide what the client already told you.
+One class is deliberately absent: connection and transport failures. A closed socket, a DNS failure, an ioredis `MaxRetriesPerRequestError`, an Upstash HTTP 502, a non-JSON REST body. Benni passes those through from the underlying client untouched, because it has nothing to add and wrapping them would only hide what the client already told you. The one exception is a connect that fails before any connection existed: those commands reject with a plain `Error` reading `benni/<adapter> could not connect to Redis: <cause>`, with the client's own error as `cause`, because the adapter's retry-on-next-command behaviour is worth saying out loud. A handle refuses commands after `redis.close()` with a plain `Error` too.
 
 ## Core Errors
 
-These are exported from the root `benni` entrypoint (and from `benni/core`), with one exception noted below: `CrossSlotError` lives in `benni/cluster`.
+These are exported from the root `benni` entrypoint (and from `benni/core`), with two exceptions noted below: `CrossSlotError` lives in `benni/cluster`, and the adapter-author helper `redisServerError` in `benni/core` only.
 
 ### `ValidationError`
 
@@ -74,9 +74,9 @@ Extends `TypeError`. Thrown when the client behind the call does not implement t
 |---|---|---|
 | `capability` | `"transaction" \| "session" \| "subscriber"` | Which one the client turned out to lack |
 
-Every built-in adapter implements all three except `benni/upstash`, which is stateless HTTP and so has no `session` or `subscriber`. In practice you meet this class with a hand-written client, or when you `subscribe` over Upstash.
+Every built-in adapter implements all three except `benni/upstash`, which is stateless HTTP and so has no `session` or `subscriber`, and `benni/bun`, whose subscriber has no pattern support.
 
-A connected client advertises its optional methods by having them defined, so Benni feature-detects and picks a fallback before calling. A client passed as a **promise or a factory** cannot be interrogated at bind time, so the facade over it defines all three and reports the gap from inside the call with this error instead. That is what the class is for: it keeps `benni(node({ url }))` and `benni(await node({ url }))` behaving identically on a client that is missing a capability, because a caller with a legitimate fallback can catch it and take that fallback either way.
+You rarely meet this class in type-checked code: each adapter's client type says which capabilities it has, and a handle over a client that lacks one does not offer the members that need it (no `session()` over Upstash, no `redis.pubsub.pattern()` over Bun), so the mistake is a compile error. This class is the runtime backstop, for untyped code, a cast, or a hand-written client whose type claims more than it implements.
 
 The message is the same text a connected client's own guard uses, and `TypeError` is still the base class, so `instanceof TypeError` and message matching that predate this class keep working.
 
@@ -156,6 +156,8 @@ It requires at least three characters, on purpose: the shortest real codes are `
 ### `redisServerError(source, command?)`
 
 ```ts
+import { redisServerError } from "benni/core";
+
 function redisServerError(source: unknown, command?: string): RedisServerError;
 ```
 

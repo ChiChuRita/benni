@@ -17,11 +17,10 @@ import { cacheHandler } from "benni/next";
 import { upstash } from "benni/upstash";
 
 export default cacheHandler({
-  client: () =>
-    upstash({
-      url: process.env.UPSTASH_REDIS_REST_URL as string,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN as string
-    })
+  client: upstash({
+    url: process.env.UPSTASH_REDIS_REST_URL as string,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN as string
+  })
 });
 ```
 
@@ -35,7 +34,7 @@ const nextConfig = {
 export default nextConfig;
 ```
 
-`cacheHandler(options)` returns a class; Next.js instantiates the module's default export itself. Pass `client` as a lazy factory (as above) so no connection is opened when Next.js loads the module at build time; the factory is awaited once and cached.
+`cacheHandler(options)` returns a class; Next.js instantiates the module's default export itself. Adapters connect on the first command, so loading the module at build time opens no connection.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -83,19 +82,18 @@ Next.js 16's `revalidateTag(tag, "max")` asks for stale-while-revalidate. This h
 
 ## Rate limiting
 
-`rateLimit(options)` wraps the [`ratelimit`](/benni/primitives/ratelimit/) primitive (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
+`rateLimitMiddleware(options)` wraps the [`ratelimit`](/benni/primitives/ratelimit/) primitive (an exact sliding window, one atomic Lua round trip per check) in a web-standard shape: give it a `Request`, get back `null` (allowed) or a finished `429 Response`.
 
 ```ts
 // middleware.ts
-import { rateLimit } from "benni/next";
+import { rateLimitMiddleware } from "benni/next";
 import { upstash } from "benni/upstash";
 
-const limiter = rateLimit({
-  client: () =>
-    upstash({
-      url: process.env.UPSTASH_REDIS_REST_URL as string,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN as string
-    }),
+const limiter = rateLimitMiddleware({
+  client: upstash({
+    url: process.env.UPSTASH_REDIS_REST_URL as string,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN as string
+  }),
   limit: 20,
   windowMs: 10_000,
   identify: (request) =>
@@ -117,7 +115,7 @@ The denial response carries `Retry-After` (seconds) plus `X-RateLimit-Limit`, `X
 `identify` is required on purpose. There is no request property a limiter can trust without knowing the deployment: on a self-hosted Next.js, or behind a proxy that appends rather than replaces, `x-forwarded-for` is attacker-controlled, so a default built on it would let a caller vary one header to bypass the limit and mint a fresh Redis key every time. The snippet above is the right form on a platform whose edge overwrites the header, such as Vercel. Better still is an identity you authenticated yourself:
 
 ```ts
-const limiter = rateLimit({
+const limiter = rateLimitMiddleware({
   client,
   limit: 100,
   windowMs: 60_000,
